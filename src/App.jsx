@@ -250,8 +250,8 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
     const mileageDigits = miles.replace(/\D/g, '');
     const mileage = miles.includes('.')
       ? miles.replace(/[^0-9.]/g, '')
-      : mileageDigits.length === 4
-        ? `${mileageDigits.slice(0, 3)}.${mileageDigits.slice(3)}`
+      : mileageDigits.length === 4 || mileageDigits.length === 5
+        ? `${mileageDigits.slice(0, -1)}.${mileageDigits.slice(-1)}`
         : mileageDigits;
     const normalizeCity = (city, stateText) => {
       let normalizedCity = city.toUpperCase().replace(/[^A-Z\s.'-]/g, '').trim();
@@ -409,6 +409,12 @@ function correctCitiesFromZip(loads, zipData) {
         load[cityKey] = candidates[0].toUpperCase();
         return;
       }
+    }
+    if (!location && !load[stateKey] && ocrCity.length >= 3) {
+      const cityName = String(load[cityKey]).trim();
+      const states = Array.from(stateCodes).filter(code => zipData.lookupByName?.(cityName, code)?.length);
+      if (states.length === 1) load[stateKey] = states[0];
+      return;
     }
     if (!location) return;
     const zipCity = normalize(location.city);

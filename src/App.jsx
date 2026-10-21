@@ -520,7 +520,17 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       .replace(/[^\w\s.'-]/g, '')
       .trim()
       .toUpperCase();
-    return city ? { city, state: match[2].toUpperCase() } : null;
+    const tokens = city.split(/\s+/).filter(Boolean);
+    const cleanedTokens = tokens.filter((token, tokenIndex) =>
+      !tokens.some((other, otherIndex) =>
+        otherIndex !== tokenIndex
+        && token.length >= 4
+        && (other.length > token.length || (other.length === token.length && otherIndex < tokenIndex))
+        && other.includes(token))
+      && !(tokenIndex === tokens.length - 1 && tokenIndex > 0 && token.replace(/[^A-Z]/g, '').length <= 2)
+    );
+    const finalCity = cleanedTokens.join(' ').replace(/[^\w\s.'-]/g, '').trim();
+    return finalCity ? { city: finalCity, state: match[2].toUpperCase() } : null;
   };
   const monthCounts = {};
   allWords.forEach(word => {

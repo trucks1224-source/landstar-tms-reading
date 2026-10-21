@@ -2308,7 +2308,7 @@ export default function App() {
         ? '1522166'
         : isRxoCustomer(selectedBroker)
           ? '2429200'
-          : '9999999';
+          : (String(selectedBroker).match(/\b\d{5,8}\b/)?.[0] || '9999999');
     const isChCustomer = isCh593772Customer(selectedBroker);
     const allowMissingMiles = isChCustomer;
     let zipModule = null;

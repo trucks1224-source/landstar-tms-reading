@@ -2841,6 +2841,41 @@ export default function App() {
 
   const entCount = orders.filter(o => o.status === 'ENT').length;
 
+  const handleBackupExport = () => {
+    const data = {};
+    Object.keys(localStorage)
+      .filter(key => key.startsWith('landstar_') && key !== 'landstar_gmailClientId')
+      .forEach(key => { data[key] = localStorage.getItem(key); });
+    const blob = new Blob([JSON.stringify({ app: 'landstar-tms-reader', savedAt: new Date().toISOString(), data })], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `landstar-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const handleBackupImport = async event => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      const backup = JSON.parse(await file.text());
+      const entries = Object.entries(backup?.data || {})
+        .filter(([key, value]) => key.startsWith('landstar_') && typeof value === 'string');
+      if (backup?.app !== 'landstar-tms-reader' || entries.length === 0) {
+        throw new Error('This is not a Landstar TMS backup file.');
+      }
+      if (!window.confirm(`Restore this backup (${new Date(backup.savedAt).toLocaleString()})? It will replace the customers, loads, rates and exported-load history in this browser.`)) return;
+      entries.forEach(([key, value]) => localStorage.setItem(key, value));
+      window.location.reload();
+    } catch (error) {
+      alert(`Could not restore the backup: ${error.message}`);
+    }
+  };
+
   return (
     <div className="flex h-screen bg-[#0b132b] text-white overflow-hidden font-sans">
       {/* Left Sidebar - Order List */}
@@ -2876,6 +2911,21 @@ export default function App() {
                 📥 Export
               </button>
             </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-1 mb-2">
+            <button
+              type="button"
+              onClick={handleBackupExport}
+              className="bg-slate-700 hover:bg-slate-600 px-2 py-0.5 text-[10px] font-bold rounded text-white cursor-pointer"
+              title="Download all customers, loads and rates as a backup file"
+            >
+              💾 Backup
+            </button>
+            <label className="bg-slate-700 hover:bg-slate-600 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center" title="Restore customers, loads and rates from a backup file">
+              <span>📤 Restore</span>
+              <input type="file" accept=".json,application/json" onChange={handleBackupImport} className="hidden" />
+            </label>
           </div>
 
           {isGmailImportOpen && (

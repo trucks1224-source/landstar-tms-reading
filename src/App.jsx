@@ -514,18 +514,29 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
     const match = value.match(/^(.*?)[,\s]+([A-Z]{2})$/i);
     if (!match || !stateCodes.has(match[2].toUpperCase())) return null;
     const city = match[1]
-      .replace(/^[Oo0]\s*[-=>»|]+\s*/, '')
+      .replace(/^[A-Za-z0]{1,2}\s*[-=>»|]+\s*/, '')
+      .replace(/^([NSEW])(?=[A-Z][a-z]{2,})/, '$1 ')
       .replace(/^[Oo0]\s+(?=[A-Z])/, '')
       .replace(/[^\w\s.'-]/g, '')
       .trim()
       .toUpperCase();
     return city ? { city, state: match[2].toUpperCase() } : null;
   };
+  const monthCounts = {};
+  allWords.forEach(word => {
+    const found = word.text.replace(/[Oo]/g, '0').match(/^(1[0-2]|[1-9])\/(3[01]|[12]\d|0?[1-9])$/);
+    if (found) monthCounts[found[1]] = (monthCounts[found[1]] || 0) + 1;
+  });
+  const commonMonth = Number(Object.entries(monthCounts).sort((a, b) => b[1] - a[1])[0]?.[0]) || new Date().getMonth() + 1;
   const getDate = value => {
-    const match = value.replace(/[Oo]/g, '0').match(/\b(1[0-2]|0?[1-9])\s*[/.-]\s*(3[01]|[12]\d|0?[1-9])\b/);
+    const cleaned = value.replace(/[Oo]/g, '0').trim();
+    const match = cleaned.match(/\b(1[0-2]|0?[1-9])\s*[/.-]\s*(3[01]|[12]\d|0?[1-9])\b/)
+      || cleaned.match(/^(1[0-2])(0[1-9]|[12]\d|3[01])$/)
+      || cleaned.match(/(?:^|\s)0\s*\/\s*(3[01]|[12]\d|0?[1-9])\b/);
     if (!match) return '';
-    const month = Number(match[1]);
-    const day = Number(match[2]);
+    const isMissingMonth = match.length === 2;
+    const month = isMissingMonth ? commonMonth : Number(match[1]);
+    const day = Number(isMissingMonth ? match[1] : match[2]);
     const year = new Date().getFullYear();
     const date = new Date(Date.UTC(year, month - 1, day));
     if (date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return '';
@@ -534,7 +545,7 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
   const getTextRow = text => {
     const normalizedText = String(text || '')
       .replace(/[Oo](?=\d)/g, '0')
-      .replace(/(\d)[Il]bs\b/gi, '$1lbs');
+      .replace(/[IlM1|]bs\b/g, ' lbs');
     const dateMatch = normalizedText.match(/\b(1[0-2]|0?[1-9])\s*[/.-]\s*(3[01]|[12]\d|0?[1-9])\b/);
     if (!dateMatch) return null;
     const prefix = normalizedText.slice(0, dateMatch.index);
@@ -557,12 +568,12 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       .trim();
     const tail = normalizedText.slice(dateMatch.index + dateMatch[0].length);
     const equipment = tail.match(/\b(VT|VAN|VV|V|R|F|SD|VR|RZ|VZ|VE|FH)\b/i)?.[0]?.toUpperCase().replace(/^VV$/, 'V') || '';
-    const weight = normalizedText.match(/([\d][\d,.]*)\s*lbs?\b/i)?.[1]?.replace(/,/g, '') || '';
+    const weight = normalizedText.match(/([\d][\d,.]*)\s*lbs?\b/i)?.[1] || '';
     const origin = getLocation(`${originCity}, ${originStateMatch[1]}`);
     const destination = getLocation(`${destinationCity}, ${destinationStateMatch[1]}`);
     const pickupDate = getDate(dateMatch[0]);
-    if (!origin || !destination || !pickupDate || !equipment || !(Number(weight) > 0)) return null;
-    return { origin, destination, pickupDate, equipment, weight };
+    if (!origin || !destination || !pickupDate || !equipment || !(Number(weight.replace(/,/g, '')) > 0)) return null;
+    return { origin, destination, pickupDate, equipment, weightRaw: weight };
   };
   const loads = [];
   rowsToRead.forEach((line, index) => {
@@ -575,11 +586,12 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
     const equipment = equipmentText.match(/\b(VT|VAN|V|R|F|SD|VR|RZ|VZ|VE|FH)\b/)?.[0]
       || textRow?.equipment
       || reliableDominantEquipment;
-    const weightText = getHeaderCell(line, 'weight').replace(/[Oo]/g, '0').replace(/(\d)[Il]bs\b/gi, '$1lbs');
-    const weight = weightText.match(/(\d[\d,.]*)\s*lbs?\b/i)?.[1]?.replace(/,/g, '')
-      || weightText.match(/\d[\d,.]*/)?.[0]?.replace(/,/g, '')
-      || textRow?.weight
+    const weightText = getHeaderCell(line, 'weight').replace(/[Oo]/g, '0').replace(/[IlM1|]bs\b/g, ' lbs');
+    const rawWeight = weightText.match(/(\d[\d,.]*)\s*lbs?\b/i)?.[1]
+      || weightText.match(/\d[\d,.]*/)?.[0]
+      || textRow?.weightRaw
       || '';
+    const weight = rawWeight.replace(/^(\d{1,3},\d{3})\d$/, '$1').replace(/,/g, '');
     const trip = line.trip || getHeaderCell(line, 'trip').replace(/[Oo]/g, '0').match(/\b\d{2,5}\b/)?.[0] || '';
     const positionedRateWords = rateBounds
       ? allWords.filter(word => {
@@ -651,6 +663,7 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       rateInput: rate > 0 ? String(rate) : '',
       ...(rate > 0 ? { rateSource: 'dat-screenshot' } : {}),
       brokerable: 'false',
+      rateCrop: { centerY: (line.bbox.y0 + line.bbox.y1) / 2 },
       notes: `DAT screenshot does not include ZIP codes. ${trip ? 'Trip value was imported as miles; verify it.' : 'Trip miles were not recognized; enter them before export.'}`
     };
     const laneRateKey = createLaneRateKey(selectedBroker, order);
@@ -660,6 +673,33 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       order.rateSource = 'user-entered';
     }
     loads.push(order);
+  });
+  const lanes = {};
+  loads.forEach(load => {
+    const key = `${load.origCity}|${load.origSt}|${load.destCity}|${load.destSt}`;
+    (lanes[key] = lanes[key] || []).push(load);
+  });
+  Object.values(lanes).forEach(group => {
+    const counts = {};
+    group.forEach(load => { if (load.miles) counts[load.miles] = (counts[load.miles] || 0) + 1; });
+    const [common, commonCount] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0] || ['', 0];
+    if (commonCount < 2) return;
+    group.forEach(load => {
+      if (load.miles !== common && editDistance(load.miles, common) <= 1) load.miles = common;
+    });
+  });
+  const rowCenters = loads.map(load => load.rateCrop.centerY).sort((a, b) => a - b);
+  const spacings = rowCenters.slice(1).map((center, index) => center - rowCenters[index]).filter(gap => gap > 10).sort((a, b) => a - b);
+  const rowHeight = spacings[Math.floor(spacings.length / 2)] || imageHeight * 0.06;
+  const rateRight = headerWords.trip ? headerWords.trip.bbox.x0 * 0.71 : imageWidth * 0.075;
+  loads.forEach(load => {
+    const { centerY } = load.rateCrop;
+    load.rateCrop = {
+      x0: 0,
+      x1: Math.round(rateRight),
+      y0: Math.max(0, Math.round(centerY - rowHeight * 0.34)),
+      y1: Math.min(imageHeight, Math.round(centerY + rowHeight * 0.1))
+    };
   });
   return loads;
 }
@@ -2098,6 +2138,43 @@ export default function App() {
           if (recognizedLoads.length > 0) break;
         }
       }
+
+      if (isDatImport && recognizedLoads.length > 0) {
+        setScreenshotImportProgress('Reading DAT rates...');
+        await worker.setParameters({
+          tessedit_pageseg_mode: '7',
+          tessedit_char_whitelist: '0123456789,$'
+        });
+        for (const load of recognizedLoads) {
+          const crop = load.rateCrop;
+          if (!crop || crop.y1 <= crop.y0 || crop.x1 <= crop.x0) continue;
+          const scale = 4;
+          const cropCanvas = document.createElement('canvas');
+          cropCanvas.width = (crop.x1 - crop.x0) * scale;
+          cropCanvas.height = (crop.y1 - crop.y0) * scale;
+          const cropContext = cropCanvas.getContext('2d', { willReadFrequently: true });
+          if (!cropContext) continue;
+          cropContext.imageSmoothingQuality = 'high';
+          cropContext.drawImage(canvas, crop.x0, crop.y0, crop.x1 - crop.x0, crop.y1 - crop.y0, 0, 0, cropCanvas.width, cropCanvas.height);
+          const cropData = cropContext.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
+          for (let offset = 0; offset < cropData.data.length; offset += 4) {
+            const luminance = cropData.data[offset] * 0.299 + cropData.data[offset + 1] * 0.587 + cropData.data[offset + 2] * 0.114;
+            const pixel = luminance < 140 ? 0 : 255;
+            cropData.data[offset] = pixel;
+            cropData.data[offset + 1] = pixel;
+            cropData.data[offset + 2] = pixel;
+            cropData.data[offset + 3] = 255;
+          }
+          cropContext.putImageData(cropData, 0, 0);
+          const { data: rateData } = await worker.recognize(cropCanvas);
+          const rateValue = Number(rateData.text.replace(/[^\d]/g, ''));
+          if (rateValue >= 100 && rateValue < 100000) {
+            load.rateInput = String(rateValue);
+            load.rateSource = 'dat-screenshot';
+          }
+        }
+      }
+      recognizedLoads.forEach(load => { delete load.rateCrop; });
 
       if (recognizedLoads.length === 0) {
         throw new Error(isDatImport

@@ -333,6 +333,124 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
   }).filter(Boolean);
 }
 
+// NTG load-board cards: each card has the load #, origin/destination with dates, miles, weight and total rate.
+function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
+  const words = lines.flatMap(line => line.words || [])
+    .map(word => {
+      const x0 = word.bbox.x0 / imageWidth;
+      const x1 = word.bbox.x1 / imageWidth;
+      return { text: String(word.text || '').trim(), x0, x1, cx: (x0 + x1) / 2, cy: (word.bbox.y0 + word.bbox.y1) / 2, h: word.bbox.y1 - word.bbox.y0 };
+    })
+    .filter(word => word.text);
+  const anchors = words
+    .filter(word => /^load$/i.test(word.text) && word.x0 < 0.2)
+    .sort((a, b) => a.cy - b.cy);
+  const anchorSpacing = anchors.length > 1
+    ? anchors.slice(1).map((anchor, index) => anchor.cy - anchors[index].cy).sort((a, b) => a - b)[Math.floor((anchors.length - 1) / 2)]
+    : imageHeight;
+  const toRows = region => {
+    const rows = [];
+    region.slice().sort((a, b) => a.cy - b.cy).forEach(word => {
+      const row = rows[rows.length - 1];
+      if (row && Math.abs(word.cy - row.cy) < Math.max(6, word.h * 0.6)) {
+        row.words.push(word);
+        row.cy = row.words.reduce((sum, item) => sum + item.cy, 0) / row.words.length;
+      } else {
+        rows.push({ cy: word.cy, words: [word] });
+      }
+    });
+    return rows.map(row => ({ ...row, text: row.words.sort((a, b) => a.x0 - b.x0).map(word => word.text).join(' ') }));
+  };
+  const parseCity = text => {
+    const match = text.replace(/[|]/g, '').match(/^(.*?)[,.]?\s+([A-Za-z]{2})$/);
+    const state = match?.[2].toUpperCase();
+    if (!match || !stateCodes.has(state)) return null;
+    const city = match[1].replace(/[^A-Za-z\s.'-]/g, '').replace(/\s+/g, ' ').trim().toUpperCase();
+    return city ? { city, state } : null;
+  };
+  const parseDates = text => {
+    const cleaned = text.replace(/[Oo]/g, '0');
+    const dateMatch = cleaned.match(/(1[0-2]|0?[1-9])\s*\/\s*(3[01]|[12]\d|0?[1-9])\s*\/\s*(20\d{2}|\d{2})/);
+    if (!dateMatch) return '';
+    const date = `${dateMatch[1].padStart(2, '0')}/${dateMatch[2].padStart(2, '0')}/${dateMatch[3].length === 2 ? `20${dateMatch[3]}` : dateMatch[3]}`;
+    const times = Array.from(cleaned.slice(dateMatch.index + dateMatch[0].length).matchAll(/(\d{1,2})\s*:\s*(\d{2})/g))
+      .map(match => `${match[1].padStart(2, '0')}${match[2]}`);
+    const start = times[0] || '0800';
+    const end = times[1] || (times[0] ? times[0] : '1600');
+    return `${date} ${start} - ${end}`;
+  };
+
+  return anchors.map((anchor, index) => {
+    const top = anchor.cy - anchorSpacing * 0.3;
+    const bottom = anchor.cy + anchorSpacing * 0.7;
+    const card = words.filter(word => word.cy >= top && word.cy < bottom);
+    const idWord = card.find(word => word.x0 < 0.2 && /^\d{7}$/.test(word.text));
+    const milesWord = card.find(word => /miles?$/i.test(word.text));
+    const centerX = milesWord ? milesWord.cx : 0.45;
+    let mileage = milesWord?.text.match(/(\d{2,5})\s*miles?/i)?.[1] || '';
+    if (milesWord && !mileage) {
+      mileage = card
+        .filter(word => /^\D{0,2}\d{2,5}$/.test(word.text) && Math.abs(word.cy - milesWord.cy) < milesWord.h && word.x1 <= milesWord.x0 + 0.01 && word.x0 > milesWord.x0 - 0.08)
+        .sort((a, b) => b.x1 - a.x1)[0]?.text.replace(/\D/g, '') || '';
+    }
+    const statsLeft = (card.find(word => /^stops$/i.test(word.text))?.x0 ?? 0.69) - 0.02;
+    const rateWord = card.find(word => /^\$\s*[\d,]+(\.\d+)?$/.test(word.text));
+    const rate = rateWord ? rateWord.text.replace(/[^0-9.]/g, '') : '';
+    const weightWord = card
+      .filter(word => word.cx >= statsLeft && word !== rateWord && /^(\d{1,3}(,\d{3})+|\d{4,6})(\.\d+)?$/.test(word.text))
+      .sort((a, b) => a.x0 - b.x0)[0];
+    const weight = weightWord ? String(Math.round(Number(weightWord.text.replace(/,/g, '')))) : '';
+
+    const originRows = toRows(card.filter(word => word.x0 > 0.08 && word.cx < centerX - 0.06));
+    const destRows = toRows(card.filter(word => word.cx > centerX + 0.06 && word.cx < statsLeft));
+    const findLocation = rows => {
+      const rowIndex = rows.findIndex(row => parseCity(row.text));
+      return rowIndex < 0 ? { location: null, dates: '' } : {
+        location: parseCity(rows[rowIndex].text),
+        dates: parseDates(rows[rowIndex + 1]?.text || '')
+      };
+    };
+    const origin = findLocation(originRows);
+    const destination = findLocation(destRows);
+    if (!origin.location || !destination.location) return null;
+
+    const equipmentText = card.map(word => word.text).join(' ');
+    const isReefer = /reefer/i.test(equipmentText);
+    const tags = [/hazmat/i.test(equipmentText) && 'Hazmat', /tanker/i.test(equipmentText) && 'Tanker (N) Endorsement'].filter(Boolean);
+    const shortDate = value => value.replace(/^(\d{2})\/(\d{2})\/\d{4}\s+(\d{4}).*$/, '$1/$2 $3');
+    return {
+      id: idWord ? idWord.text : `NTG-${Date.now()}-${index}`,
+      postingCode: 'ANQ',
+      visibilityGroup: 'ANQ',
+      eCode: isReefer ? 'VR' : 'VZ',
+      status: 'OPEN',
+      tag: 'OPEN',
+      route: `${origin.location.city}, ${origin.location.state} → ${destination.location.city}, ${destination.location.state}`,
+      puDate: origin.dates ? `PU: ${shortDate(origin.dates)}` : 'PU: Today',
+      delDate: destination.dates ? `DFL: ${shortDate(destination.dates)}` : 'DFL: Upcoming',
+      pickupTime: origin.dates,
+      origCity: origin.location.city,
+      origSt: origin.location.state,
+      origZip: '',
+      weight: weight ? `${weight} lbs` : '',
+      deliveryTime: destination.dates,
+      destCity: destination.location.city,
+      destSt: destination.location.state,
+      destZip: '',
+      miles: mileage,
+      planningComment: tags.join(', '),
+      carrier: '',
+      driver: '',
+      truck: '',
+      trailer: '',
+      rateInput: rate,
+      rateSource: rate ? 'user-entered' : undefined,
+      brokerable: 'false',
+      notes: idWord ? '' : 'Load number was unreadable from the NTG screenshot; please enter it.'
+    };
+  }).filter(Boolean);
+}
+
 function editDistance(a, b) {
   const row = Array.from({ length: b.length + 1 }, (_, index) => index);
   for (let i = 1; i <= a.length; i += 1) {
@@ -2002,7 +2120,7 @@ export default function App() {
 
     setScreenshotImportMode(importMode);
     setIsImportingScreenshot(true);
-    setScreenshotImportProgress(importMode === 'dat' ? 'Preparing DAT screenshot...' : 'Preparing customer screenshot...');
+    setScreenshotImportProgress(importMode === 'dat' ? 'Preparing DAT screenshot...' : importMode === 'ntg' ? 'Preparing NTG screenshot...' : 'Preparing customer screenshot...');
     try {
       if (!file.type.startsWith('image/')) {
         throw new Error('Please choose an image file.');
@@ -2043,7 +2161,7 @@ export default function App() {
       });
       setScreenshotImportProgress('Recognizing text...');
       await worker.setParameters({
-        tessedit_pageseg_mode: importMode === 'dat' ? '3' : '6'
+        tessedit_pageseg_mode: importMode === 'dat' || importMode === 'ntg' ? '3' : '6'
       });
       const { data } = await worker.recognize(canvas, {}, { blocks: true });
       const lines = (data.blocks || []).flatMap(block =>
@@ -2059,7 +2177,7 @@ export default function App() {
         .sort((a, b) => a - b);
       const rowSpacing = spacings[Math.floor(spacings.length / 2)];
 
-      if (rowSpacing) {
+      if (rowSpacing && importMode !== 'ntg') {
         for (let index = 1; index < dataLines.length; index += 1) {
           const previousCenter = centers[index - 1];
           const nextCenter = centers[index];
@@ -2103,7 +2221,7 @@ export default function App() {
         }
       }
 
-      if (importMode !== 'dat') {
+      if (importMode === 'ai') {
         await worker.setParameters({
           tessedit_pageseg_mode: '7',
           tessedit_char_whitelist: '0123456789'
@@ -2169,10 +2287,13 @@ export default function App() {
       }
 
       const isDatImport = importMode === 'dat';
+      const isNtgImport = importMode === 'ntg';
       let recognizedLoads = isDatImport
         ? parseDatScreenshotLines(lines, canvas.width, canvas.height, brokerName, laneRates)
-        : parseScreenshotLines(lines, canvas.width, canvas.height, brokerName);
-      if (!isDatImport && recognizedLoads.length > 0) {
+        : isNtgImport
+          ? parseNtgScreenshotLines(lines, canvas.width, canvas.height)
+          : parseScreenshotLines(lines, canvas.width, canvas.height, brokerName);
+      if (!isDatImport && !isNtgImport && recognizedLoads.length > 0) {
         try {
           const zipModule = await import('zipcodes');
           correctCitiesFromZip(recognizedLoads, zipModule.default || zipModule);
@@ -2275,6 +2396,8 @@ export default function App() {
       if (recognizedLoads.length === 0) {
         throw new Error(isDatImport
           ? 'No DAT load rows were recognized. Capture the DAT results table straight-on with the Origin, Destination, Pick Up, EQ, and Weight columns visible.'
+          : isNtgImport
+            ? 'No NTG loads were recognized. Capture the NTG load cards straight-on with the Load #, cities, miles, weight and Total Rate visible.'
           : 'No load rows could be read. Try a clearer, straight-on screenshot that includes the full table.');
       }
 
@@ -2954,6 +3077,10 @@ export default function App() {
               <label className={`bg-indigo-600 hover:bg-indigo-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} title="Import load rows from a DAT load-board screenshot">
                 <span>{isImportingScreenshot && screenshotImportMode === 'dat' ? screenshotImportProgress : '📷 Import DAT Loads'}</span>
                 <input type="file" accept="image/*" onChange={event => handleScreenshotImport(event, 'dat')} className="hidden" disabled={isImportingScreenshot} />
+              </label>
+              <label className={`bg-amber-600 hover:bg-amber-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} title="Import loads from an NTG load-board screenshot">
+                <span>{isImportingScreenshot && screenshotImportMode === 'ntg' ? screenshotImportProgress : '🚚 Import NTG Loads'}</span>
+                <input type="file" accept="image/*" onChange={event => handleScreenshotImport(event, 'ntg')} className="hidden" disabled={isImportingScreenshot} />
               </label>
               <label className="bg-blue-600 hover:bg-blue-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center" title="Import Excel Spreadsheet">
                 <span>📂 Import Excel</span>

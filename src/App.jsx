@@ -660,7 +660,7 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       origSt: origin.state,
       origZip: '',
       weight: `${weight} lbs`,
-      deliveryTime: '0800 - 1600',
+      deliveryTime: String(selectedBroker || '').includes('965974') ? '' : '0800 - 1600',
       destCity: destination.city,
       destSt: destination.state,
       destZip: '',
@@ -2403,7 +2403,12 @@ export default function App() {
         );
       }
       const puParts = (ord.pickupTime || '').split(' - ');
-      const delParts = (ord.deliveryTime || '').split(' - ');
+      const spacedDelivery = Array.from(
+        String(ord.deliveryTime || '').matchAll(/(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):?(\d{2})/g)
+      ).map(match => `${match[1]}/${match[2]}/${match[3].length === 2 ? `20${match[3]}` : match[3]} ${match[4]}${match[5]}`);
+      const delParts = spacedDelivery.length >= 2
+        ? spacedDelivery
+        : (ord.deliveryTime || '').split(' - ');
       const pickupFrom = toExcelDateTime(puParts[0]);
       const pickupThru = toExcelDateTime(puParts[1] || puParts[0], puParts[0]);
       const deliveryFrom = toExcelDateTime(delParts[0]);
@@ -3281,6 +3286,7 @@ export default function App() {
                   <input
                     type="text"
                     value={selectedOrder.deliveryTime || ''}
+                    placeholder={String(selectedBroker || '').includes('965974') ? 'MM/DD/YY 08:00  MM/DD/YY 16:00' : ''}
                     onChange={(e) => handleInputChange('deliveryTime', e.target.value)}
                     className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
                   />

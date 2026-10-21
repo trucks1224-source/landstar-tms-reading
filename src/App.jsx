@@ -347,6 +347,53 @@ function editDistance(a, b) {
   return row[b.length];
 }
 
+// DAT screenshots have no ZIPs, so garbled city names are matched against the real cities of the state.
+function correctDatCities(loads, zipData) {
+  const normalize = value => String(value || '').toUpperCase().replace(/[^A-Z]/g, '');
+  const cache = {};
+  const citiesFor = state => {
+    if (!cache[state]) {
+      const names = Array.from(new Set((zipData.lookupByState?.(state) || []).map(item => String(item.city).toUpperCase())));
+      cache[state] = names.map(name => ({ name, key: normalize(name) }));
+    }
+    return cache[state];
+  };
+  const fix = (load, cityKey, stateKey) => {
+    const state = load[stateKey];
+    const cities = state ? citiesFor(state) : [];
+    if (!cities.length) return;
+    const tokens = String(load[cityKey] || '').toUpperCase().split(/\s+/).filter(Boolean);
+    if (!tokens.length || cities.some(city => city.name === tokens.join(' '))) return;
+    let best = null;
+    for (let start = 0; start < tokens.length; start += 1) {
+      for (let end = tokens.length; end > start; end -= 1) {
+        const text = tokens.slice(start, end).join(' ');
+        const exact = cities.find(city => city.name === text || city.key === normalize(text));
+        if (exact && (!best || text.length > best.length)) best = { length: text.length, name: exact.name };
+      }
+    }
+    if (!best) {
+      const joined = normalize(tokens.join(''));
+      let bestDistance = 3;
+      cities.forEach(city => {
+        if (city.key.length < 5) return;
+        const distance = editDistance(city.key, joined);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = { name: city.name };
+        }
+      });
+    }
+    if (best) load[cityKey] = best.name;
+  };
+  loads.forEach(load => {
+    fix(load, 'origCity', 'origSt');
+    fix(load, 'destCity', 'destSt');
+    load.route = `${load.origCity}${load.origSt ? `, ${load.origSt}` : ''} → ${load.destCity}${load.destSt ? `, ${load.destSt}` : ''}`;
+  });
+  return loads;
+}
+
 // Landstar truncates long city names ("NEWPORT NE...") and OCR drops letters; the ZIP's city fixes both.
 function correctCitiesFromZip(loads, zipData) {
   const normalize = value => String(value || '').toUpperCase().replace(/[^A-Z]/g, '');
@@ -2127,6 +2174,15 @@ export default function App() {
           console.error('Could not use ZIP data to verify screenshot cities:', error);
         }
       }
+      const applyDatCityFix = async () => {
+        if (!isDatImport || recognizedLoads.length === 0) return;
+        try {
+          const zipModule = await import('zipcodes');
+          correctDatCities(recognizedLoads, zipModule.default || zipModule);
+        } catch (error) {
+          console.error('Could not verify DAT cities:', error);
+        }
+      };
       if (isDatImport && recognizedLoads.length === 0) {
         for (const pageSegMode of ['6', '11']) {
           setScreenshotImportProgress('Trying another DAT table recognition mode...');
@@ -2207,6 +2263,7 @@ export default function App() {
           }
         }
       }
+      await applyDatCityFix();
       recognizedLoads.forEach(load => { delete load.rateCrop; });
 
       if (recognizedLoads.length === 0) {

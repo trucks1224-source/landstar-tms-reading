@@ -691,15 +691,13 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
   const rowCenters = loads.map(load => load.rateCrop.centerY).sort((a, b) => a - b);
   const spacings = rowCenters.slice(1).map((center, index) => center - rowCenters[index]).filter(gap => gap > 10).sort((a, b) => a - b);
   const rowHeight = spacings[Math.floor(spacings.length / 2)] || imageHeight * 0.06;
-  const rateRight = headerWords.trip ? headerWords.trip.bbox.x0 * 0.71 : imageWidth * 0.075;
+  const tripLeft = headerWords.trip
+    ? headerWords.trip.bbox.x0
+    : (tripAnchors.length ? Math.min(...tripAnchors.map(word => word.bbox.x0)) : imageWidth * 0.1);
+  const rateRight = tripLeft * 0.71;
   loads.forEach(load => {
     const { centerY } = load.rateCrop;
-    load.rateCrop = {
-      x0: 0,
-      x1: Math.round(rateRight),
-      y0: Math.max(0, Math.round(centerY - rowHeight * 0.34)),
-      y1: Math.min(imageHeight, Math.round(centerY + rowHeight * 0.1))
-    };
+    load.rateCrop = { centerY, rowHeight, x0: 0, x1: Math.round(rateRight) };
   });
   return loads;
 }
@@ -2147,30 +2145,55 @@ export default function App() {
         });
         for (const load of recognizedLoads) {
           const crop = load.rateCrop;
-          if (!crop || crop.y1 <= crop.y0 || crop.x1 <= crop.x0) continue;
-          const scale = 4;
-          const cropCanvas = document.createElement('canvas');
-          cropCanvas.width = (crop.x1 - crop.x0) * scale;
-          cropCanvas.height = (crop.y1 - crop.y0) * scale;
-          const cropContext = cropCanvas.getContext('2d', { willReadFrequently: true });
-          if (!cropContext) continue;
-          cropContext.imageSmoothingQuality = 'high';
-          cropContext.drawImage(canvas, crop.x0, crop.y0, crop.x1 - crop.x0, crop.y1 - crop.y0, 0, 0, cropCanvas.width, cropCanvas.height);
-          const cropData = cropContext.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
-          for (let offset = 0; offset < cropData.data.length; offset += 4) {
-            const luminance = cropData.data[offset] * 0.299 + cropData.data[offset + 1] * 0.587 + cropData.data[offset + 2] * 0.114;
-            const pixel = luminance < 140 ? 0 : 255;
-            cropData.data[offset] = pixel;
-            cropData.data[offset + 1] = pixel;
-            cropData.data[offset + 2] = pixel;
-            cropData.data[offset + 3] = 255;
+          if (!crop || crop.x1 <= crop.x0) continue;
+          const miles = Number(load.miles) || 0;
+          const isPlausible = value => value >= 100 && value < 100000
+            && (!(miles > 0) || (value / miles >= 0.4 && value / miles <= 25));
+          const variants = [
+            [-0.34, 0.1, 140], [-0.34, 0.1, 110], [-0.34, 0.1, 170],
+            [-0.45, 0.02, 140], [-0.3, 0.2, 140], [-0.5, 0.15, 125]
+          ];
+          let found = 0;
+          let fallbackRate = 0;
+          for (const [top, bottom, threshold] of variants) {
+            const y0 = Math.max(0, Math.round(crop.centerY + crop.rowHeight * top));
+            const y1 = Math.min(canvas.height, Math.round(crop.centerY + crop.rowHeight * bottom));
+            if (y1 <= y0) continue;
+            const scale = 4;
+            const cropCanvas = document.createElement('canvas');
+            cropCanvas.width = (crop.x1 - crop.x0) * scale;
+            cropCanvas.height = (y1 - y0) * scale;
+            const cropContext = cropCanvas.getContext('2d', { willReadFrequently: true });
+            if (!cropContext) break;
+            cropContext.imageSmoothingQuality = 'high';
+            cropContext.drawImage(canvas, crop.x0, y0, crop.x1 - crop.x0, y1 - y0, 0, 0, cropCanvas.width, cropCanvas.height);
+            const cropData = cropContext.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
+            for (let offset = 0; offset < cropData.data.length; offset += 4) {
+              const luminance = cropData.data[offset] * 0.299 + cropData.data[offset + 1] * 0.587 + cropData.data[offset + 2] * 0.114;
+              const pixel = luminance < threshold ? 0 : 255;
+              cropData.data[offset] = pixel;
+              cropData.data[offset + 1] = pixel;
+              cropData.data[offset + 2] = pixel;
+              cropData.data[offset + 3] = 255;
+            }
+            cropContext.putImageData(cropData, 0, 0);
+            const { data: rateData } = await worker.recognize(cropCanvas);
+            const rateValue = Number(rateData.text.replace(/[^\d]/g, ''));
+            if (isPlausible(rateValue)) {
+              found = rateValue;
+              break;
+            }
+            if (!fallbackRate && rateValue >= 100 && rateValue < 100000 && /^\$?\d{1,2},?\d{3}\s*$/.test(rateData.text.trim())) {
+              fallbackRate = rateValue;
+            }
           }
-          cropContext.putImageData(cropData, 0, 0);
-          const { data: rateData } = await worker.recognize(cropCanvas);
-          const rateValue = Number(rateData.text.replace(/[^\d]/g, ''));
-          if (rateValue >= 100 && rateValue < 100000) {
-            load.rateInput = String(rateValue);
+          if (!found) found = fallbackRate;
+          if (found) {
+            load.rateInput = String(found);
             load.rateSource = 'dat-screenshot';
+          } else if (load.rateInput && !isPlausible(Number(load.rateInput))) {
+            load.rateInput = '';
+            delete load.rateSource;
           }
         }
       }

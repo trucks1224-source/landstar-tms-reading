@@ -3312,12 +3312,12 @@ export default function App() {
                   <div>
                     <div className="flex justify-between items-center mb-1">
                       <label className="text-xs text-emerald-400 font-bold">Rate ($) - actual DAT quote</label>
-                      <span className="text-[10px] bg-emerald-950 text-emerald-300 px-1 py-0.2 rounded font-mono border border-emerald-600/40">Manual</span>
+                      <span className="text-[10px] bg-emerald-950 text-emerald-300 px-1 py-0.2 rounded font-mono border border-emerald-600/40">{selectedOrder.rateSource === 'dat-screenshot' ? 'From DAT screenshot' : 'Manual'}</span>
                     </div>
                     <div className="flex gap-1">
                       <input
                         type="text"
-                        value={selectedOrder.rateSource === 'user-entered' ? selectedOrder.rateInput || '' : ''}
+                        value={['user-entered', 'dat-screenshot'].includes(selectedOrder.rateSource) ? selectedOrder.rateInput || '' : ''}
                         onChange={(e) => handleInputChange('rateInput', e.target.value)}
                         onKeyDown={handleRateKeyDown}
                         placeholder="Enter DAT quote"

@@ -2269,10 +2269,10 @@ export default function App() {
       const enteredDestinationZip = String(ord.destZip || '').replace(/\D/g, '').slice(0, 5);
       const enteredOriginLocation = enteredOriginZip.length === 5 ? lookupZip(enteredOriginZip) : null;
       const enteredDestinationLocation = enteredDestinationZip.length === 5 ? lookupZip(enteredDestinationZip) : null;
-      const originLocation = enteredOriginLocation || (isChCustomer
+      const originLocation = enteredOriginLocation || (true
         ? lookupCityState(ord.origCity, ord.origSt)
         : null);
-      const destinationLocation = enteredDestinationLocation || (isChCustomer
+      const destinationLocation = enteredDestinationLocation || (true
         ? lookupCityState(ord.destCity, ord.destSt)
         : null);
       const originZip = originLocation?.zip || (enteredOriginLocation ? enteredOriginZip : '');
@@ -2283,8 +2283,8 @@ export default function App() {
       const destinationCity = getLandstarCity(ord.destCity, destinationLocation);
       const originStateMatchesZip = !ord.origSt || !originLocation || originState === originLocation.state;
       const destinationStateMatchesZip = !ord.destSt || !destinationLocation || destinationState === destinationLocation.state;
-      const originZipWasResolved = isChCustomer && !enteredOriginLocation && Boolean(originLocation);
-      const destinationZipWasResolved = isChCustomer && !enteredDestinationLocation && Boolean(destinationLocation);
+      const originZipWasResolved = !enteredOriginLocation && Boolean(originLocation);
+       const destinationZipWasResolved = !enteredDestinationLocation && Boolean(destinationLocation);
       if (originZipWasResolved) representativeZipCount += 1;
       if (destinationZipWasResolved) representativeZipCount += 1;
       if ((originZipWasResolved || destinationZipWasResolved) && representativeZipExamples.length < 5) {

@@ -248,8 +248,20 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
     const deliveryFrom = parseDateTime(earlyDelivery);
     const deliveryTo = parseDateTime(lateDelivery, earlyDelivery);
     const mileageDigits = miles.replace(/\D/g, '');
-    const mileage = miles.includes('.')
-      ? miles.replace(/[^0-9.]/g, '')
+    const rawDecimalMiles = miles.replace(/\s/g, '').match(/\d{1,6}\.\d/)?.[0];
+    // Distance is never above 9999 miles, so extra leading digits are bleed from the neighboring cell.
+    const decimalMiles = rawDecimalMiles && rawDecimalMiles.split('.')[0].length >= 5
+      ? `${rawDecimalMiles.slice(0, 3)}.${rawDecimalMiles.slice(-1)}`
+      : rawDecimalMiles;
+    const mergedMiles = !decimalMiles && mileageDigits.length >= 7
+      ? mileageDigits.slice(0, -6)
+      : '';
+    const mileage = mergedMiles
+      ? `${mergedMiles}.0`
+      : decimalMiles
+      ? decimalMiles
+      : miles.includes('.')
+        ? miles.replace(/[^0-9.]/g, '')
       : mileageDigits.length === 4 || mileageDigits.length === 5
         ? `${mileageDigits.slice(0, -1)}.${mileageDigits.slice(-1)}`
         : mileageDigits;

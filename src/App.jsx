@@ -1,7 +1,42 @@
 import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
+import { supabase } from './lib/supabase';
+import { detectScreenshotGrid, readScreenshotGrid } from './lib/screenshotTable.js';
 
 const exportedLoadRetentionMs = 30 * 24 * 60 * 60 * 1000;
+
+// ==========================================
+// ZIP CODE AUTO-FILL DICTIONARY & HELPER
+// ==========================================
+const zipDatabase = {
+  "PARCHMENT, MI": "49004",
+  "STONE MOUNTAIN, GA": "30083",
+  // Add other recurring lanes or missing cities here as needed:
+};
+
+function autoFillLoadZipCodes(loads) {
+  return loads.map(load => {
+    const updated = { ...load };
+    
+    // Check and fill Origin ZIP if missing
+    if (!updated.origZip && updated.origCity && updated.origSt) {
+      const originKey = `${updated.origCity.trim().toUpperCase()}, ${updated.origSt.trim().toUpperCase()}`;
+      if (zipDatabase[originKey]) {
+        updated.origZip = zipDatabase[originKey];
+      }
+    }
+
+    // Check and fill Destination ZIP if missing
+    if (!updated.destZip && updated.destCity && updated.destSt) {
+      const destKey = `${updated.destCity.trim().toUpperCase()}, ${updated.destSt.trim().toUpperCase()}`;
+      if (zipDatabase[destKey]) {
+        updated.destZip = zipDatabase[destKey];
+      }
+    }
+
+    return updated;
+  });
+}
 
 function removeExpiredExportedLoads(customerOrders, now = Date.now()) {
   let changed = false;
@@ -102,6 +137,7 @@ function detectColumnsFromData(allWords, imageWidth) {
 }
 
 function detectScreenshotColumns(lines, imageWidth) {
+  if (lines[0]?.screenshotColumns) return lines[0].screenshotColumns;
   const allWords = lines.flatMap(line => line.words || []);
   return detectColumnsFromHeader(allWords, imageWidth)
     || detectColumnsFromData(allWords, imageWidth)
@@ -169,6 +205,7 @@ function parseWeightPounds(value) {
 }
 
 function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
+  const isParaImport = isParaCustomer(selectedBroker);
   const cleanCell = value => value
     .replace(/[|[\]]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -196,6 +233,10 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
     if (minuteText !== undefined) {
       hour = Number(hourText);
       minute = Number(minuteText);
+    } else if (isParaImport && hourText.length <= 2) {
+      // Para's clipped cells show hours, not minutes; a lone zero uses 08:00.
+      hour = hourText === '0' && !meridiem ? 8 : Number(hourText);
+      minute = 0;
     } else {
       const digits = hourText.padStart(4, '0');
       hour = Number(digits.slice(0, -2));
@@ -237,7 +278,8 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
     const numberText = orderText.replace(/\D/g, '');
     const orderMatch = numberText.match(/22\d{5}/)?.[0];
     const id = line.verifiedOrderId || orderMatch || '';
-    const equipment = equipmentText.toUpperCase().match(/\b(VZ|VE|VR|RZ|R|F|SD|VAN)\b/)?.[0] || '';
+    const equipment = line.verifiedEquipmentCode
+      || equipmentText.toUpperCase().match(/\b(VZ|VE|VR|RZ|R|F|SD|VAN)\b/)?.[0] || '';
     const rowText = line.text.toLowerCase();
     if (/distance/.test(rowText) && /weight/.test(rowText) && /comment/.test(rowText)) return null;
     if (/\border\b/.test(rowText) && /\bearly\b/.test(rowText) && /\blate\b/.test(rowText)) return null;
@@ -249,7 +291,6 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
     const deliveryTo = parseDateTime(lateDelivery, earlyDelivery);
     const mileageDigits = miles.replace(/\D/g, '');
     const rawDecimalMiles = miles.replace(/\s/g, '').match(/\d{1,6}\.\d/)?.[0];
-    // Distance is never above 9999 miles, so extra leading digits are bleed from the neighboring cell.
     const decimalMiles = rawDecimalMiles && rawDecimalMiles.split('.')[0].length >= 5
       ? `${rawDecimalMiles.slice(0, 3)}.${rawDecimalMiles.slice(-1)}`
       : rawDecimalMiles;
@@ -305,7 +346,6 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
       || parseWeight(positionedWeightText)
       || weightFromComment
       || weightFromLabel;
-    // A grid line next to the weight cell is often read as a leading "1".
     const weightValue = /^1\d{5}$/.test(rawWeight) && Number(rawWeight.slice(1)) >= 1000
       ? rawWeight.slice(1)
       : rawWeight;
@@ -318,8 +358,11 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
       postingCode: 'ANQ',
       visibilityGroup: 'ANQ',
       eCode: equipment || (isRxoCustomer(selectedBroker) ? 'VAN:VAN' : 'VZ'),
-      status: 'OPEN',
-      tag: 'OPEN',
+      status: isParaImport && line.orderNumberHighlighted ? 'ENT' : 'OPEN',
+      tag: isParaImport && line.orderNumberHighlighted ? 'ENT' : 'OPEN',
+      ...(isParaImport && typeof line.orderNumberHighlighted === 'boolean'
+        ? { screenshotStatus: line.orderNumberHighlighted ? 'ENT' : 'OPEN' }
+        : {}),
       route: `${origin}${originState ? `, ${originState}` : ''} → ${destination}${destinationState ? `, ${destinationState}` : ''}`,
       puDate: pickupFrom || pickupTo ? `PU: ${shortDateTime(pickupFrom || pickupTo)}` : 'PU: Today',
       delDate: deliveryTo || deliveryFrom ? `DFL: ${shortDateTime(deliveryTo || deliveryFrom)}` : 'DFL: Upcoming',
@@ -332,7 +375,7 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
       destCity: destination,
       destSt: destinationState,
       destZip: destinationZipcode,
-      miles: mileage || '400',
+      miles: normalizeMilesValue(mileage) || '400',
       planningComment: normalizedComment,
       carrier: '',
       driver: '',
@@ -345,8 +388,7 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
   }).filter(Boolean);
 }
 
-// NTG load-board cards: each card has the load #, origin/destination with dates, miles, weight and total rate.
-function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
+function findNtgCards(lines, imageWidth, imageHeight) {
   const words = lines.flatMap(line => line.words || [])
     .map(word => {
       const x0 = word.bbox.x0 / imageWidth;
@@ -354,12 +396,33 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
       return { text: String(word.text || '').trim(), x0, x1, cx: (x0 + x1) / 2, cy: (word.bbox.y0 + word.bbox.y1) / 2, h: word.bbox.y1 - word.bbox.y0 };
     })
     .filter(word => word.text);
-  const anchors = words
-    .filter(word => /^load$/i.test(word.text) && word.x0 < 0.2)
+  const markers = words
+    .filter(word => (word.cx > 0.5 && /^(sto\w{0,2}|weight|total)$/i.test(word.text)) || (word.x0 < 0.2 && /^\d{7}$/.test(word.text)))
     .sort((a, b) => a.cy - b.cy);
-  const anchorSpacing = anchors.length > 1
+  const clusters = [];
+  markers.forEach(word => {
+    const last = clusters[clusters.length - 1];
+    if (last && word.cy - last.cy < imageHeight * 0.02) {
+      last.count += 1;
+      last.cy += (word.cy - last.cy) / last.count;
+    } else {
+      clusters.push({ cy: word.cy, count: 1 });
+    }
+  });
+  const anchors = clusters;
+  const spacing = anchors.length > 1
     ? anchors.slice(1).map((anchor, index) => anchor.cy - anchors[index].cy).sort((a, b) => a - b)[Math.floor((anchors.length - 1) / 2)]
     : imageHeight;
+  const cards = anchors.map(anchor => {
+    const top = anchor.cy - spacing * 0.2;
+    const bottom = anchor.cy + spacing * 0.8;
+    return { cy: anchor.cy, top, bottom, words: words.filter(word => word.cy >= top && word.cy < bottom) };
+  });
+  return { cards, spacing };
+}
+
+function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
+  const { cards: anchors } = findNtgCards(lines, imageWidth, imageHeight);
   const toRows = region => {
     const rows = [];
     region.slice().sort((a, b) => a.cy - b.cy).forEach(word => {
@@ -385,7 +448,7 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
     const dateMatch = cleaned.match(/(1[0-2]|0?[1-9])\s*\/\s*(3[01]|[12]\d|0?[1-9])\s*\/\s*(20\d{2}|\d{2})/);
     if (!dateMatch) return '';
     const date = `${dateMatch[1].padStart(2, '0')}/${dateMatch[2].padStart(2, '0')}/${dateMatch[3].length === 2 ? `20${dateMatch[3]}` : dateMatch[3]}`;
-    const times = Array.from(cleaned.slice(dateMatch.index + dateMatch[0].length).matchAll(/(\d{1,2})\s*:\s*(\d{2})/g))
+    const times = Array.from(cleaned.slice(dateMatch.index + dateMatch[0].length).matchAll(/(\d{1,2})\s*[:;.-]\s*(\d{2})/g))
       .map(match => `${match[1].padStart(2, '0')}${match[2]}`);
     const start = times[0] || '0800';
     const end = times[1] || (times[0] ? times[0] : '1600');
@@ -393,9 +456,7 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
   };
 
   return anchors.map((anchor, index) => {
-    const top = anchor.cy - anchorSpacing * 0.3;
-    const bottom = anchor.cy + anchorSpacing * 0.7;
-    const card = words.filter(word => word.cy >= top && word.cy < bottom);
+    const card = anchor.words;
     const idWord = card.find(word => word.x0 < 0.2 && /^\d{7}$/.test(word.text));
     const milesWord = card.find(word => /miles?$/i.test(word.text));
     const centerX = milesWord ? milesWord.cx : 0.45;
@@ -428,13 +489,14 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
 
     const equipmentText = card.map(word => word.text).join(' ');
     const isReefer = /reefer/i.test(equipmentText);
+    const isFlatbed = /flat\s*bed|\bflat\b/i.test(equipmentText);
     const tags = [/hazmat/i.test(equipmentText) && 'Hazmat', /tanker/i.test(equipmentText) && 'Tanker (N) Endorsement'].filter(Boolean);
     const shortDate = value => value.replace(/^(\d{2})\/(\d{2})\/\d{4}\s+(\d{4}).*$/, '$1/$2 $3');
     return {
       id: idWord ? idWord.text : `NTG-${Date.now()}-${index}`,
       postingCode: 'ANQ',
       visibilityGroup: 'ANQ',
-      eCode: isReefer ? 'VR' : 'VZ',
+      eCode: /straight\s*truck/i.test(equipmentText) ? 'D-LG' : /sprinter|box\s*truck/i.test(equipmentText) ? 'D-LG,D-ST' : isFlatbed ? 'F' : isReefer ? (/\bvan\b/i.test(equipmentText) ? 'VR' : tags.includes('Hazmat') ? 'RZ' : 'R') : tags.includes('Hazmat') ? 'VZ' : 'V',
       status: 'OPEN',
       tag: 'OPEN',
       route: `${origin.location.city}, ${origin.location.state} → ${destination.location.city}, ${destination.location.state}`,
@@ -477,7 +539,6 @@ function editDistance(a, b) {
   return row[b.length];
 }
 
-// DAT screenshots have no ZIPs, so garbled city names are matched against the real cities of the state.
 function correctDatCities(loads, zipData) {
   const normalize = value => String(value || '').toUpperCase().replace(/[^A-Z]/g, '');
   const cache = {};
@@ -524,7 +585,6 @@ function correctDatCities(loads, zipData) {
   return loads;
 }
 
-// Landstar truncates long city names ("NEWPORT NE...") and OCR drops letters; the ZIP's city fixes both.
 function correctCitiesFromZip(loads, zipData) {
   const normalize = value => String(value || '').toUpperCase().replace(/[^A-Z]/g, '');
   const fix = (load, cityKey, stateKey, zipKey) => {
@@ -547,14 +607,14 @@ function correctCitiesFromZip(loads, zipData) {
       return;
     }
     if (!location) return;
-    const zipCity = normalize(location.city);
     if (load[stateKey] && load[stateKey] !== location.state) return;
-    const similar = ocrCity.length >= 3 && (
-      zipCity.startsWith(ocrCity)
-      || editDistance(zipCity, ocrCity) <= Math.max(1, Math.floor(zipCity.length / 6))
-    );
-    if (!similar && ocrCity) return;
-    load[cityKey] = String(location.city).toUpperCase();
+    const postalCity = normalize(location.city);
+    // A ZIP's preferred postal city can differ from the actual load city.
+    if (!ocrCity || ocrCity === postalCity
+      || ocrCity.length >= 5 && editDistance(ocrCity, postalCity) <= 2
+      || truncated && postalCity.startsWith(ocrCity)) {
+      load[cityKey] = String(location.city).toUpperCase();
+    }
     load[stateKey] = location.state;
   };
   loads.forEach(load => {
@@ -859,8 +919,7 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       rateCrop: { centerY: (line.bbox.y0 + line.bbox.y1) / 2 },
       notes: `DAT screenshot does not include ZIP codes. ${trip ? 'Trip value was imported as miles; verify it.' : 'Trip miles were not recognized; enter them before export.'}`
     };
-    const laneRateKey = createLaneRateKey(selectedBroker, order);
-    const savedLaneRate = laneRateKey ? laneRates[laneRateKey] : '';
+    const savedLaneRate = getSavedLaneRate(laneRates, selectedBroker, order);
     if (!order.rateInput && savedLaneRate) {
       order.rateInput = savedLaneRate;
       order.rateSource = 'user-entered';
@@ -898,6 +957,7 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
 function getEquipmentDescription(eCode) {
   const code = eCode?.trim().toUpperCase();
   switch (code) {
+    case 'VE': return 'VAN:VAN';
     case 'VZ': return 'VAN:VAN, VAN:53VN, REFR:REFR';
     case 'VAN':
     case 'V': return 'VAN:VAN, VAN:53VN';
@@ -905,8 +965,10 @@ function getEquipmentDescription(eCode) {
     case 'VR': return 'VAN:VAN, REFR:REFR';
     case 'R': return 'REFR:REFR';
     case 'RZ': return 'REFR:REFR';
-    case 'F': return 'FLAT:53FL, FLAT:48FL, FLAT:FLAT, STEP:SD';
+    case 'F': return '48FL, 53FL, FLAT';
     case 'SD': return 'STEP:SD';
+    case 'D-LG': return 'D-LG';
+    case 'D-LG,D-ST': return 'D-LG, D-ST';
     default: return eCode || 'VAN:VAN';
   }
 }
@@ -941,6 +1003,26 @@ function formatRxoExcelDateTime(value) {
     const serial = Number(value);
     date = new Date(Date.UTC(1899, 11, 30) + Math.round(serial * 86400000));
   } else {
+    const timeRange = text.match(
+      /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):?(\d{2})\s*(AM|PM)?\s*(?:-|–|—|to)\s*(\d{1,2}):?(\d{2})\s*(AM|PM)?$/i
+    );
+    if (timeRange) {
+      const to24 = (h, m, meridiem) => {
+        let hour = Number(h);
+        if (meridiem) {
+          if (hour < 1 || hour > 12) return null;
+          hour = hour % 12 + (meridiem.toUpperCase() === 'PM' ? 12 : 0);
+        }
+        return hour > 23 || Number(m) > 59 ? null : `${String(hour).padStart(2, '0')}${m}`;
+      };
+      const start = to24(timeRange[4], timeRange[5], timeRange[6]);
+      const end = to24(timeRange[7], timeRange[8], timeRange[9] || timeRange[6]);
+      const year = timeRange[3].length === 2 ? `20${timeRange[3]}` : timeRange[3];
+      if (start && end) {
+        return `${timeRange[1].padStart(2, '0')}/${timeRange[2].padStart(2, '0')}/${year} ${start} - ${end}`;
+      }
+      return text;
+    }
     const usDateTime = text.match(
       /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):?(\d{2})\s*(AM|PM)?$/i
     );
@@ -972,9 +1054,22 @@ function formatRxoExcelDateTime(value) {
   return `${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())}/${date.getUTCFullYear()} ${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}`;
 }
 
-function formatRxoBusinessHours(dateTime) {
-  const date = String(dateTime || '').match(/^(\d{1,2}\/\d{1,2}\/\d{4})\b/)?.[1];
-  return date ? `${date} 0800 - 1600` : dateTime;
+function formatRxoBusinessHours(dateTime, endTime) {
+  const dateMatch = String(dateTime || '').match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/);
+  if (!dateMatch) return dateTime;
+  const [, month, day, yearText] = dateMatch;
+  const year = yearText.length === 2 ? `20${yearText}` : yearText;
+  const date = `${month.padStart(2, '0')}/${day.padStart(2, '0')}/${year}`;
+  return `${date} 0800 - ${endTime}`;
+}
+
+function applyRxoPayerBusinessHours(loads, customer) {
+  if (normalizeCustomerName(customer) !== rxoPayerCustomerName) return loads;
+  return loads.map(load => ({
+    ...load,
+    pickupTime: formatRxoBusinessHours(load.pickupTime || load.puDate, '2000'),
+    deliveryTime: formatRxoBusinessHours(load.deliveryTime || load.delDate, '1200')
+  }));
 }
 
 function decodeGmailBody(data) {
@@ -1034,6 +1129,252 @@ async function getGmailApiError(response, action) {
   return new Error(`Gmail ${action} failed (${response.status})${details ? `: ${details}` : '.'}`);
 }
 
+// ==========================================
+// C.H. ROBINSON LOAD-BOARD SCREENSHOT (date-grouped table with Weight and Bin/rate columns)
+// ==========================================
+function findChHeaders(lines) {
+  const words = lines.flatMap(line => line.words || []);
+  const find = pattern => words.filter(word => pattern.test(word.text)).sort((a, b) => a.bbox.y0 - b.bbox.y0)[0];
+  const headers = {
+    origin: find(/^origin$/i),
+    ost: find(/^ost$/i),
+    destination: find(/^destination$/i),
+    dst: find(/^dst$/i),
+    pickup: find(/^pickup$/i),
+    mode: find(/^mode$/i),
+    bin: find(/^bin$/i)
+  };
+  return Object.values(headers).every(Boolean) ? headers : null;
+}
+
+function getChColumnBounds(headers, imageWidth) {
+  const margin = imageWidth * 0.008;
+  return {
+    originLeft: headers.origin.bbox.x0 - margin * 1.5,
+    ostLeft: headers.ost.bbox.x0 - margin,
+    destinationLeft: headers.destination.bbox.x0 - margin,
+    dstLeft: headers.dst.bbox.x0 - margin,
+    pickupLeft: headers.pickup.bbox.x0 - margin,
+    modeLeft: headers.mode.bbox.x0 - margin,
+    binLeft: headers.bin.bbox.x0 - margin
+  };
+}
+
+// The board shows weights like "17.007.9 lbs" or "8.496 lbs" because OCR confuses commas and periods.
+function parseChWeight(text) {
+  const raw = String(text || '').match(/\d[\d.,]*/)?.[0]?.replace(/[.,]+$/, '');
+  if (!raw) return 0;
+  const parts = raw.split(/[.,]/);
+  if (parts.length === 1) return Number(parts[0]);
+  const last = parts[parts.length - 1];
+  const value = last.length === 3
+    ? Number(parts.join(''))
+    : Number(`${parts.slice(0, -1).join('')}.${last}`);
+  return Number.isFinite(value) ? Math.round(value) : 0;
+}
+
+function parseChScreenshotLines(lines, imageWidth, imageHeight, selectedBroker, laneRates, strips = {}) {
+  const headers = findChHeaders(lines);
+  if (!headers) return { loads: [], skippedLtl: 0, skippedNoDate: 0 };
+  const bounds = getChColumnBounds(headers, imageWidth);
+  const pad = value => String(value).padStart(2, '0');
+  const cellText = (line, left, right) => (line.words || [])
+    .filter(word => {
+      const center = (word.bbox.x0 + word.bbox.x1) / 2;
+      return center >= left && center < right;
+    })
+    .sort((a, b) => a.bbox.x0 - b.bbox.x0)
+    .map(word => word.text)
+    .join(' ');
+  const cleanCity = text => text.toUpperCase().replace(/[^A-Z\s.'-]/g, ' ').replace(/\s+/g, ' ').trim();
+  const sortedLines = [...lines].sort((a, b) => a.bbox.y0 - b.bbox.y0);
+  const rowCenters = sortedLines
+    .filter(line => /(?<!\d)\d{9}(?!\d)/.test(line.text))
+    .map(line => (line.bbox.y0 + line.bbox.y1) / 2);
+  const gaps = rowCenters.slice(1).map((center, index) => center - rowCenters[index]).filter(gap => gap > 4).sort((a, b) => a - b);
+  const rowGap = gaps[Math.floor(gaps.length / 2)] || imageHeight * 0.012;
+  const nearestStrip = (items, y) => (items || [])
+    .map(item => ({ ...item, distance: Math.abs(item.y - y) }))
+    .filter(item => item.distance <= rowGap * 0.55)
+    .sort((a, b) => a.distance - b.distance)[0];
+
+  let pickupDate = '';
+  let skippedLtl = 0;
+  let skippedNoDate = 0;
+  const seenIds = new Set();
+  const parsedRows = [];
+  sortedLines.forEach(line => {
+    const heading = line.text.match(/\b(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(20\d{2})\s*-\s*[A-Za-z]{3}/);
+    if (heading) {
+      pickupDate = `${pad(heading[1])}/${pad(heading[2])}/${heading[3]}`;
+      return;
+    }
+    const idMatch = line.text.match(/(?<!\d)(\d{9})(?!\d)/);
+    if (!idMatch || idMatch.index > 12 || seenIds.has(idMatch[1])) return;
+    if (!pickupDate) {
+      skippedNoDate += 1;
+      return;
+    }
+    const y = (line.bbox.y0 + line.bbox.y1) / 2;
+    const modeText = cellText(line, bounds.modeLeft, bounds.modeLeft + (bounds.binLeft - bounds.modeLeft) * 0.3)
+      .toUpperCase().replace(/[^A-Z,]/g, '');
+    const rowText = line.text.toUpperCase();
+    if (/LTL/.test(modeText) || /\sLTL\s/.test(` ${rowText} `)) {
+      skippedLtl += 1;
+      return;
+    }
+    seenIds.add(idMatch[1]);
+
+    const notes = ['Imported from CH screenshot; delivery date/time and miles are not on the board.'];
+    const origin = cleanCity(cellText(line, bounds.originLeft, bounds.ostLeft));
+    const destination = cleanCity(cellText(line, bounds.destinationLeft, bounds.dstLeft));
+    if (!origin || !destination) return;
+    const readState = (stripItems, left, right) => {
+      const fromStrip = nearestStrip(stripItems, y)?.text || '';
+      if (stateCodes.has(fromStrip)) return fromStrip;
+      const fromRow = cellText(line, left, right).toUpperCase().replace(/[^A-Z]/g, '');
+      return stateCodes.has(fromRow) ? fromRow : '';
+    };
+    const originState = readState(strips.ost, bounds.ostLeft, bounds.destinationLeft);
+    const destinationState = readState(strips.dst, bounds.dstLeft, bounds.pickupLeft);
+
+    const pickupCell = cellText(line, bounds.pickupLeft, bounds.modeLeft);
+    const time = pickupCell.match(/(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})/)
+      || line.text.match(/(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})/);
+    const validTime = time && Number(time[1]) <= 23 && Number(time[3]) <= 23 && Number(time[2]) <= 59 && Number(time[4]) <= 59;
+    if (!validTime) notes.push('Pickup hours could not be read; verify them.');
+    const pickupHours = validTime
+      ? `${pad(time[1])}${time[2]} - ${pad(time[3])}${time[4]}`
+      : '0800 - 1600';
+
+    const weight = parseChWeight(line.text.match(/(\d[\d.,]*)\s*[Il1|]bs\b/i)?.[1]);
+    if (!weight) notes.push('Weight could not be read; enter it before export.');
+
+    const binText = nearestStrip(strips.bin, y)?.text || '';
+    const rateText = binText.match(/\d{3,4}/)?.[0]
+      || line.text.match(/[Il1|]bs\s+(\d{3,4})\b/i)?.[1]
+      || '';
+    const rate = Number(rateText);
+    const hasRate = rate >= 100 && rate <= 20000;
+
+    const mode = /^R/.test(modeText) ? 'R' : /^F/.test(modeText) ? 'F' : 'V';
+    const order = {
+      id: idMatch[1],
+      postingCode: 'ANQ',
+      visibilityGroup: 'ANQ',
+      eCode: mode,
+      status: 'OPEN',
+      tag: 'OPEN',
+      route: '',
+      puDate: `PU: ${pickupDate}`,
+      delDate: 'DFL: Upcoming',
+      pickupTime: `${pickupDate} ${pickupHours}`,
+      deliveryTime: '',
+      origCity: origin,
+      origSt: originState,
+      origZip: '',
+      weight: weight ? `${weight} lbs` : '',
+      destCity: destination,
+      destSt: destinationState,
+      destZip: '',
+      miles: '',
+      planningComment: 'Imported from CH screenshot',
+      carrier: '',
+      driver: '',
+      truck: '',
+      trailer: '',
+      rateInput: hasRate ? String(rate) : '',
+      ...(hasRate ? { rateSource: 'user-entered' } : {}),
+      brokerable: 'false',
+      notes: notes.join(' ')
+    };
+    if (!order.rateInput) {
+      const savedLaneRate = getSavedLaneRate(laneRates, selectedBroker, order);
+      if (savedLaneRate) {
+        order.rateInput = savedLaneRate;
+        order.rateSource = 'user-entered';
+      }
+    }
+    parsedRows.push(order);
+  });
+
+  // A state the OCR could not read is taken from another row of this screenshot with the same city.
+  const statesByCity = {};
+  const record = (city, state) => {
+    if (!state) return;
+    const counts = statesByCity[city] = statesByCity[city] || {};
+    counts[state] = (counts[state] || 0) + 1;
+  };
+  parsedRows.forEach(order => {
+    record(order.origCity, order.origSt);
+    record(order.destCity, order.destSt);
+  });
+  const likelyState = city => Object.entries(statesByCity[city] || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+  const loads = parsedRows.map(order => {
+    const origSt = order.origSt || likelyState(order.origCity);
+    const destSt = order.destSt || likelyState(order.destCity);
+    const missingState = !origSt || !destSt;
+    return {
+      ...order,
+      origSt,
+      destSt,
+      route: `${order.origCity}${origSt ? `, ${origSt}` : ''} → ${order.destCity}${destSt ? `, ${destSt}` : ''}`,
+      notes: missingState ? `${order.notes} A state could not be read; enter it before export.` : order.notes
+    };
+  });
+  return { loads, skippedLtl, skippedNoDate };
+}
+
+async function readChScreenshot(worker, canvas, lines, brokerName, laneRates, scale) {
+  const headers = findChHeaders(lines);
+  if (!headers) return { loads: [], skippedLtl: 0, skippedNoDate: 0 };
+  const bounds = getChColumnBounds(headers, canvas.width);
+  // Reading each narrow column on its own is far more accurate than reading it inside the full table.
+  const readStrip = async (left, right, whitelist) => {
+    const x0 = Math.max(0, Math.round(left));
+    const x1 = Math.min(canvas.width, Math.round(right));
+    if (x1 - x0 < 8) return [];
+    const factor = Math.max(1, 4 / scale);
+    const margin = 40;
+    const strip = document.createElement('canvas');
+    strip.width = Math.round((x1 - x0) * factor) + margin * 2;
+    strip.height = Math.round(canvas.height * factor) + margin * 2;
+    const context = strip.getContext('2d', { willReadFrequently: true });
+    if (!context) return [];
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, strip.width, strip.height);
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(canvas, x0, 0, x1 - x0, canvas.height, margin, margin, (x1 - x0) * factor, canvas.height * factor);
+    // Highlighted rows (yellow, green, gray) confuse OCR, so light backgrounds are whitened while dark text stays.
+    const pixels = context.getImageData(0, 0, strip.width, strip.height);
+    for (let offset = 0; offset < pixels.data.length; offset += 4) {
+      const luminance = pixels.data[offset] * 0.299 + pixels.data[offset + 1] * 0.587 + pixels.data[offset + 2] * 0.114;
+      const value = luminance >= 205 ? 255 : luminance;
+      pixels.data[offset] = value;
+      pixels.data[offset + 1] = value;
+      pixels.data[offset + 2] = value;
+      pixels.data[offset + 3] = 255;
+    }
+    context.putImageData(pixels, 0, 0);
+    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: whitelist });
+    const { data } = await worker.recognize(strip, {}, { blocks: true });
+    return (data.blocks || [])
+      .flatMap(block => block.paragraphs.flatMap(paragraph => paragraph.lines))
+      .map(line => ({
+        y: ((line.bbox.y0 + line.bbox.y1) / 2 - margin) / factor,
+        text: line.text.replace(/\s+/g, '')
+      }));
+  };
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const strips = {
+    ost: await readStrip(bounds.ostLeft, bounds.destinationLeft, letters),
+    dst: await readStrip(bounds.dstLeft, bounds.pickupLeft, letters),
+    bin: await readStrip(bounds.binLeft, canvas.width, '0123456789')
+  };
+  await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
+  return parseChScreenshotLines(lines, canvas.width, canvas.height, brokerName, laneRates, strips);
+}
+
 function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
   const lines = String(messageText || '')
     .replace(/\r/g, '\n')
@@ -1089,8 +1430,7 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
       brokerable: 'false',
       notes: 'Delivery date/time not included in email; please enter before export.'
     };
-    const laneRateKey = createLaneRateKey(selectedBroker, order);
-    const savedLaneRate = laneRateKey ? laneRates[laneRateKey] : '';
+    const savedLaneRate = getSavedLaneRate(laneRates, selectedBroker, order);
     if (savedLaneRate) {
       order.rateInput = savedLaneRate;
       order.rateSource = 'user-entered';
@@ -1099,7 +1439,7 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
   };
 
   for (let index = 0; index < lines.length; index += 1) {
-    const dateHeading = lines[index].match(/\b(\d{1,2}\/\d{1,2}\/(?:\d{2}|\d{4}))\s*-\s*[A-Za-z]{3,9}\b/);
+    const dateHeading = lines[index].match(/\b(\d{1,2}\/(\d{1,2})\/(?:\d{2}|\d{4}))\s*-\s*[A-Za-z]{3,9}\b/);
     if (dateHeading) pickupDate = parseDate(dateHeading[1]);
 
     const inlineRow = lines[index].match(
@@ -1141,7 +1481,7 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
     );
     index = nextIndex - 1;
   }
-  return loads;
+  return autoFillLoadZipCodes(loads);
 }
 
 function toExcelDateTime(value, fallbackDateValue = '') {
@@ -1204,6 +1544,15 @@ function toExcelDateTime(value, fallbackDateValue = '') {
   return (date.getTime() - Date.UTC(1899, 11, 30)) / 86400000;
 }
 
+function normalizeMilesValue(value) {
+  const compact = String(value ?? '').replace(/[\s,]/g, '');
+  if (/^\d{1,4}(\.\d+)?$/.test(compact)) return compact;
+  const decimal = compact.match(/(\d{1,4})\.(\d)/);
+  if (decimal) return `${decimal[1]}.${decimal[2]}`;
+  const digits = compact.replace(/\D/g, '');
+  return digits.length >= 7 ? digits.slice(0, -6) : digits;
+}
+
 function getLandstarEquipmentCode(value) {
   const code = String(value || '').trim().toUpperCase();
   const equipmentCodes = {
@@ -1219,6 +1568,7 @@ function getLandstarEquipmentCode(value) {
     SD: 'STEP'
   };
   if (equipmentCodes[code]) return equipmentCodes[code];
+  if (code.startsWith('D-LG')) return 'D-LG';
   if (code.includes('53 FEET') || code.includes('53FT') || code.includes('53 FT')) return '53VN';
   if (code.startsWith('VAN')) return 'VAN';
   if (code.startsWith('REFR') || code.startsWith('REEFER')) return 'REFR';
@@ -1256,11 +1606,15 @@ function getLandstarCity(value, location) {
 
 const rxoCustomerName = 'R X O 2429200 - ATZ';
 const rxoPayerCustomerName = 'R X O 2429200 - ATZ P';
+const ntgCustomerName = 'Nolan 965974 - ATZ H';
 
 function normalizeCustomerName(name) {
   const normalized = String(name || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
   if (normalized === 'RXO2429200ATZP') {
     return rxoPayerCustomerName;
+  }
+  if (['NOLAN965974ATZH', 'NTG965974ATZH'].includes(normalized)) {
+    return ntgCustomerName;
   }
   if (normalized === 'RXO' || normalized === 'RXL' || normalized === 'RXO2429200ATZ') {
     return rxoCustomerName;
@@ -1273,8 +1627,23 @@ function isRxoCustomer(name) {
   return normalized === rxoCustomerName || normalized === rxoPayerCustomerName;
 }
 
+function isParaCustomer(name) {
+  return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === 'PARA1522166ATZ';
+}
+
 function isCh593772Customer(name) {
   return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === 'CH593772ATZ';
+}
+
+const importStatusPreservationCustomers = new Set([
+  'PARA1522166ATZ',
+  'RXO2429200ATZP',
+  'NOLAN965974ATZH'
+]);
+
+function preservesImportedLoadStatus(name) {
+  const normalized = normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return importStatusPreservationCustomers.has(normalized);
 }
 
 async function getGoogleRoadMiles(order) {
@@ -1299,8 +1668,41 @@ async function getGoogleRoadMiles(order) {
   return String(result.miles);
 }
 
+// ==========================================
+// DAT RATECAST API AUTO-FETCH HELPER
+// ==========================================
+async function fetchDatRateForImport(order, selectedBroker, laneRates) {
+  // 1. Check local saved rates first
+  const savedLaneRate = getSavedLaneRate(laneRates, selectedBroker, order);
+  if (savedLaneRate) {
+    return { rateInput: savedLaneRate, rateSource: 'user-entered' };
+  }
+
+  // 2. Fetch live rate automatically via backend DAT Ratecast API
+  try {
+    const response = await fetch('/api/dat-rate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        origin: { city: order.origCity, state: order.origSt, zip: order.origZip },
+        destination: { city: order.destCity, state: order.destSt, zip: order.destZip },
+        equipment: order.eCode
+      })
+    });
+    
+    const data = await response.json();
+    if (data && data.rate) {
+      return { rateInput: String(data.rate), rateSource: 'dat-api' };
+    }
+  } catch (error) {
+    console.error(`Could not auto-fetch DAT rate for order ${order.id}:`, error);
+  }
+
+  return { rateInput: '', rateSource: undefined };
+}
+
 function normalizeLoadId(value) {
-  const text = String(value || '').trim();
+  const text = String(value || '').trim().replace(/-ALT[A-Z]+$/i, '');
   const digits = text.replace(/\D/g, '');
   return digits || text.toUpperCase();
 }
@@ -1333,20 +1735,252 @@ function createLaneDayKey(order) {
   return JSON.stringify([origin, originState, destination, destinationState, pickupDate]);
 }
 
-function removeDuplicateLaneDayLoads(loads) {
-  const seenLaneDays = new Set();
+// Earliest pickup first; loads without a readable pickup date go last.
+function getPickupSortValue(order) {
+  const text = String(order.pickupTime || order.puDate || '');
+  const us = text.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b(?:\s+(\d{2})(\d{2}))?/);
+  if (us) {
+    const year = us[3].length === 2 ? Number(`20${us[3]}`) : Number(us[3]);
+    return Date.UTC(year, Number(us[1]) - 1, Number(us[2]), Number(us[4] || 0), Number(us[5] || 0));
+  }
+  const iso = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  return iso ? Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3])) : Number.MAX_SAFE_INTEGER;
+}
+
+function removeDuplicateLoadImports(loads) {
+  const seenLoadSchedules = new Set();
   let duplicateCount = 0;
   const uniqueLoads = loads.filter(load => {
+    const loadId = normalizeLoadId(load.sourceLoadId || load.id);
+    const scheduleKey = createLaneScheduleKey(load);
+    if (!loadId || !scheduleKey) return true;
+    const key = JSON.stringify([loadId, scheduleKey]);
+    if (seenLoadSchedules.has(key)) {
+      duplicateCount += 1;
+      return false;
+    }
+    seenLoadSchedules.add(key);
+    return true;
+  });
+  return { loads: uniqueLoads, duplicateCount };
+}
+
+function countPreviouslyExportedLoads(loads, records, { idOnly = false } = {}) {
+  const ids = new Set(records.ids || []);
+  const laneDays = new Set(records.laneDays || []);
+  let exportedCount = 0;
+  const exportedLoadIds = new Set();
+  loads.forEach(load => {
+    const key = createLaneDayKey(load);
+    const worked = (ids.has(normalizeLoadId(load.id)) && (!key || laneDays.has(key)))
+      || (!idOnly && Boolean(key) && laneDays.has(key));
+    if (worked) {
+      exportedCount += 1;
+      exportedLoadIds.add(normalizeLoadId(load.id));
+    }
+  });
+  return { exportedCount, exportedLoadIds };
+}
+
+function keepPreviouslyExportedLoadsOpen(loads, exportedLoadIds, customer) {
+  return loads.map(load => exportedLoadIds.has(normalizeLoadId(load.id))
+    ? { ...load, status: 'OPEN', tag: 'OPEN' }
+    : load);
+}
+
+function getReimportedLoadStatus(existingLoad, wasPreviouslyExported) {
+  return wasPreviouslyExported || existingLoad.status === 'ENT'
+    ? { status: 'OPEN', tag: 'OPEN' }
+    : { status: existingLoad.status, tag: existingLoad.tag };
+}
+
+function getImportedLoadKey(load) {
+  const baseId = getBaseLoadId(load);
+  const key = normalizeLoadId(baseId);
+  if (!key || /^(?:IMG|IMP|NTG|DAT)-\d+-\d+$/i.test(baseId)) {
+    throw new Error('An imported load has no readable load number. Use a list with load numbers. Existing loads were not deleted.');
+  }
+  return key;
+}
+
+function replaceImportedCustomerLoads(customer, importedLoads, existingLoads) {
+  if (!preservesImportedLoadStatus(customer)) return null;
+  if (!importedLoads.length) {
+    throw new Error('The imported load list is empty. Existing loads were not deleted.');
+  }
+  const loadKey = load => normalizeLoadId(getBaseLoadId(load));
+  const existingById = new Map();
+  existingLoads.forEach(load => {
+    const key = loadKey(load);
+    if (!existingById.has(key)) existingById.set(key, load);
+  });
+  const importedById = new Map();
+  const duplicatedIds = new Set();
+  importedLoads.forEach(load => {
+    const key = getImportedLoadKey(load);
+    if (importedById.has(key)) {
+      duplicatedIds.add(key);
+      return;
+    }
+    importedById.set(key, load);
+  });
+  const mergedLoads = Array.from(importedById, ([key, load]) => {
+    const existing = existingById.get(key);
+    const populatedFields = Object.fromEntries(Object.entries(load).filter(([, value]) =>
+      value !== undefined && value !== null && String(value).trim() !== ''
+    ));
+    const merged = { ...existing, ...populatedFields, id: key, sourceLoadId: key };
+    if (existing) {
+      ['rateInput', 'rateSource', 'carrier', 'driver', 'truck', 'trailer', 'notes'].forEach(field => {
+        if (String(existing[field] || '').trim()) merged[field] = existing[field];
+      });
+      if (isNewDayForExistingLoad(existing, load)) delete merged.landstarExportedAt;
+    }
+    if (existing || duplicatedIds.has(key)) {
+      merged.status = 'OPEN';
+      merged.tag = 'OPEN';
+    }
+    if (isParaCustomer(customer) && ['ENT', 'OPEN'].includes(load.screenshotStatus)) {
+      merged.status = load.screenshotStatus;
+      merged.tag = load.screenshotStatus;
+      if (load.screenshotStatus === 'OPEN') delete merged.landstarExportedAt;
+    }
+    delete merged.screenshotStatus;
+    return merged;
+  });
+  let laneDayDuplicateCount = 0;
+  const seenLaneDays = new Set();
+  const isRxoPayer = normalizeCustomerName(customer) === rxoPayerCustomerName;
+  const loads = isRxoPayer ? mergedLoads.filter(load => {
     const key = createLaneDayKey(load);
     if (!key) return true;
     if (seenLaneDays.has(key)) {
-      duplicateCount += 1;
+      laneDayDuplicateCount += 1;
       return false;
     }
     seenLaneDays.add(key);
     return true;
+  }) : mergedLoads;
+  return {
+    loads,
+    laneDayDuplicateCount,
+    usesScreenshotStatus: isParaCustomer(customer) && importedLoads.some(load => ['ENT', 'OPEN'].includes(load.screenshotStatus)),
+    duplicateCount: importedLoads.length - mergedLoads.length,
+    removedCount: existingLoads.filter(load => !importedById.has(loadKey(load))).length
+  };
+}
+
+function getImportReplacementMessage(replacement) {
+  return replacement
+    ? `• Full list replaced; missing loads deleted (including ENT): ${replacement.removedCount}\n` +
+      `• Duplicate load numbers skipped: ${replacement.duplicateCount}; ${replacement.usesScreenshotStatus ? 'screenshot colors applied: red = ENT, non-red = OPEN' : 'existing load numbers set to OPEN'}.\n`
+      + (replacement.laneDayDuplicateCount ? `• Same-lane/pickup-day duplicates skipped: ${replacement.laneDayDuplicateCount} (first load kept).\n` : '')
+    : '';
+}
+
+function isNewDayForExistingLoad(existingLoad, importedLoad) {
+  const existingKey = createLaneDayKey(existingLoad);
+  const importedKey = createLaneDayKey(importedLoad);
+  return Boolean(existingKey && importedKey && existingKey !== importedKey);
+}
+
+function normalizeScheduleValue(value) {
+  const text = String(value || '').trim().toUpperCase();
+  if (!text) return '';
+
+  const usDate = text.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/);
+  const isoDate = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  const date = usDate
+    ? `${usDate[3].length === 2 ? `20${usDate[3]}` : usDate[3]}-${usDate[1].padStart(2, '0')}-${usDate[2].padStart(2, '0')}`
+    : isoDate
+      ? `${isoDate[1]}-${isoDate[2].padStart(2, '0')}-${isoDate[3].padStart(2, '0')}`
+      : '';
+  const timeText = text
+    .replace(/\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g, ' ')
+    .replace(/\b\d{4}-\d{1,2}-\d{1,2}\b/g, ' ');
+  const times = Array.from(timeText.matchAll(/\b(\d{1,2}):?(\d{2})\s*(AM|PM)?\b/g))
+    .map(([, hourText, minuteText, meridiem]) => {
+      let hour = Number(hourText);
+      const minute = Number(minuteText);
+      if (meridiem) hour = hour % 12 + (meridiem === 'PM' ? 12 : 0);
+      return hour <= 23 && minute <= 59
+        ? `${String(hour).padStart(2, '0')}${String(minute).padStart(2, '0')}`
+        : '';
+    })
+    .filter(Boolean);
+
+  return JSON.stringify([date, times.length ? times : timeText.replace(/\s+/g, ' ').trim()]);
+}
+
+function createLaneScheduleKey(order) {
+  const laneDayKey = createLaneDayKey(order);
+  if (!laneDayKey) return '';
+  return JSON.stringify([
+    laneDayKey,
+    normalizeScheduleValue(order.pickupTime || order.puDate),
+    normalizeScheduleValue(order.deliveryTime || order.delDate)
+  ]);
+}
+
+function markDifferentScheduleLoadsEnt(loads, existingLoads = [], customer) {
+  if (preservesImportedLoadStatus(customer)) return loads;
+  const schedulesByLaneDay = new Map();
+  [...existingLoads, ...loads].forEach(load => {
+    const laneDayKey = createLaneDayKey(load);
+    const scheduleKey = createLaneScheduleKey(load);
+    if (!laneDayKey || !scheduleKey) return;
+    const schedules = schedulesByLaneDay.get(laneDayKey) || new Set();
+    schedules.add(scheduleKey);
+    schedulesByLaneDay.set(laneDayKey, schedules);
   });
-  return { loads: uniqueLoads, duplicateCount };
+
+  return loads.map(load => {
+    const laneDayKey = createLaneDayKey(load);
+    const schedules = laneDayKey ? schedulesByLaneDay.get(laneDayKey) : null;
+    if (!schedules || schedules.size < 2) return load;
+    return { ...load, status: 'ENT', tag: 'ENT' };
+  });
+}
+
+function toAlphabeticalSuffix(index) {
+  let value = Number(index);
+  let suffix = '';
+  while (value >= 0) {
+    suffix = String.fromCharCode(65 + (value % 26)) + suffix;
+    value = Math.floor(value / 26) - 1;
+  }
+  return suffix;
+}
+
+function getBaseLoadId(order) {
+  return String(order?.sourceLoadId || order?.id || '').trim().replace(/-ALT[A-Z]+$/i, '');
+}
+
+function assignImportedLoadIdentity(importedLoad, existingLoads, stagedLoads) {
+  const fallbackId = String(importedLoad?.id || '').trim();
+  const baseId = getBaseLoadId(importedLoad) || fallbackId;
+  if (!baseId) return importedLoad;
+
+  const normalizedLoad = {
+    ...importedLoad,
+    sourceLoadId: baseId
+  };
+  const relatedLoads = [...existingLoads, ...stagedLoads].filter(load => getBaseLoadId(load) === baseId);
+  const sameLaneDayLoad = relatedLoads.find(load => !isNewDayForExistingLoad(load, normalizedLoad));
+  if (sameLaneDayLoad) {
+    return { ...normalizedLoad, id: String(sameLaneDayLoad.id) };
+  }
+
+  const usedIds = new Set([...existingLoads, ...stagedLoads].map(load => String(load.id)));
+  if (!usedIds.has(baseId)) return { ...normalizedLoad, id: baseId };
+
+  let variantIndex = 0;
+  let variantId = `${baseId}-ALT${toAlphabeticalSuffix(variantIndex)}`;
+  while (usedIds.has(variantId)) {
+    variantIndex += 1;
+    variantId = `${baseId}-ALT${toAlphabeticalSuffix(variantIndex)}`;
+  }
+  return { ...normalizedLoad, id: variantId };
 }
 
 function createLaneRateKey(customer, order) {
@@ -1358,12 +1992,34 @@ function createLaneRateKey(customer, order) {
     normalizeCustomerName(customer),
     origin,
     normalize(order.origSt),
-    normalize(order.origZip),
+    '',
     destination,
     normalize(order.destSt),
-    normalize(order.destZip),
+    '',
     normalize(order.eCode)
   ]);
+}
+
+function getSavedLaneRate(laneRates, customer, order) {
+  const key = createLaneRateKey(customer, order);
+  if (!key) return '';
+  if (laneRates[key]) return laneRates[key];
+  // Older saved keys include ZIPs. Keep that history usable without rewriting it.
+  for (const [savedKey, rate] of Object.entries(laneRates).reverse()) {
+    let parts;
+    try {
+      parts = JSON.parse(savedKey);
+    } catch (error) {
+      console.error('Could not read a saved lane-rate key:', savedKey, error);
+      continue;
+    }
+    if (!Array.isArray(parts) || parts.length !== 8) continue;
+    const legacyOrder = {
+      origCity: parts[1], origSt: parts[2], destCity: parts[4], destSt: parts[5], eCode: parts[7]
+    };
+    if (createLaneRateKey(parts[0], legacyOrder) === key && rate) return rate;
+  }
+  return '';
 }
 
 function normalizeBrokerList(value) {
@@ -1374,6 +2030,7 @@ function normalizeBrokerList(value) {
       if (!normalizedBrokers.includes(name)) normalizedBrokers.push(name);
     });
   }
+  if (!normalizedBrokers.includes(ntgCustomerName)) normalizedBrokers.push(ntgCustomerName);
   return normalizedBrokers;
 }
 
@@ -1517,6 +2174,102 @@ export default function App() {
   }, [brokers, customerOrdersMap]);
 
   useEffect(() => {
+    if (!supabase) return undefined;
+    let cancelled = false;
+    let applying = false;
+    let applyAgain = false;
+    const applyEmailLoads = async () => {
+      if (applying) {
+        applyAgain = true;
+        return;
+      }
+      applying = true;
+      try {
+        const rows = [];
+        let lastId = null;
+        while (!cancelled) {
+          let query = supabase.from('email_loads').select('id, customer, load')
+            .eq('status', 'pending').order('id').limit(100);
+          if (lastId !== null) query = query.gt('id', lastId);
+          const { data, error } = await query;
+          if (error) throw error;
+          rows.push(...(data || []));
+          if (!data || data.length < 100) break;
+          lastId = data[data.length - 1].id;
+        }
+        if (cancelled || !rows.length) return;
+        const latestRates = JSON.parse(localStorage.getItem('landstar_laneRates') || '{}');
+        rows.forEach(row => {
+          if (!row.load?.id) return;
+          const savedRate = getSavedLaneRate(latestRates, row.customer, row.load);
+          if (savedRate && !(Number(row.load.rateInput) > 0)) {
+            row.load = { ...row.load, rateInput: savedRate, rateSource: 'user-entered' };
+          }
+        });
+        const fullLists = new Map();
+        rows.forEach(row => {
+          const customer = normalizeCustomerName(row.customer);
+          if (!preservesImportedLoadStatus(customer)) return;
+          getImportedLoadKey(row.load);
+          const loads = fullLists.get(customer) || [];
+          loads.push(row.load);
+          fullLists.set(customer, loads);
+        });
+        setCustomerOrdersMap(current => {
+          const next = { ...current };
+          rows.forEach(row => {
+            const customer = normalizeCustomerName(row.customer);
+            if (!customer || !row.load?.id || fullLists.has(customer)) return;
+            const existing = [...(Array.isArray(next[customer]) ? next[customer] : [])];
+            const records = getExportedRecordsForCustomer(getLatestExportedRegistry(), customer);
+            const { exportedLoadIds } = countPreviouslyExportedLoads([row.load], records);
+            const existingIndex = existing.findIndex(load =>
+              normalizeLoadId(load.id) === normalizeLoadId(row.load.id)
+              && !isNewDayForExistingLoad(load, row.load)
+            );
+            if (existingIndex >= 0) {
+              if (!exportedLoadIds.has(normalizeLoadId(row.load.id))) return;
+              existing[existingIndex] = { ...existing[existingIndex], status: 'OPEN', tag: 'OPEN' };
+              next[customer] = existing;
+              return;
+            }
+            next[customer] = [
+              ...keepPreviouslyExportedLoadsOpen([row.load], exportedLoadIds, customer),
+              ...existing
+            ];
+          });
+          fullLists.forEach((loads, customer) => {
+            next[customer] = replaceImportedCustomerLoads(customer, loads, current[customer] || []).loads;
+          });
+          return next;
+        });
+        const validIds = rows.filter(row => normalizeCustomerName(row.customer) && row.load?.id).map(row => row.id);
+        if (validIds.length) {
+          const { error } = await supabase.from('email_loads').update({ status: 'applied' }).in('id', validIds);
+          if (error) throw error;
+        }
+      } catch (error) {
+        console.error('Automatic email load import failed:', error);
+        if (!cancelled) setStorageError(`Automatic email import failed: ${error.message || 'Could not update the load list.'}`);
+      } finally {
+        applying = false;
+        if (applyAgain && !cancelled) {
+          applyAgain = false;
+          applyEmailLoads();
+        }
+      }
+    };
+    applyEmailLoads();
+    const channel = supabase.channel('email-loads-apply')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'email_loads' }, applyEmailLoads)
+      .subscribe();
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  useEffect(() => {
     const cleanupExpiredLoads = () => {
       setCustomerOrdersMap(current => removeExpiredExportedLoads(current));
     };
@@ -1582,7 +2335,7 @@ export default function App() {
       const laneRateKey = createLaneRateKey(selectedBroker, updatedOrder);
       const numericRate = Number(String(value).replace(/[$,]/g, ''));
       if (laneRateKey && numericRate > 0 && Number.isFinite(numericRate)) {
-        const nextLaneRates = { ...laneRates, [laneRateKey]: String(value).trim() };
+        const nextLaneRates = { ...laneRates, [laneRateKey]: String(numericRate) };
         setLaneRates(nextLaneRates);
         try {
           localStorage.setItem('landstar_laneRates', JSON.stringify(nextLaneRates));
@@ -1597,8 +2350,7 @@ export default function App() {
         ));
       }
     } else if (['origCity', 'origSt', 'origZip', 'destCity', 'destSt', 'destZip', 'eCode'].includes(field)) {
-      const laneRateKey = createLaneRateKey(selectedBroker, updatedOrder);
-      const savedRate = laneRateKey ? laneRates[laneRateKey] : '';
+      const savedRate = getSavedLaneRate(laneRates, selectedBroker, updatedOrder);
       if (savedRate) {
         updatedOrder.rateInput = savedRate;
         updatedOrder.rateSource = 'user-entered';
@@ -1659,7 +2411,6 @@ export default function App() {
 
   const handleSave = () => {
     if (!selectedOrder) return;
-    alert(`Order #${selectedOrder.id} saved and secured successfully for ${selectedBroker}!`);
   };
 
   const handleDelete = () => {
@@ -1877,20 +2628,33 @@ export default function App() {
         return;
       }
 
+      const payerLoads = applyRxoPayerBusinessHours(parsedLoads, selectedBroker);
       const latestRegistry = getLatestExportedRegistry();
       const exportedRecords = getExportedRecordsForCustomer(latestRegistry, selectedBroker);
-      const exportedIds = new Set(exportedRecords.ids);
-      const exportedLaneDays = new Set(exportedRecords.laneDays || []);
-      const notExported = parsedLoads.filter(load => {
-        const laneDayKey = createLaneDayKey(load);
-        return !exportedIds.has(normalizeLoadId(load.id)) && (!laneDayKey || !exportedLaneDays.has(laneDayKey));
-      });
-      const { loads: uniqueLoads, duplicateCount } = isRxoCustomer(selectedBroker)
-        ? removeDuplicateLaneDayLoads(notExported)
-        : { loads: notExported, duplicateCount: 0 };
+      const { exportedCount, exportedLoadIds } = countPreviouslyExportedLoads(payerLoads, exportedRecords);
+      const { loads: deduplicatedLoads, duplicateCount } = isRxoCustomer(selectedBroker)
+        ? removeDuplicateLoadImports(payerLoads)
+        : { loads: payerLoads, duplicateCount: 0 };
+      const existingOrders = customerOrdersMap[selectedBroker] || [];
+      const uniqueLoads = keepPreviouslyExportedLoadsOpen(
+        markDifferentScheduleLoadsEnt(deduplicatedLoads, existingOrders, selectedBroker),
+        exportedLoadIds,
+        selectedBroker
+      );
       if (!uniqueLoads.length) {
-        alert(`Found ${parsedLoads.length} loads, but they were all previously exported or duplicated.`);
+        alert(`Found ${parsedLoads.length} loads, but they were all duplicates.`);
         return;
+      }
+
+      // Auto-fetch DAT rates for Gmail imported loads if missing
+      for (const load of uniqueLoads) {
+        if (!Number(load.rateInput) > 0) {
+          const datRateInfo = await fetchDatRateForImport(load, selectedBroker, laneRates);
+          if (datRateInfo.rateInput) {
+            load.rateInput = datRateInfo.rateInput;
+            load.rateSource = datRateInfo.rateSource;
+          }
+        }
       }
 
       let mileageCalculationError = '';
@@ -1914,14 +2678,27 @@ export default function App() {
         }
       }
 
-      const existingOrders = customerOrdersMap[selectedBroker] || [];
-      const merged = new Map(existingOrders.map(load => [String(load.id), load]));
+      const resolvedLoads = [];
       uniqueLoads.forEach(load => {
+        resolvedLoads.push(assignImportedLoadIdentity(load, existingOrders, resolvedLoads));
+      });
+      const merged = new Map(existingOrders.map(load => [String(load.id), load]));
+      resolvedLoads.forEach(load => {
         const existingLoad = merged.get(String(load.id));
+        const keepsEnt = existingLoad && existingLoad.status === 'ENT' && !isNewDayForExistingLoad(existingLoad, load);
+        const wasPreviouslyExported = exportedLoadIds.has(normalizeLoadId(load.id));
+        const preserveStatus = preservesImportedLoadStatus(selectedBroker);
         merged.set(String(load.id), existingLoad
           ? {
             ...existingLoad,
             ...load,
+            ...(preserveStatus
+              ? getReimportedLoadStatus(existingLoad, wasPreviouslyExported)
+              : {}),
+            ...(!preserveStatus && wasPreviouslyExported
+              ? { status: 'OPEN', tag: 'OPEN' }
+              : !preserveStatus && keepsEnt ? { status: 'ENT', tag: 'ENT' } : {}),
+            ...(isNewDayForExistingLoad(existingLoad, load) ? { landstarExportedAt: undefined } : {}),
             miles: load.miles || existingLoad.miles,
             rateInput: existingLoad.rateInput || load.rateInput,
             rateSource: existingLoad.rateSource || load.rateSource
@@ -1929,15 +2706,32 @@ export default function App() {
           : load);
       });
       const mergedList = Array.from(merged.values());
-      const { loads: finalLoads, duplicateCount: existingDuplicates } = isRxoCustomer(selectedBroker)
-        ? removeDuplicateLaneDayLoads(mergedList)
+      const { loads: mergedFinalLoads, duplicateCount: existingDuplicates } = isRxoCustomer(selectedBroker)
+        ? removeDuplicateLoadImports(mergedList)
         : { loads: mergedList, duplicateCount: 0 };
+      const replacement = replaceImportedCustomerLoads(selectedBroker, payerLoads, existingOrders);
+      const finalLoads = replacement ? replacement.loads : mergedFinalLoads;
       const nextOrders = { ...customerOrdersMap, [selectedBroker]: finalLoads };
       const saved = persistAppData(brokers, nextOrders);
       setCustomerOrdersMap(nextOrders);
-      setSelectedOrder(finalLoads.find(load => load.id === uniqueLoads[0].id) || finalLoads[0]);
+      setSelectedOrder(finalLoads.find(load => load.id === resolvedLoads[0].id) || finalLoads[0]);
       setSelectedIds([]);
-      alert(`Imported ${uniqueLoads.length} loads from Gmail for ${selectedBroker}.${duplicateCount + existingDuplicates ? ` Removed ${duplicateCount + existingDuplicates} duplicate load${duplicateCount + existingDuplicates === 1 ? '' : 's'}.` : ''}${parsedLoads.length - notExported.length ? ` Skipped ${parsedLoads.length - notExported.length} previously exported load${parsedLoads.length - notExported.length === 1 ? '' : 's'}.` : ''}${saved ? ' Loads are saved in this browser.' : ' Saving failed; keep this page open and check browser storage.'} Delivery dates were not in the email and are left blank for you to fill in.${mileageCalculationError ? ` Driving miles were not calculated and remain blank where no prior miles were saved. You can still access the loads and enter miles manually. Google Routes reported: ${mileageCalculationError}` : ''}`);
+      
+      alert(
+        `✉️ Gmail Import Complete for ${selectedBroker}:\n` +
+        `• Recognized loads: ${parsedLoads.length}\n` +
+        `• Unique loads imported: ${replacement ? finalLoads.length : uniqueLoads.length}\n` +
+        `• Total in list: ${finalLoads.length}\n` +
+        getImportReplacementMessage(replacement) +
+        (exportedCount > 0
+          ? preservesImportedLoadStatus(selectedBroker)
+            ? `• Previously exported; moved to OPEN: ${exportedCount}\n`
+            : `• Previously exported; kept OPEN: ${exportedCount}\n`
+          : '') +
+        (saved ? '• Status: Saved successfully in browser storage.' : '• Warning: Save failed, check browser storage.')
+      );
+
+      if (!saved || mileageCalculationError) alert(`${saved ? '' : 'Saving failed; keep this page open and check browser storage. '}${mileageCalculationError ? `Driving miles were not calculated and remain blank where no prior miles were saved. You can still enter miles manually. Google Routes reported: ${mileageCalculationError}` : ''}`.trim());
     } catch (error) {
       console.error('Gmail load import failed:', error);
       alert(`Gmail import failed: ${error.message || 'Check your Google OAuth client ID, Gmail API setup, and search query.'}`);
@@ -1951,7 +2745,7 @@ export default function App() {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       try {
         const data = new Uint8Array(evt.target.result);
         const workbook = XLSX.read(data, { type: 'array', cellDates: false });
@@ -1983,6 +2777,7 @@ export default function App() {
         const colM = findColIndex(['Destination State', 'Destination St', 'Dest State'], 12);
         const colN = findColIndex(['Destination Zipcode', 'Destination Zip', 'Dest Zip'], 13);
         const colO = findColIndex(['Weight', 'Wgt', 'Weight (lbs)'], 14);
+        const isRxoPayerImport = normalizeCustomerName(selectedBroker) === rxoPayerCustomerName;
         const isRxoImport = isRxoCustomer(selectedBroker);
         const hasRxoTimeColumns = headerRow.some(
           header => String(header || '').trim().toLowerCase() === 'pickup time'
@@ -1999,9 +2794,10 @@ export default function App() {
           const cell = worksheet[XLSX.utils.encode_cell({ r: rowIndex + 1, c: colIndex })];
           return formatRxoExcelDateTime(cell ? XLSX.utils.format_cell(cell) : row[colIndex]);
         };
-
-        const importedRows = dataRows.map((row, idx) => {
-          if (!row || row.length === 0) return null;
+        let importedRows = [];
+        for (let idx = 0; idx < dataRows.length; idx++) {
+          const row = dataRows[idx];
+          if (!row || row.length === 0) continue;
 
           const loadId = String(row[colA] || `IMP-${Date.now()}-${idx}`).trim();
           const origC = String(row[colG] || 'UNKNOWN').toUpperCase().trim();
@@ -2010,7 +2806,7 @@ export default function App() {
           const destC = String(row[colL] || 'UNKNOWN').toUpperCase().trim();
           const destS = String(row[colM] || '').toUpperCase().trim();
           const destZ = String(row[colN] || '00000').trim();
-          const weightVal = String(row[colO] || '40000 lbs').trim();
+          const weightVal = isRxoPayerImport ? '42000 lbs' : String(row[colO] || '40000 lbs').trim();
           
           const puTimeVal = useRxoDateTimeFormat
             ? getRxoDateTime(row, idx, colQ)
@@ -2024,18 +2820,26 @@ export default function App() {
           
           const rawEquip = row[colB];
           const eCodeVal = isRxoCustomer(selectedBroker) ? 'VAN:VAN' : String(rawEquip || 'VZ').toUpperCase().trim();
-          const laneRateKey = createLaneRateKey(selectedBroker, {
-            origCity: origC,
-            origSt: origS,
-            origZip: origZ,
-            destCity: destC,
-            destSt: destS,
-            destZip: destZ,
+          
+          const tempOrder = {
+            origCity: origC, origSt: origS, origZip: origZ,
+            destCity: destC, destSt: destS, destZip: destZ,
             eCode: eCodeVal
-          });
-          const savedLaneRate = laneRateKey ? laneRates[laneRateKey] : '';
+          };
 
-          return {
+          let rateVal = getSavedLaneRate(laneRates, selectedBroker, tempOrder);
+          let rateSrc = rateVal ? 'user-entered' : undefined;
+
+          // Auto-fetch via DAT Ratecast API if no local rate exists
+          if (!rateVal) {
+            const datRateInfo = await fetchDatRateForImport(tempOrder, selectedBroker, laneRates);
+            if (datRateInfo.rateInput) {
+              rateVal = datRateInfo.rateInput;
+              rateSrc = datRateInfo.rateSource;
+            }
+          }
+
+          importedRows.push({
             id: loadId,
             postingCode: 'ANQ',
             visibilityGroup: 'ANQ',
@@ -2045,12 +2849,12 @@ export default function App() {
             route: laneKey,
             puDate: useRxoDateTimeFormat && puTimeVal ? `PU: ${puTimeVal.split(' ')[0]}` : 'PU: Today',
             delDate: useRxoDateTimeFormat && delTimeVal ? `DFL: ${delTimeVal.split(' ')[0]}` : 'DFL: Upcoming',
-            pickupTime: isRxoImport ? formatRxoBusinessHours(puTimeVal) : puTimeVal,
+            pickupTime: puTimeVal,
             origCity: origC,
             origSt: origS,
             origZip: origZ,
             weight: weightVal,
-            deliveryTime: isRxoImport ? formatRxoBusinessHours(delTimeVal) : delTimeVal,
+            deliveryTime: delTimeVal,
             destCity: destC,
             destSt: destS,
             destZip: destZ,
@@ -2060,41 +2864,59 @@ export default function App() {
             driver: '',
             truck: '',
             trailer: '',
-            rateInput: savedLaneRate,
-            ...(savedLaneRate ? { rateSource: 'user-entered' } : {}),
+            rateInput: rateVal,
+            ...(rateSrc ? { rateSource: rateSrc } : {}),
             brokerable: 'false',
             notes: ''
-          };
-        }).filter(Boolean);
+          });
+        }
+
+        // Run ZIP code auto-fill on Excel import rows
+        importedRows = autoFillLoadZipCodes(importedRows);
+        importedRows = applyRxoPayerBusinessHours(importedRows, selectedBroker);
+
         const latestRegistry = getLatestExportedRegistry();
         const exportedRecords = getExportedRecordsForCustomer(latestRegistry, selectedBroker);
-        const exportedIds = new Set(exportedRecords.ids);
-        const exportedLaneDays = new Set(exportedRecords.laneDays || []);
-        const notPreviouslyExportedRows = importedRows.filter(load => {
-          const laneDayKey = createLaneDayKey(load);
-          return !exportedIds.has(normalizeLoadId(load.id)) && (!laneDayKey || !exportedLaneDays.has(laneDayKey));
-        });
-        const skippedExportedCount = importedRows.length - notPreviouslyExportedRows.length;
-        const { loads: importedLoads, duplicateCount: duplicateImportCount } = isRxoImport
-          ? removeDuplicateLaneDayLoads(notPreviouslyExportedRows)
-          : { loads: notPreviouslyExportedRows, duplicateCount: 0 };
+        const { exportedCount, exportedLoadIds } = countPreviouslyExportedLoads(importedRows, exportedRecords);
+        const { loads: deduplicatedLoads, duplicateCount: duplicateImportCount } = isRxoImport
+          ? removeDuplicateLoadImports(importedRows)
+          : { loads: importedRows, duplicateCount: 0 };
+        const existingLoads = customerOrdersMap[selectedBroker] || [];
+        const importedLoads = keepPreviouslyExportedLoadsOpen(
+          markDifferentScheduleLoadsEnt(deduplicatedLoads, existingLoads, selectedBroker),
+          exportedLoadIds,
+          selectedBroker
+        );
 
         if (importedLoads.length === 0) {
-          alert(skippedExportedCount
-            ? `All ${skippedExportedCount} loads in this spreadsheet were already exported for ${selectedBroker}, so none were added again.`
-            : "No valid loads found in the spreadsheet rows.");
+          alert("No valid loads found in the spreadsheet rows.");
           return;
         }
 
-        const existingLoads = customerOrdersMap[selectedBroker] || [];
-        const mergedLoads = new Map(existingLoads.map(load => [load.id, load]));
+        const resolvedImportedLoads = [];
         importedLoads.forEach(load => {
+          resolvedImportedLoads.push(assignImportedLoadIdentity(load, existingLoads, resolvedImportedLoads));
+        });
+        const mergedLoads = new Map(existingLoads.map(load => [load.id, load]));
+        resolvedImportedLoads.forEach(load => {
           const existingLoad = mergedLoads.get(load.id);
-          if (!existingLoad) {
-            mergedLoads.set(load.id, load);
-          } else if (useRxoDateTimeFormat) {
+          const wasPreviouslyExported = exportedLoadIds.has(normalizeLoadId(load.id));
+          const preserveStatus = preservesImportedLoadStatus(selectedBroker);
+          if (existingLoad && preserveStatus && !isNewDayForExistingLoad(existingLoad, load)) {
             mergedLoads.set(load.id, {
               ...existingLoad,
+              ...getReimportedLoadStatus(existingLoad, wasPreviouslyExported)
+            });
+          }
+          if (!existingLoad || isNewDayForExistingLoad(existingLoad, load)) {
+            mergedLoads.set(load.id, existingLoad ? { ...load, rateInput: load.rateInput || existingLoad.rateInput } : load);
+          } else if (wasPreviouslyExported && !preserveStatus) {
+            mergedLoads.set(load.id, { ...existingLoad, status: 'OPEN', tag: 'OPEN' });
+          } else if (load.status === 'ENT' && existingLoad.status !== 'ENT' && !preserveStatus) {
+            mergedLoads.set(load.id, { ...existingLoad, status: 'ENT', tag: 'ENT' });
+          } else if (useRxoDateTimeFormat) {
+            mergedLoads.set(load.id, {
+              ...mergedLoads.get(load.id),
               pickupTime: load.pickupTime || existingLoad.pickupTime,
               deliveryTime: load.deliveryTime || existingLoad.deliveryTime,
               rateInput: existingLoad.rateInput || load.rateInput,
@@ -2105,19 +2927,37 @@ export default function App() {
           }
         });
         const mergedLoadList = Array.from(mergedLoads.values());
-        const { loads: finalLoads, duplicateCount: duplicateExistingCount } = isRxoImport
-          ? removeDuplicateLaneDayLoads(mergedLoadList)
+        const { loads: mergedFinalLoads, duplicateCount: duplicateExistingCount } = isRxoImport
+          ? removeDuplicateLoadImports(mergedLoadList)
           : { loads: mergedLoadList, duplicateCount: 0 };
+        const replacement = replaceImportedCustomerLoads(selectedBroker, importedRows, existingLoads);
+        const finalLoads = replacement ? replacement.loads : mergedFinalLoads;
         const nextOrders = { ...customerOrdersMap, [selectedBroker]: finalLoads };
         const saved = persistAppData(brokers, nextOrders);
         setCustomerOrdersMap(nextOrders);
-        setSelectedOrder(finalLoads.find(load => load.id === importedLoads[0].id) || finalLoads[0]);
+        setSelectedOrder(finalLoads.find(load => load.id === resolvedImportedLoads[0].id) || finalLoads[0]);
         setSelectedIds([]);
-        const duplicatesRemoved = duplicateImportCount + duplicateExistingCount;
-        alert(`Successfully imported ${importedLoads.length} unique loads for ${selectedBroker}.${skippedExportedCount ? ` Skipped ${skippedExportedCount} load${skippedExportedCount === 1 ? '' : 's'} already exported.` : ''}${duplicatesRemoved ? ` Removed ${duplicatesRemoved} duplicate load${duplicatesRemoved === 1 ? '' : 's'} with the same lane and pickup date.` : ''}${saved ? ' They are saved in this browser.' : ' Saving failed; keep this page open and check browser storage.'}`);
+
+        const duplicatesRemoved = replacement ? 0 : duplicateImportCount + duplicateExistingCount;
+
+        alert(
+          `📂 Excel Import Complete for ${selectedBroker}:\n` +
+          `• Added/Processed: ${replacement ? finalLoads.length : importedLoads.length} loads\n` +
+          `• Total in list: ${finalLoads.length} loads\n` +
+          getImportReplacementMessage(replacement) +
+          (exportedCount > 0
+            ? preservesImportedLoadStatus(selectedBroker)
+              ? `• Previously exported; moved to OPEN: ${exportedCount}\n`
+              : `• Previously exported; kept OPEN: ${exportedCount}\n`
+            : '') +
+          (duplicatesRemoved > 0 ? `• Skipped duplicates: ${duplicatesRemoved}\n` : '') +
+          (saved ? '• Status: Saved successfully in browser storage.' : '• Warning: Save failed, check browser storage.')
+        );
+
+        if (!saved) alert('Saving failed; keep this page open and check browser storage.');
       } catch (err) {
         console.error(err);
-        alert("Error parsing Excel file. Please make sure it's a valid .xlsx or .xls file.");
+        alert(`Excel import failed: ${err.message || "Please make sure it's a valid .xlsx or .xls file."}`);
       }
     };
     reader.readAsArrayBuffer(file);
@@ -2132,7 +2972,7 @@ export default function App() {
 
     setScreenshotImportMode(importMode);
     setIsImportingScreenshot(true);
-    setScreenshotImportProgress(importMode === 'dat' ? 'Preparing DAT screenshot...' : importMode === 'ntg' ? 'Preparing NTG screenshot...' : 'Preparing customer screenshot...');
+    setScreenshotImportProgress(importMode === 'dat' ? 'Preparing DAT screenshot...' : importMode === 'ntg' ? 'Preparing NTG screenshot...' : importMode === 'ch' ? 'Preparing CH screenshot...' : 'Preparing customer screenshot...');
     try {
       if (!file.type.startsWith('image/')) {
         throw new Error('Please choose an image file.');
@@ -2176,9 +3016,13 @@ export default function App() {
         tessedit_pageseg_mode: importMode === 'dat' || importMode === 'ntg' ? '3' : '6'
       });
       const { data } = await worker.recognize(canvas, {}, { blocks: true });
-      const lines = (data.blocks || []).flatMap(block =>
+      let lines = (data.blocks || []).flatMap(block =>
         block.paragraphs.flatMap(paragraph => paragraph.lines)
       );
+      const tableGrid = importMode === 'ai' ? detectScreenshotGrid(canvas) : null;
+      if (tableGrid) {
+        lines = await readScreenshotGrid(worker, canvas, tableGrid, setScreenshotImportProgress, image);
+      }
       const dataLines = lines
         .filter(line => line.bbox.y0 >= canvas.height * 0.035)
         .sort((a, b) => a.bbox.y0 - b.bbox.y0);
@@ -2189,7 +3033,7 @@ export default function App() {
         .sort((a, b) => a - b);
       const rowSpacing = spacings[Math.floor(spacings.length / 2)];
 
-      if (rowSpacing && importMode !== 'ntg') {
+      if (!tableGrid && rowSpacing && importMode !== 'ntg' && importMode !== 'ch') {
         for (let index = 1; index < dataLines.length; index += 1) {
           const previousCenter = centers[index - 1];
           const nextCenter = centers[index];
@@ -2233,7 +3077,7 @@ export default function App() {
         }
       }
 
-      if (importMode === 'ai') {
+      if (importMode === 'ai' && !tableGrid) {
         await worker.setParameters({
           tessedit_pageseg_mode: '7',
           tessedit_char_whitelist: '0123456789'
@@ -2267,6 +3111,13 @@ export default function App() {
           );
 
           const imageData = cropContext.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
+          let redPixels = 0;
+          for (let offset = 0; offset < imageData.data.length; offset += 4) {
+            if (imageData.data[offset] > 180 && imageData.data[offset + 1] < 100 && imageData.data[offset + 2] < 100) {
+              redPixels += 1;
+            }
+          }
+          line.orderNumberHighlighted = redPixels > cropCanvas.width * cropCanvas.height * 0.2;
           let backgroundLuminance = 0;
           let edgeSamples = 0;
           for (let x = 0; x < cropCanvas.width; x += 4) {
@@ -2300,11 +3151,122 @@ export default function App() {
 
       const isDatImport = importMode === 'dat';
       const isNtgImport = importMode === 'ntg';
-      let recognizedLoads = isDatImport
-        ? parseDatScreenshotLines(lines, canvas.width, canvas.height, brokerName, laneRates)
-        : isNtgImport
-          ? parseNtgScreenshotLines(lines, canvas.width, canvas.height)
-          : parseScreenshotLines(lines, canvas.width, canvas.height, brokerName);
+      const isChImport = importMode === 'ch';
+      let chSkipNote = '';
+      if (isNtgImport) {
+        const { cards: ntgCards, spacing: ntgSpacing } = findNtgCards(lines, canvas.width, canvas.height);
+        const readStrip = async (x0, y0, x1, y1, pattern) => {
+          const left = Math.max(0, Math.round(x0));
+          const top = Math.max(0, Math.round(y0));
+          const width = Math.min(canvas.width, Math.round(x1)) - left;
+          const height = Math.min(canvas.height, Math.round(y1)) - top;
+          if (width < 4 || height < 4) return '';
+          for (const threshold of [150, 110, 190, 0]) {
+            const cropCanvas = document.createElement('canvas');
+            cropCanvas.width = width * 2 + 64;
+            cropCanvas.height = height * 2 + 64;
+            const cropContext = cropCanvas.getContext('2d', { willReadFrequently: true });
+            cropContext.fillStyle = '#fff';
+            cropContext.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+            cropContext.drawImage(canvas, left, top, width, height, 32, 32, width * 2, height * 2);
+            if (threshold) {
+              const pixels = cropContext.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
+              for (let offset = 0; offset < pixels.data.length; offset += 4) {
+                const luminance = pixels.data[offset] * 0.299 + pixels.data[offset + 1] * 0.587 + pixels.data[offset + 2] * 0.114;
+                const value = luminance < threshold ? 0 : 255;
+                pixels.data[offset] = value;
+                pixels.data[offset + 1] = value;
+                pixels.data[offset + 2] = value;
+                pixels.data[offset + 3] = 255;
+              }
+              cropContext.putImageData(pixels, 0, 0);
+            }
+            const { data: stripData } = await worker.recognize(cropCanvas);
+            const found = stripData.text.match(pattern)?.[0];
+            if (found) return found;
+          }
+          return '';
+        };
+        const cardNeedsId = card => !card.words.some(word => word.x0 < 0.2 && /^\d{7}$/.test(word.text));
+        const cardNeedsWeight = card => !card.words.some(word =>
+          word.cx > 0.6 && /^(\d{1,3}(,\d{3})+|\d{4,6})(\.\d+)?$/.test(word.text)
+        );
+        if (ntgCards.some(card => cardNeedsId(card) || cardNeedsWeight(card))) {
+          setScreenshotImportProgress('Reading missed load details...');
+          await worker.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '0123456789,.' });
+          for (const card of ntgCards) {
+            if (cardNeedsId(card)) {
+              const idWordSize = card.words.find(word => /^total$/i.test(word.text))?.h || canvas.height * 0.06;
+              const loadNumber = (await readStrip(
+                canvas.width * 0.01, card.cy - idWordSize, canvas.width * 0.1, card.cy + idWordSize * 2.4, /\d{7}/
+              )).slice(0, 7);
+              if (loadNumber) {
+                lines.push({
+                  bbox: { x0: 0, y0: card.cy - 5, x1: canvas.width * 0.08, y1: card.cy + 5 },
+                  text: loadNumber,
+                  words: [{ text: loadNumber, bbox: { x0: canvas.width * 0.03, y0: card.cy - 5, x1: canvas.width * 0.08, y1: card.cy + 5 } }]
+                });
+              }
+            }
+            const totalWord = card.words.find(word => /^total$/i.test(word.text));
+            if (cardNeedsWeight(card) && totalWord) {
+              const weightText = await readStrip(
+                canvas.width * 0.69, totalWord.cy + totalWord.h * 1.5,
+                totalWord.x0 * canvas.width - 8, totalWord.cy + totalWord.h * 4.2,
+                /\d{1,3}(,\d{3})+(\.\d+)?|\d{4,6}(\.\d+)?/
+              );
+              if (weightText) {
+                const y = totalWord.cy + totalWord.h * 2.7;
+                lines.push({
+                  bbox: { x0: canvas.width * 0.74, y0: y - 5, x1: canvas.width * 0.8, y1: y + 5 },
+                  text: weightText,
+                  words: [{ text: weightText, bbox: { x0: canvas.width * 0.74, y0: y - 5, x1: canvas.width * 0.8, y1: y + 5 } }]
+                });
+              }
+            }
+          }
+        }
+        const cardHasHazmat = card => card.words.some(word => /^haz/i.test(word.text));
+        if (ntgCards.some(card => !cardHasHazmat(card))) {
+          setScreenshotImportProgress('Checking cards for Hazmat tags...');
+          await worker.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '' });
+          for (const card of ntgCards) {
+            if (cardHasHazmat(card)) continue;
+            const tagText = await readStrip(
+              canvas.width * 0.005, card.cy + ntgSpacing * 0.3, canvas.width * 0.3, card.cy + ntgSpacing * 0.78, /haz\w*/i
+            );
+            if (tagText) {
+              const y = card.cy + ntgSpacing * 0.5;
+              lines.push({
+                bbox: { x0: 0, y0: y - 5, x1: canvas.width * 0.1, y1: y + 5 },
+                text: 'Hazmat',
+                words: [{ text: 'Hazmat', bbox: { x0: 0, y0: y - 5, x1: canvas.width * 0.1, y1: y + 5 } }]
+              });
+            }
+          }
+        }
+      }
+      let recognizedLoads;
+      if (isChImport) {
+        setScreenshotImportProgress('Reading states and rates...');
+        const chResult = await readChScreenshot(worker, canvas, lines, brokerName, laneRates, scale);
+        recognizedLoads = chResult.loads;
+        chSkipNote = (chResult.skippedLtl ? `• Skipped LTL rows: ${chResult.skippedLtl}\n` : '')
+          + (chResult.skippedNoDate ? `• Skipped rows with no date heading above them: ${chResult.skippedNoDate}\n` : '');
+      } else {
+        recognizedLoads = isDatImport
+          ? parseDatScreenshotLines(lines, canvas.width, canvas.height, brokerName, laneRates)
+          : isNtgImport
+            ? parseNtgScreenshotLines(lines, canvas.width, canvas.height)
+            : parseScreenshotLines(lines, canvas.width, canvas.height, brokerName);
+      }
+      if (tableGrid && recognizedLoads.length !== tableGrid.rows.length) {
+        throw new Error(`Read ${recognizedLoads.length} of ${tableGrid.rows.length} screenshot load rows. Existing loads were not deleted. Use a clearer image with every origin and destination visible.`);
+      }
+      
+      // Run ZIP Code Auto-fill on Screenshot loads
+      recognizedLoads = autoFillLoadZipCodes(recognizedLoads);
+
       if (!isDatImport && !isNtgImport && recognizedLoads.length > 0) {
         try {
           const zipModule = await import('zipcodes');
@@ -2314,7 +3276,7 @@ export default function App() {
         }
       }
       const applyDatCityFix = async () => {
-        if (!isDatImport || recognizedLoads.length === 0) return;
+        if (!(isDatImport || isChImport) || recognizedLoads.length === 0) return;
         try {
           const zipModule = await import('zipcodes');
           correctDatCities(recognizedLoads, zipModule.default || zipModule);
@@ -2330,13 +3292,14 @@ export default function App() {
           const retryLines = (retryData.blocks || []).flatMap(block =>
             block.paragraphs.flatMap(paragraph => paragraph.lines)
           );
-          const retryLoads = parseDatScreenshotLines(
+          let retryLoads = parseDatScreenshotLines(
             retryLines,
             canvas.width,
             canvas.height,
             brokerName,
             laneRates
           );
+          retryLoads = autoFillLoadZipCodes(retryLoads);
           if (retryLoads.length > recognizedLoads.length) recognizedLoads = retryLoads;
           if (recognizedLoads.length > 0) break;
         }
@@ -2405,33 +3368,46 @@ export default function App() {
       await applyDatCityFix();
       recognizedLoads.forEach(load => { delete load.rateCrop; });
 
+      // Auto-fetch DAT Ratecast API rates for any loads missing rates after parsing
+      for (const load of recognizedLoads) {
+        if (!Number(load.rateInput) > 0) {
+          const datRateInfo = await fetchDatRateForImport(load, brokerName, laneRates);
+          if (datRateInfo.rateInput) {
+            load.rateInput = datRateInfo.rateInput;
+            load.rateSource = datRateInfo.rateSource;
+          }
+        }
+      }
+
       if (recognizedLoads.length === 0) {
-        throw new Error(isDatImport
+        throw new Error(isChImport
+          ? `No CH loads were recognized.${chSkipNote ? ` Skipped rows:\n${chSkipNote}` : ' Capture the board straight-on with the Load #, Origin, OST, Destination, DST, Pickup Hours, Mode, Weight and Bin columns and a date heading visible.'}`
+          : isDatImport
           ? 'No DAT load rows were recognized. Capture the DAT results table straight-on with the Origin, Destination, Pick Up, EQ, and Weight columns visible.'
           : isNtgImport
-            ? 'No NTG loads were recognized. Capture the NTG load cards straight-on with the Load #, cities, miles, weight and Total Rate visible.'
+            ? 'No NTG loads were recognized. The text in the screenshot is probably too small to read: set the browser zoom to 100% (Ctrl+0), then capture about 4-5 load cards at a time with the Load #, cities, miles, weight and Total Rate visible.'
           : 'No load rows could be read. Try a clearer, straight-on screenshot that includes the full table.');
       }
 
+      recognizedLoads = applyRxoPayerBusinessHours(recognizedLoads, brokerName);
       const existingOrders = customerOrdersMap[brokerName] || [];
       const latestRegistry = getLatestExportedRegistry();
       const exportedRecords = getExportedRecordsForCustomer(latestRegistry, brokerName);
-      const exportedIds = new Set(exportedRecords.ids);
-      const exportedLaneDays = new Set(exportedRecords.laneDays || []);
-      let importedLoads = recognizedLoads.filter(load => {
-        const laneDayKey = createLaneDayKey(load);
-        return !exportedIds.has(normalizeLoadId(load.id)) && (!laneDayKey || !exportedLaneDays.has(laneDayKey));
-      });
-      const skippedExportedCount = recognizedLoads.length - importedLoads.length;
+      const { exportedCount, exportedLoadIds } = countPreviouslyExportedLoads(
+        recognizedLoads,
+        exportedRecords,
+        { idOnly: isNtgImport || isChImport }
+      );
+      let importedLoads = recognizedLoads;
       let skippedDuplicateCount = 0;
       if (isDatImport) {
         const uniqueLoads = [];
-        const seenLaneDays = new Map();
+        const seenSchedules = new Map();
         importedLoads.forEach(load => {
-          const laneDayKey = createLaneDayKey(load);
-          const previousIndex = laneDayKey ? seenLaneDays.get(laneDayKey) : undefined;
+          const scheduleKey = createLaneScheduleKey(load);
+          const previousIndex = scheduleKey ? seenSchedules.get(scheduleKey) : undefined;
           if (previousIndex === undefined) {
-            if (laneDayKey) seenLaneDays.set(laneDayKey, uniqueLoads.length);
+            if (scheduleKey) seenSchedules.set(scheduleKey, uniqueLoads.length);
             uniqueLoads.push(load);
             return;
           }
@@ -2441,16 +3417,16 @@ export default function App() {
             uniqueLoads[previousIndex] = load;
           }
         });
-        const existingByLaneDay = new Map();
+        const existingBySchedule = new Map();
         existingOrders.forEach(order => {
-          const laneDayKey = createLaneDayKey(order);
-          if (laneDayKey && !existingByLaneDay.has(laneDayKey)) {
-            existingByLaneDay.set(laneDayKey, order);
+          const scheduleKey = createLaneScheduleKey(order);
+          if (scheduleKey && !existingBySchedule.has(scheduleKey)) {
+            existingBySchedule.set(scheduleKey, order);
           }
         });
         importedLoads = uniqueLoads.flatMap(load => {
-          const laneDayKey = createLaneDayKey(load);
-          const existingLoad = laneDayKey ? existingByLaneDay.get(laneDayKey) : null;
+          const scheduleKey = createLaneScheduleKey(load);
+          const existingLoad = scheduleKey ? existingBySchedule.get(scheduleKey) : null;
           if (!existingLoad) return [load];
           if (!(Number(existingLoad.rateInput) > 0) && Number(load.rateInput) > 0) {
             return [{ ...load, id: existingLoad.id }];
@@ -2459,24 +3435,77 @@ export default function App() {
           return [];
         });
       }
+      importedLoads = keepPreviouslyExportedLoadsOpen(
+        markDifferentScheduleLoadsEnt(importedLoads, existingOrders, brokerName),
+        exportedLoadIds,
+        brokerName
+      );
 
       if (importedLoads.length === 0) {
-        alert(`Read ${recognizedLoads.length} load rows, but none were added for ${brokerName}.${skippedExportedCount ? ' They were already exported.' : ''}${skippedDuplicateCount ? ' They duplicated a lane and pickup date already imported.' : ''}`);
+        const exportedMessage = exportedCount
+          ? preservesImportedLoadStatus(brokerName)
+            ? ` ${exportedCount} previously exported loads moved to OPEN.`
+            : ` ${exportedCount} previously exported loads remain in OPEN.`
+          : '';
+        alert(`Read ${recognizedLoads.length} load rows, but none were added for ${brokerName}.${exportedMessage}${skippedDuplicateCount ? ' They duplicated a lane and pickup date already imported.' : ''}`);
         return;
       }
 
+      const resolvedImportedLoads = [];
+      importedLoads.forEach(load => {
+        resolvedImportedLoads.push(assignImportedLoadIdentity(load, existingOrders, resolvedImportedLoads));
+      });
+
       const existingIds = new Set(existingOrders.map(order => order.id));
+      let chMileageError = '';
+      if (isChImport) {
+        const loadsNeedingMiles = resolvedImportedLoads.filter(load => {
+          if (load.status === 'ENT') return false;
+          const existingMiles = existingOrders.find(order => order.id === load.id)?.miles;
+          if (Number(existingMiles) > 0) {
+            load.miles = existingMiles;
+            return false;
+          }
+          return Boolean(load.origSt && load.destSt);
+        });
+        for (let index = 0; index < loadsNeedingMiles.length; index += 1) {
+          const load = loadsNeedingMiles[index];
+          setScreenshotImportProgress(`Calculating driving miles ${index + 1} of ${loadsNeedingMiles.length}...`);
+          try {
+            load.miles = await getGoogleRoadMiles(load);
+            load.planningComment = 'Imported from CH screenshot; driving miles calculated by Google Routes';
+          } catch (error) {
+            console.error('Google Routes could not calculate CH screenshot miles:', error);
+            chMileageError = error.message || 'Google Routes could not calculate the driving miles.';
+            break;
+          }
+        }
+      }
       const mergeableFields = [
         'pickupTime', 'origCity', 'origSt', 'origZip', 'weight',
         'deliveryTime', 'destCity', 'destSt', 'destZip', 'miles',
         'planningComment', 'rateInput', 'rateSource'
       ];
-      const mergedImportedLoads = importedLoads.map(importedLoad => {
+      const mergedImportedLoads = resolvedImportedLoads.map(importedLoad => {
         const existingLoad = existingOrders.find(order => order.id === importedLoad.id);
         if (!existingLoad) return importedLoad;
+        const wasPreviouslyExported = exportedLoadIds.has(normalizeLoadId(importedLoad.id));
+        if (isNewDayForExistingLoad(existingLoad, importedLoad)) {
+          const { landstarExportedAt, ...rest } = existingLoad;
+          return { ...rest, ...importedLoad, rateInput: importedLoad.rateInput || existingLoad.rateInput };
+        }
         const mergedLoad = { ...importedLoad, ...existingLoad };
+        const preserveStatus = preservesImportedLoadStatus(brokerName);
+        if (preserveStatus) {
+          Object.assign(mergedLoad, getReimportedLoadStatus(existingLoad, wasPreviouslyExported));
+        } else if (wasPreviouslyExported) {
+          mergedLoad.status = 'OPEN';
+          mergedLoad.tag = 'OPEN';
+        } else if (importedLoad.status === 'ENT' && !preserveStatus) {
+          mergedLoad.status = 'ENT';
+          mergedLoad.tag = 'ENT';
+        }
         if (!isDatImport) {
-          // A fresh customer screenshot is the source of truth for these fields.
           [
             'eCode', 'route', 'puDate', 'delDate', 'pickupTime', 'origCity', 'origSt', 'origZip',
             'weight', 'deliveryTime', 'destCity', 'destSt', 'destZip', 'miles'
@@ -2494,20 +3523,55 @@ export default function App() {
       const newLoads = mergedImportedLoads.filter(order => !existingIds.has(order.id));
       const mergedOrders = new Map(existingOrders.map(order => [order.id, order]));
       mergedImportedLoads.forEach(order => mergedOrders.set(order.id, order));
+      const replacement = replaceImportedCustomerLoads(brokerName, recognizedLoads, existingOrders);
+      const finalLoads = replacement ? replacement.loads : Array.from(mergedOrders.values());
       const nextOrders = {
         ...customerOrdersMap,
-        [brokerName]: Array.from(mergedOrders.values())
+        [brokerName]: finalLoads
       };
       const saved = persistAppData(brokers, nextOrders);
       setCustomerOrdersMap(nextOrders);
-      setSelectedOrder(mergedImportedLoads[0]);
+      setSelectedOrder(replacement ? finalLoads[0] : mergedImportedLoads[0]);
       setSelectedIds([]);
-      const unreadableIds = importedLoads.filter(order => order.notes).length;
+      if (replacement?.usesScreenshotStatus) setFilter('ALL');
+
+      const unreadableIds = isChImport ? 0 : importedLoads.filter(order => order.notes).length;
       const unreadableWeights = importedLoads.filter(order => !order.weight).length;
       const unreadablePickups = importedLoads.filter(order => !order.pickupTime).length;
-      const unreadableRates = isDatImport ? importedLoads.filter(order => !(Number(order.rateInput) > 0)).length : 0;
-      const updatedLoads = mergedImportedLoads.length - newLoads.length;
-      alert(`Read ${recognizedLoads.length} ${isDatImport ? 'DAT ' : ''}load rows for ${brokerName}; added ${newLoads.length} new loads${updatedLoads ? ` and updated ${updatedLoads} existing load${updatedLoads === 1 ? '' : 's'}` : ''}.${skippedExportedCount ? ` Skipped ${skippedExportedCount} load${skippedExportedCount === 1 ? '' : 's'} already exported.` : ''}${skippedDuplicateCount ? ` Skipped ${skippedDuplicateCount} duplicate lane/pickup-date load${skippedDuplicateCount === 1 ? '' : 's'}.` : ''}${saved ? ' They are saved in this browser.' : ' Saving failed; keep this page open and check browser storage.'}${unreadableIds ? ` ${unreadableIds} order number${unreadableIds === 1 ? ' was' : 's were'} unreadable.` : ''}${unreadablePickups ? ` ${unreadablePickups} pickup date/time${unreadablePickups === 1 ? ' was' : 's were'} not recognized; please check those loads.` : ''}${unreadableWeights ? ` ${unreadableWeights} weight${unreadableWeights === 1 ? ' was' : 's were'} not recognized; please check those loads.` : ''}${isDatImport ? `${unreadableRates ? ` ${unreadableRates} DAT rate${unreadableRates === 1 ? ' was' : 's were'} not recognized; enter them manually.` : ' DAT rates were imported from the screenshot.'} Trip values were imported as miles; verify them. Pickup times and the 8:00 AM–4:00 PM delivery window were added. The screenshot does not include a delivery date or ZIP codes; enter those before export.` : ''}`);
+      const unreadableRates = isDatImport || isChImport ? importedLoads.filter(order => !(Number(order.rateInput) > 0)).length : 0;
+      const missingChStates = isChImport ? importedLoads.filter(order => !order.origSt || !order.destSt).length : 0;
+      const missingChMiles = isChImport ? importedLoads.filter(order => order.status !== 'ENT' && !(Number(order.miles) > 0)).length : 0;
+      const newLoadCount = replacement
+        ? finalLoads.filter(load => !existingOrders.some(existing =>
+          normalizeLoadId(getBaseLoadId(existing)) === load.id
+        )).length
+        : newLoads.length;
+      const updatedLoads = (replacement ? finalLoads.length : mergedImportedLoads.length) - newLoadCount;
+
+      alert(
+        `📸 ${isDatImport ? 'DAT' : isNtgImport ? 'NTG' : isChImport ? 'CH' : 'Customer'} Screenshot Import Complete for ${brokerName}:\n` +
+        `• Recognized rows: ${recognizedLoads.length}\n` +
+        `• New loads added: ${newLoadCount}\n` +
+        `• Existing loads updated: ${updatedLoads}\n` +
+        getImportReplacementMessage(replacement) +
+        (exportedCount > 0
+          ? replacement?.usesScreenshotStatus
+            ? `• Previously exported; status taken from screenshot color: ${exportedCount}\n`
+          : preservesImportedLoadStatus(brokerName)
+            ? `• Previously exported; moved to OPEN: ${exportedCount}\n`
+            : `• Previously exported; kept OPEN: ${exportedCount}\n`
+          : '') +
+        chSkipNote +
+        (unreadableWeights > 0 ? `• Missing weights: ${unreadableWeights}\n` : '') +
+        (unreadablePickups > 0 ? `• Missing pickup times: ${unreadablePickups}\n` : '') +
+        (isChImport && unreadableRates > 0 ? `• No rate on the board (enter manually): ${unreadableRates}\n` : '') +
+        (missingChStates > 0 ? `• State not read: ${missingChStates}\n` : '') +
+        (missingChMiles > 0 ? `• Driving miles missing: ${missingChMiles}${chMileageError ? ` (${chMileageError})` : ''}\n` : '') +
+        (saved ? '• Status: Saved successfully.' : '• Warning: Save failed.')
+      );
+
+      const importWarnings = `${saved ? '' : ' Saving failed; keep this page open and check browser storage.'}${unreadableIds ? ` ${unreadableIds} order number${unreadableIds === 1 ? ' was' : 's were'} unreadable.` : ''}${unreadablePickups ? ` ${unreadablePickups} pickup date/time${unreadablePickups === 1 ? ' was' : 's were'} not recognized; please check those loads.` : ''}${unreadableWeights ? ` ${unreadableWeights} weight${unreadableWeights === 1 ? ' was' : 's were'} not recognized; please check those loads.` : ''}${unreadableRates ? ` ${unreadableRates} DAT rate${unreadableRates === 1 ? ' was' : 's were'} not recognized; enter them manually.` : ''}`.trim();
+      if (importWarnings && !saved) alert(importWarnings);
     } catch (error) {
       console.error(`${importMode === 'dat' ? 'DAT screenshot' : 'Customer screenshot'} import failed:`, error);
       alert(`${importMode === 'dat' ? 'DAT screenshot' : 'Customer screenshot'} import failed: ${error.message || 'Could not read the image.'}`);
@@ -2553,9 +3617,21 @@ export default function App() {
     const zipData = zipModule.default || zipModule;
     const lookupZip = zip => zipData.codes?.[zip] || null;
     const lookupCityState = (city, state) => {
-      const cityName = String(city || '').trim();
+      const extraCities = { 'HAMBERG|ND': { zip: '58145', city: 'Hamberg', state: 'ND' } };
+      const extraKey = `${String(city || '').trim().toUpperCase()}|${String(state || '').trim().toUpperCase()}`;
+      if (extraCities[extraKey]) return extraCities[extraKey];
+      const cityName = String(city || '').trim()
+        .replace(/^MT\.?\s+/i, 'Mount ').replace(/^ST\.?\s+/i, 'Saint ').replace(/^FT\.?\s+/i, 'Fort ');
       const stateCode = String(state || '').trim();
-      const exactMatch = zipData.lookupByName?.(cityName, stateCode)?.[0];
+      const exactMatches = zipData.lookupByName?.(cityName, stateCode) || [];
+      const prefixCounts = exactMatches.reduce((counts, location) => {
+        const prefix = location.zip.slice(0, 3);
+        counts[prefix] = (counts[prefix] || 0) + 1;
+        return counts;
+      }, {});
+      const exactMatch = exactMatches.length > 1
+        ? exactMatches.find(location => prefixCounts[location.zip.slice(0, 3)] > 1 && !location.zip.endsWith('00')) || exactMatches[0]
+        : exactMatches[0];
       if (exactMatch) return exactMatch;
 
       const normalizeCity = value => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -2577,12 +3653,8 @@ export default function App() {
       const enteredDestinationZip = String(ord.destZip || '').replace(/\D/g, '').slice(0, 5);
       const enteredOriginLocation = enteredOriginZip.length === 5 ? lookupZip(enteredOriginZip) : null;
       const enteredDestinationLocation = enteredDestinationZip.length === 5 ? lookupZip(enteredDestinationZip) : null;
-      const originLocation = enteredOriginLocation || (true
-        ? lookupCityState(ord.origCity, ord.origSt)
-        : null);
-      const destinationLocation = enteredDestinationLocation || (true
-        ? lookupCityState(ord.destCity, ord.destSt)
-        : null);
+      const originLocation = enteredOriginLocation || lookupCityState(ord.origCity, ord.origSt);
+      const destinationLocation = enteredDestinationLocation || lookupCityState(ord.destCity, ord.destSt);
       const originZip = originLocation?.zip || (enteredOriginLocation ? enteredOriginZip : '');
       const destinationZip = destinationLocation?.zip || (enteredDestinationLocation ? enteredDestinationZip : '');
       const originState = String(ord.origSt || originLocation?.state || '').trim().toUpperCase();
@@ -2592,7 +3664,7 @@ export default function App() {
       const originStateMatchesZip = !ord.origSt || !originLocation || originState === originLocation.state;
       const destinationStateMatchesZip = !ord.destSt || !destinationLocation || destinationState === destinationLocation.state;
       const originZipWasResolved = !enteredOriginLocation && Boolean(originLocation);
-       const destinationZipWasResolved = !enteredDestinationLocation && Boolean(destinationLocation);
+      const destinationZipWasResolved = !enteredDestinationLocation && Boolean(destinationLocation);
       if (originZipWasResolved) representativeZipCount += 1;
       if (destinationZipWasResolved) representativeZipCount += 1;
       if ((originZipWasResolved || destinationZipWasResolved) && representativeZipExamples.length < 5) {
@@ -2613,7 +3685,7 @@ export default function App() {
       const deliveryThru = toExcelDateTime(delParts[1] || delParts[0], delParts[0]);
       const equipment = getLandstarEquipmentCode(ord.eCode);
       const commodity = getLandstarCommodity(ord.eCode);
-      const miles = Number(String(ord.miles || '').replace(/[^0-9.]/g, ''));
+      const miles = Number(normalizeMilesValue(ord.miles));
       const weight = parseWeightPounds(ord.weight);
       const rate = Number(String(ord.rateInput || '').replace(/[$,]/g, ''));
       const postingCode = String(ord.postingCode || 'ANQ').trim().toUpperCase();
@@ -2636,8 +3708,8 @@ export default function App() {
       if (deliveryFrom === null || deliveryThru === null) rowErrors.push('delivery date and time');
       else if (deliveryThru < todaySerial) rowErrors.push('delivery end date cannot be in the past');
       else if (deliveryThru < deliveryFrom) rowErrors.push('delivery end must be after delivery start');
-      if (pickupThru !== null && deliveryThru !== null && Math.floor(deliveryThru) <= Math.floor(pickupThru)) {
-        rowErrors.push('delivery end date must be later than pickup end date');
+      if (pickupFrom !== null && deliveryFrom !== null && deliveryFrom <= pickupFrom) {
+        rowErrors.push('delivery start must be later than pickup start');
       }
       if (!equipment) rowErrors.push('valid equipment');
       if (!['CGAPP', 'HAZMAT', 'CHEM'].includes(commodity)) rowErrors.push('valid commodity');
@@ -2645,8 +3717,8 @@ export default function App() {
       if (weight === null || weight > 999999) {
         rowErrors.push('weight (enter whole pounds from 1 to 999,999)');
       }
-      if (!(rate > 0) || !['user-entered', 'dat-screenshot'].includes(ord.rateSource)) {
-        rowErrors.push('rate (enter a current DAT quote or import one from a DAT screenshot)');
+      if (!(rate > 0) || !['user-entered', 'dat-screenshot', 'dat-api'].includes(ord.rateSource)) {
+        rowErrors.push('rate (enter a current DAT quote or import one via DAT API/screenshot)');
       }
 
       if (rowErrors.length) validationErrors.push(`Order ${ord.id}: ${rowErrors.join(', ')}`);
@@ -2670,7 +3742,7 @@ export default function App() {
         "Visibility Code": visibilityCode,
         "Bill as Miles": allowMissingMiles && !(miles > 0) ? '' : miles,
         "Equipment 1(Required)": equipment,
-        "Equipment 2": String(ord.eCode || '').trim().toUpperCase() === 'VT' ? '53VN' : '',
+        "Equipment 2": String(ord.eCode || '').trim().toUpperCase() === 'VT' ? '53VN' : String(ord.eCode || '').trim().toUpperCase() === 'D-LG,D-ST' ? 'D-ST' : '',
         "Equipment 3": "",
         "Weight(Required)": weight ?? '',
         "Rate Type(Required)": "Flat Rate",
@@ -2703,15 +3775,8 @@ export default function App() {
     const missingZipLoads = exportData.filter(record =>
       !record['Origin Zipcode(Required)'] || !record['Destination Zipcode(Required)']
     );
-    if (missingZipLoads.length && !window.confirm(
-      `${missingZipLoads.length} load${missingZipLoads.length === 1 ? ' has' : 's have'} a blank origin or destination ZIP code. The spreadsheet will be created with those ZIP fields blank, but Landstar may reject those loads because its form requires ZIP-based location details.\n\nContinue anyway?`
-    )) {
-      return;
-    }
-
-    if (representativeZipCount > 0 && !window.confirm(
-      `No ZIP code was entered for ${representativeZipCount} location${representativeZipCount === 1 ? '' : 's'} on this customer's loads. The export will use the first ZIP found for each matching city and state. These representative ZIPs may not match the exact pickup or delivery address; verify them before posting.\n\n${representativeZipExamples.join('\n')}${representativeZipCount > representativeZipExamples.length ? '\n…' : ''}\n\nContinue with this export?`
-    )) {
+    if (missingZipLoads.length) {
+      alert(`No ZIP code could be found for ${missingZipLoads.length} load${missingZipLoads.length === 1 ? '' : 's'}, and Landstar needs a ZIP to fill in the state. Enter the ZIP in the load's Origin or Destination ZIP field, then export again:\n\n${missingZipLoads.slice(0, 10).map(record => `${record['Origin City'] || ''} → ${record['Destination City'] || ''}`).join('\n')}`);
       return;
     }
 
@@ -2992,7 +4057,8 @@ export default function App() {
         : selectedOrder || nextOrders[selectedBroker][0] || null
     );
 
-    alert(`Exported ${loadsToExport.length} loads for ${selectedBroker} and moved them to ENT. Exported loads stay in ENT for 30 days, then are automatically removed.${saved ? '' : ' Browser storage could not be updated, so the archive may not persist after refresh.'}${exportedRegistrySaved ? ' Future imports will skip these exported loads.' : ' Warning: exported-load history could not be saved, so duplicate imports may occur after refresh.'}`);
+    const exportWarnings = `${saved ? '' : 'Browser storage could not be updated, so the archive may not persist after refresh. '}${exportedRegistrySaved ? '' : 'Warning: exported-load history could not be saved, so duplicate imports may occur after refresh.'}`.trim();
+    if (exportWarnings) alert(exportWarnings);
   };
 
   const filteredOrders = orders.filter(ord => {
@@ -3009,6 +4075,11 @@ export default function App() {
     const matchesMaximumMiles = maximumMiles === null || (Number.isFinite(miles) && miles <= maximumMiles);
     return matchesFilter && matchesSearch && matchesMinimumMiles && matchesMaximumMiles;
   }).sort((left, right) => {
+    if (laneSort === 'pickup-asc' || laneSort === 'pickup-desc') {
+      const difference = getPickupSortValue(left) - getPickupSortValue(right);
+      return (laneSort === 'pickup-desc' ? -difference : difference)
+        || String(left.id).localeCompare(String(right.id), undefined, { numeric: true });
+    }
     if (!laneSort) return 0;
     const descending = laneSort.endsWith('-desc');
     const sortKey = laneSort.replace(/-asc$|-desc$/, '');
@@ -3094,6 +4165,10 @@ export default function App() {
                 <span>{isImportingScreenshot && screenshotImportMode === 'ntg' ? screenshotImportProgress : '🚚 Import NTG Loads'}</span>
                 <input type="file" accept="image/*" onChange={event => handleScreenshotImport(event, 'ntg')} className="hidden" disabled={isImportingScreenshot} />
               </label>
+              <label className={`bg-rose-600 hover:bg-rose-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} title="Import loads from a C.H. Robinson load-board screenshot (with Weight and Bin columns)">
+                <span>{isImportingScreenshot && screenshotImportMode === 'ch' ? screenshotImportProgress : '📋 Import CH Loads'}</span>
+                <input type="file" accept="image/*" onChange={event => handleScreenshotImport(event, 'ch')} className="hidden" disabled={isImportingScreenshot} />
+              </label>
               <label className="bg-blue-600 hover:bg-blue-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center" title="Import Excel Spreadsheet">
                 <span>📂 Import Excel</span>
                 <input type="file" accept=".xlsx, .xls, .csv" onChange={handleExcelImport} className="hidden" />
@@ -3114,6 +4189,22 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {preservesImportedLoadStatus(selectedBroker) && (
+            <p className="text-[10px] text-amber-300 mb-2">
+              Import the full load list: each import replaces this customer's list, including ENT.
+              Missing loads are deleted. Duplicate load numbers are kept once; re-imported numbers are set to OPEN except Para screenshot colors.
+              Screenshots must show readable load numbers, including highlighted rows.
+              ZIP verification preserves distinct source cities rather than replacing them with postal-city names.
+              {isParaCustomer(selectedBroker) && (
+                <> Para screenshots: red load numbers = ENT; non-red = OPEN on every import.
+                  Clipped hours use :00 (08... = 0800, 10... = 1000); a lone 0 uses 0800.</>
+              )}
+              {normalizeCustomerName(selectedBroker) === rxoPayerCustomerName && (
+                <> RXO ATZ P keeps only the first load per origin/destination city and state and pickup day, regardless of load number or time.</>
+              )}
+            </p>
+          )}
 
           <div className="flex items-center justify-end gap-1 mb-2">
             <button
@@ -3333,9 +4424,18 @@ export default function App() {
             />
           </div>
           <div className="mt-1.5">
+            <button
+              type="button"
+              onClick={() => setLaneSort(current => current === 'pickup-asc' ? 'pickup-desc' : 'pickup-asc')}
+              className={`w-full rounded border p-1.5 text-xs font-semibold ${laneSort.startsWith('pickup') ? 'bg-blue-600 border-blue-500 text-white' : 'bg-[#0b132b] border-[#1c2541] text-white hover:border-blue-500'}`}
+            >
+              {laneSort === 'pickup-asc' ? 'Pickup date: earliest first ↑' : laneSort === 'pickup-desc' ? 'Pickup date: latest first ↓' : 'Sort by pickup date'}
+            </button>
+          </div>
+          <div className="mt-1.5">
             <select
               aria-label="Sort loads by city and state"
-              value={laneSort}
+              value={laneSort.startsWith('pickup') ? '' : laneSort}
               onChange={e => setLaneSort(e.target.value)}
               className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1.5 text-xs text-white outline-none focus:border-blue-500"
             >
@@ -3389,7 +4489,7 @@ export default function App() {
                       {exportErrorIds.includes(String(ord.id)) && (
                         <span className="bg-red-700 text-white text-[9px] px-1.5 py-0.5 rounded font-bold">EXPORT ERROR</span>
                       )}
-                      <span className="bg-blue-900/60 text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{ord.eCode}</span>
+                      <span className="bg-blue-900/60 text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{String(ord.eCode || '').trim().toUpperCase() === 'VE' ? 'VAN' : ord.eCode}</span>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ord.status === 'ENT' ? 'bg-emerald-900/60 text-emerald-300' : ord.status === 'ON HOLD' ? 'bg-amber-900/60 text-amber-300' : 'bg-blue-900/60 text-blue-300'}`}>{ord.status}</span>
                     </div>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'bg-emerald-600 text-white' : ord.tag === 'HOLD' ? 'bg-amber-600 text-white' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
@@ -3471,6 +4571,12 @@ export default function App() {
                 </div>
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">EQUIPMENT</label>
+                  {String(selectedOrder.eCode || '').trim().toUpperCase() === 'VE' && (
+                    <>
+                      <input type="text" value="VAN" readOnly aria-label="Mapped equipment" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                      <label className="text-xs text-gray-400 block mt-2 mb-1">SOURCE EQUIPMENT CODE (VE = VAN / CHEM)</label>
+                    </>
+                  )}
                   <input type="text" value={selectedOrder.eCode} onChange={(e) => handleInputChange('eCode', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white outline-none" />
                   <div className="text-[11px] text-emerald-400 mt-1 font-mono">{getEquipmentDescription(selectedOrder.eCode)}</div>
                 </div>
@@ -3569,13 +4675,15 @@ export default function App() {
                   </div>
                   <div>
                     <div className="flex justify-between items-center mb-1">
-                      <label className="text-xs text-emerald-400 font-bold">Rate ($) - actual DAT quote</label>
-                      <span className="text-[10px] bg-emerald-950 text-emerald-300 px-1 py-0.2 rounded font-mono border border-emerald-600/40">{selectedOrder.rateSource === 'dat-screenshot' ? 'From DAT screenshot' : 'Manual'}</span>
+                      <label className="text-xs text-emerald-400 font-bold">Rate ($) - DAT quote</label>
+                      <span className="text-[10px] bg-emerald-950 text-emerald-300 px-1 py-0.2 rounded font-mono border border-emerald-600/40">
+                        {selectedOrder.rateSource === 'dat-screenshot' ? 'From screenshot' : selectedOrder.rateSource === 'dat-api' ? 'From DAT API' : 'Manual'}
+                      </span>
                     </div>
                     <div className="flex gap-1">
                       <input
                         type="text"
-                        value={['user-entered', 'dat-screenshot'].includes(selectedOrder.rateSource) ? selectedOrder.rateInput || '' : ''}
+                        value={['user-entered', 'dat-screenshot', 'dat-api'].includes(selectedOrder.rateSource) ? selectedOrder.rateInput || '' : ''}
                         onChange={(e) => handleInputChange('rateInput', e.target.value)}
                         onKeyDown={handleRateKeyDown}
                         placeholder="Enter DAT quote"
@@ -3590,7 +4698,7 @@ export default function App() {
                         📋
                       </button>
                     </div>
-                    <p className="text-[10px] text-gray-500 mt-1">Saved automatically for this customer, lane, and equipment. Press Enter after entering a rate to go to the next load.</p>
+                    <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. Press Enter to go to the next load.</p>
                   </div>
                 </div>
                 <div className="mt-3">
@@ -3654,7 +4762,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-xs text-gray-300 font-mono bg-[#0b132b] p-2.5 rounded border border-[#1c2541]">
-                  Opens [RateView - DAT iQ](https://iq.dat.com/rateview) and copies this load’s details so you can paste the lane into DAT and enter its quote here. Automatic DAT search/fill is unavailable without an authorized DAT integration.
+                  DAT API rate fetching is active. You can also open [RateView - DAT iQ](https://iq.dat.com/rateview) if needed.
                 </div>
               </div>
 
@@ -3672,6 +4780,3 @@ export default function App() {
     </div>
   );
 }
-
-
-

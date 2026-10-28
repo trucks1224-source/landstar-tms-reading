@@ -795,6 +795,18 @@ test('load cards show their rates and zero for loads without a rate', () => {
   assert.equal(updated.props.children.join('').trim(), 'Rate: $1,800');
 });
 
+test('Copy Selected button counts checked loads', () => {
+  const app = createAppHarness(customers[0], [{ ...load, id: '1' }, { ...load, id: '2' }]);
+  const copyButton = () => app.find(node => node.type === 'button'
+    && String([node.props.children].flat(Infinity).join('')).startsWith('📋 Copy Selected'));
+  assert.equal(copyButton().props.disabled, true);
+  app.find(node => node.type === 'input' && node.props.type === 'checkbox' && node.props.title === undefined
+    && typeof node.props.onChange === 'function' && !node.props.disabled).props.onChange();
+  app.render();
+  assert.equal(copyButton().props.disabled, false);
+  assert.match([copyButton().props.children].flat(Infinity).join(''), /\(2\)/);
+});
+
 test('With rate and No rate buttons show only those loads', () => {
   const app = createAppHarness(customers[0], [
     { ...load, id: '1', rateInput: '1500', rateSource: 'user-entered' },

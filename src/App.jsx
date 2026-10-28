@@ -4651,12 +4651,26 @@ export default function App({ sharing = null } = {}) {
               />
               <span className="text-[11px] text-gray-400">{isGlobalSearch ? 'Select All (current customer)' : 'Select All'}</span>
             </div>
-            <button
-              onClick={handleSelectFirst25}
-              className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
-            >
-              Select First 25
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={selectedIds.length === 0}
+                onClick={() => copyToClipboard(
+                  filteredOrders.filter(o => selectedIds.includes(o.id)).map(o => `${o.id} ${o.route || ''}`.trim()).join('\n'),
+                  'Selected loads'
+                )}
+                title="Copy load number and pickup/delivery city/state for every checked load"
+                className="bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
+              >
+                📋 Copy Selected ({filteredOrders.filter(o => selectedIds.includes(o.id)).length})
+              </button>
+              <button
+                onClick={handleSelectFirst25}
+                className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
+              >
+                Select First 25
+              </button>
+            </div>
           </div>
           <div className="flex items-center gap-1.5 mb-1 px-1">
             <span className="text-[11px] text-gray-400">Show:</span>

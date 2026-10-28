@@ -1571,6 +1571,10 @@ function isTeamEquipment(value) {
   return ['VM', 'VT'].includes(String(value || '').trim().toUpperCase());
 }
 
+function hasLoadRate(load) {
+  return Number(String(load?.rateInput || '').replace(/[$,]/g, '')) > 0;
+}
+
 function getRatePerMile(rate, miles) {
   const rateValue = Number(String(rate || '').replace(/[$,]/g, ''));
   const mileValue = Number(String(miles || '').replace(/[,\s]/g, ''));
@@ -4653,6 +4657,37 @@ export default function App({ sharing = null } = {}) {
               Select First 25
             </button>
           </div>
+          <div className="flex items-center gap-1.5 mb-1 px-1">
+            <span className="text-[11px] text-gray-400">Select:</span>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(filteredOrders.map(o => o.id))}
+              className="bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
+            >
+              All
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(filteredOrders.filter(hasLoadRate).map(o => o.id))}
+              className="bg-emerald-700 hover:bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
+            >
+              With rate ({filteredOrders.filter(hasLoadRate).length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(filteredOrders.filter(o => !hasLoadRate(o)).map(o => o.id))}
+              className="bg-amber-700 hover:bg-amber-600 text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
+            >
+              No rate ({filteredOrders.filter(o => !hasLoadRate(o)).length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedIds([])}
+              className="bg-[#0b132b] border border-[#1c2541] hover:border-blue-500 text-gray-300 text-[10px] px-2 py-0.5 rounded cursor-pointer"
+            >
+              None
+            </button>
+          </div>
 
           <div className="relative mt-1">
             <input
@@ -4670,27 +4705,7 @@ export default function App({ sharing = null } = {}) {
               Bulk selection and export apply to the selected customer only.
             </p>
           )}
-          <div className="mt-2 grid grid-cols-2 gap-1.5">
-            <input
-              type="number"
-              min="0"
-              placeholder="Min miles"
-              aria-label="Minimum miles"
-              value={loadFilters.minMiles}
-              onChange={e => setLoadFilters(prev => ({ ...prev, minMiles: e.target.value }))}
-              className="min-w-0 bg-[#0b132b] border border-[#1c2541] rounded p-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-blue-500"
-            />
-            <input
-              type="number"
-              min="0"
-              placeholder="Max miles"
-              aria-label="Maximum miles"
-              value={loadFilters.maxMiles}
-              onChange={e => setLoadFilters(prev => ({ ...prev, maxMiles: e.target.value }))}
-              className="min-w-0 bg-[#0b132b] border border-[#1c2541] rounded p-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-blue-500"
-            />
-          </div>
-          <div className="mt-1.5">
+          <div className="mt-2">
             <button
               type="button"
               onClick={() => setLaneSort(current => current === 'pickup-asc' ? 'pickup-desc' : 'pickup-asc')}

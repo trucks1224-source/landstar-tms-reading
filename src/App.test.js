@@ -15,7 +15,7 @@ export {
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
-  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile,
+  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported
 };`, { loader: 'jsx', format: 'cjs' });
@@ -793,6 +793,13 @@ test('load cards show their rates and zero for loads without a rate', () => {
   app.render();
   const updated = app.find(node => node.props?.['aria-label'] === 'Rate for load 0');
   assert.equal(updated.props.children.join('').trim(), 'Rate: $1,800');
+});
+
+test('loads with and without rates are told apart for bulk selection', () => {
+  assert.equal(policy.hasLoadRate({ rateInput: '$1,500' }), true);
+  for (const rateInput of [undefined, '', '0', 0, '$0']) {
+    assert.equal(policy.hasLoadRate({ rateInput }), false, String(rateInput));
+  }
 });
 
 test('rate per mile is calculated from rate and miles', () => {

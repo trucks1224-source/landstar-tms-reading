@@ -4772,8 +4772,8 @@ export default function App({ sharing = null } = {}) {
                     <div className="text-xs font-medium text-gray-200 truncate">{ord.route}</div>
                     <button
                       type="button"
-                      onClick={(e) => { e.stopPropagation(); copyToClipboard(ord.route || '', 'Pickup and Delivery'); }}
-                      title="Copy pickup and delivery city/state"
+                      onClick={(e) => { e.stopPropagation();                       copyToClipboard(`${ord.id} ${ord.route || ''}`.trim(), 'Load number and route'); }}
+                                            title="Copy load number and pickup/delivery city/state"
                       aria-label={`Copy route for load ${ord.id}`}
                       className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-1.5 py-0.5 rounded text-[10px] cursor-pointer"
                     >📋</button>

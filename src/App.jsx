@@ -60,7 +60,19 @@ function markLoadsExported(loads, exportedIds, exportedAt) {
 }
 
 const screenshotColumns = [0, 0.024, 0.081, 0.171, 0.27, 0.352, 0.452, 0.547, 0.58, 0.616, 0.693, 0.724, 0.78, 0.815, 0.856, 1];
+const canadianProvinceCodes = new Set('AB BC MB NB NL NS NT NU ON PE QC SK YT'.split(' '));
 const stateCodes = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
+canadianProvinceCodes.forEach(code => stateCodes.add(code));
+
+function normalizeCanadianPostalCode(value) {
+  const compact = String(value || '').toUpperCase().replace(/[\s-]/g, '');
+  if (!/^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\d[ABCEGHJ-NPRSTV-Z]\d$/.test(compact)) return '';
+  return `${compact.slice(0, 3)} ${compact.slice(3)}`;
+}
+
+function getCountryForRegion(region) {
+  return canadianProvinceCodes.has(String(region || '').trim().toUpperCase()) ? 'CA' : 'US';
+}
 
 function clusterPositions(values, tolerance = 0.012) {
   const sorted = [...values].sort((a, b) => a - b);
@@ -3912,16 +3924,30 @@ export default function App({ sharing = null } = {}) {
     const validationErrors = [];
     const exportData = loadsToExport.map(ord => {
       const rowErrors = [];
-      const enteredOriginZip = String(ord.origZip || '').replace(/\D/g, '').slice(0, 5);
-      const enteredDestinationZip = String(ord.destZip || '').replace(/\D/g, '').slice(0, 5);
-      const enteredOriginLocation = enteredOriginZip.length === 5 ? lookupZip(enteredOriginZip) : null;
-      const enteredDestinationLocation = enteredDestinationZip.length === 5 ? lookupZip(enteredDestinationZip) : null;
-      const originLocation = enteredOriginLocation || lookupCityState(ord.origCity, ord.origSt);
-      const destinationLocation = enteredDestinationLocation || lookupCityState(ord.destCity, ord.destSt);
-      const originZip = originLocation?.zip || (enteredOriginLocation ? enteredOriginZip : '');
-      const destinationZip = destinationLocation?.zip || (enteredDestinationLocation ? enteredDestinationZip : '');
-      const originState = String(ord.origSt || originLocation?.state || '').trim().toUpperCase();
-      const destinationState = String(ord.destSt || destinationLocation?.state || '').trim().toUpperCase();
+      const originState = String(ord.origSt || '').trim().toUpperCase();
+      const destinationState = String(ord.destSt || '').trim().toUpperCase();
+      const originCountry = getCountryForRegion(originState);
+      const destinationCountry = getCountryForRegion(destinationState);
+      const enteredOriginZip = originCountry === 'CA'
+        ? normalizeCanadianPostalCode(ord.origZip)
+        : String(ord.origZip || '').replace(/\D/g, '').slice(0, 5);
+      const enteredDestinationZip = destinationCountry === 'CA'
+        ? normalizeCanadianPostalCode(ord.destZip)
+        : String(ord.destZip || '').replace(/\D/g, '').slice(0, 5);
+      const enteredOriginLocation = originCountry === 'US' && enteredOriginZip.length === 5
+        ? lookupZip(enteredOriginZip)
+        : null;
+      const enteredDestinationLocation = destinationCountry === 'US' && enteredDestinationZip.length === 5
+        ? lookupZip(enteredDestinationZip)
+        : null;
+      const originLocation = enteredOriginLocation || (originCountry === 'US' ? lookupCityState(ord.origCity, originState) : null);
+      const destinationLocation = enteredDestinationLocation || (destinationCountry === 'US' ? lookupCityState(ord.destCity, destinationState) : null);
+      const originZip = originCountry === 'CA'
+        ? enteredOriginZip
+        : originLocation?.zip || (enteredOriginLocation ? enteredOriginZip : '');
+      const destinationZip = destinationCountry === 'CA'
+        ? enteredDestinationZip
+        : destinationLocation?.zip || (enteredDestinationLocation ? enteredDestinationZip : '');
       const originCity = getLandstarCity(ord.origCity, originLocation);
       const destinationCity = getLandstarCity(ord.destCity, destinationLocation);
       const originStateMatchesZip = !ord.origSt || !originLocation || originState === originLocation.state;
@@ -3958,10 +3984,12 @@ export default function App({ sharing = null } = {}) {
       const todaySerial = (Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - Date.UTC(1899, 11, 30)) / 86400000;
 
       if (!ord.origCity) rowErrors.push('origin city');
-      if (!originState || !stateCodes.has(originState)) rowErrors.push('origin state');
+      if (!originState || !stateCodes.has(originState)) rowErrors.push('origin state/province');
+      if (originCountry === 'CA' && !originZip) rowErrors.push('valid Canadian origin postal code');
       if (!originStateMatchesZip) rowErrors.push(`origin state must match ZIP ${originZip} (${originLocation.state})`);
       if (!ord.destCity) rowErrors.push('destination city');
-      if (!destinationState || !stateCodes.has(destinationState)) rowErrors.push('destination state');
+      if (!destinationState || !stateCodes.has(destinationState)) rowErrors.push('destination state/province');
+      if (destinationCountry === 'CA' && !destinationZip) rowErrors.push('valid Canadian destination postal code');
       if (!destinationStateMatchesZip) rowErrors.push(`destination state must match ZIP ${destinationZip} (${destinationLocation.state})`);
       if (pickupFrom === null || pickupThru === null) {
         rowErrors.push('pickup date/time (enter valid dates as MM/DD/YYYY HHMM - HHMM)');
@@ -3992,11 +4020,11 @@ export default function App({ sharing = null } = {}) {
         "Origin City": originCity,
         "Origin Zipcode(Required)": originZip,
         "Origin State": originState,
-        "Origin Country(Required)": "US",
+        "Origin Country(Required)": originCountry,
         "Destination City": destinationCity,
         "Destination Zipcode(Required)": destinationZip,
         "Destination State": destinationState,
-        "Destination Country(Required)": "US",
+        "Destination Country(Required)": destinationCountry,
         "Pickup Date (From)(Required)": pickupFrom,
         "Pickup Date (Thru)(Required)": pickupThru,
         "Delivery Date (From)(Required)": deliveryFrom,

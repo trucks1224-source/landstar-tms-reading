@@ -14,6 +14,7 @@ export {
   keepPreviouslyExportedLoadsOpen, markDifferentScheduleLoadsEnt,
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
+  normalizeCanadianPostalCode, getCountryForRegion,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
   getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
@@ -362,6 +363,18 @@ test('VM screenshot equipment imports as team van', () => {
   assert.equal(policy.getEquipmentDescription('VM'), 'VAN:VAN, VAN:53VN');
   assert.equal(policy.isTeamEquipment(' vm '), true);
   assert.equal(policy.isTeamEquipment('V'), false);
+});
+
+test('Canadian postal codes are normalized and provinces export as Canada', () => {
+  assert.equal(policy.normalizeCanadianPostalCode('t4v4l7'), 'T4V 4L7');
+  assert.equal(policy.normalizeCanadianPostalCode('T4V 4L7'), 'T4V 4L7');
+  assert.equal(policy.normalizeCanadianPostalCode('T4V-4L7'), 'T4V 4L7');
+  assert.equal(policy.normalizeCanadianPostalCode('12345'), '');
+  assert.equal(policy.normalizeCanadianPostalCode('T4I 4L7'), '');
+  for (const province of ['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT']) {
+    assert.equal(policy.getCountryForRegion(province), 'CA', province);
+  }
+  assert.equal(policy.getCountryForRegion('WY'), 'US');
 });
 
 test('screenshot equipment OCR restores the letter whitelist after reading load digits', async () => {

@@ -1646,18 +1646,22 @@ function playExportSound() {
     const AudioCtx = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
     if (!AudioCtx) return;
     const ctx = new AudioCtx();
-    [880, 1320].forEach((freq, i) => {
+    [190, 250].forEach((freq) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      const start = ctx.currentTime + i * 0.18;
-      osc.type = 'sine';
+      const start = ctx.currentTime;
       osc.frequency.value = freq;
+      osc.type = 'sawtooth';
       gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.3, start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.35);
+      [0, 0.42].forEach((offset) => {
+        gain.gain.setValueAtTime(0.0001, start + offset);
+        gain.gain.exponentialRampToValueAtTime(0.14, start + offset + 0.025);
+        gain.gain.setValueAtTime(0.14, start + offset + 0.23);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + offset + 0.29);
+      });
       osc.connect(gain).connect(ctx.destination);
       osc.start(start);
-      osc.stop(start + 0.4);
+      osc.stop(start + 0.75);
     });
     setTimeout(() => ctx.close(), 1000);
   } catch {

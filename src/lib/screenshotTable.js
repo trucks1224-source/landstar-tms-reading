@@ -58,8 +58,8 @@ export function detectScreenshotGrid(canvas) {
 export async function recognizeScreenshotEquipment(worker, canvas) {
   const normalizeCode = text => {
     const raw = text.trim().toUpperCase().replace(/[\s.]/g, '');
-    const code = { V53: 'V', VM: 'VT' }[raw] || raw;
-    return /^(VZ|VE|VR|VT|RZ|R|F|SD|VAN|V)$/.test(code) ? code : '';
+    const code = { V53: 'V' }[raw] || raw;
+    return /^(VZ|VE|VR|VT|VM|RZ|R|F|SD|VAN|V)$/.test(code) ? code : '';
   };
   await worker.setParameters({
     tessedit_pageseg_mode: '8',
@@ -204,7 +204,7 @@ export async function readScreenshotGrid(worker, canvas, grid, onProgress, sourc
       padding, padding, equipmentWidth * 5, equipmentHeight * 5
     );
     const equipmentCode = await recognizeScreenshotEquipment(worker, equipmentCanvas);
-    if (!/^(VZ|VE|VR|VT|RZ|R|F|SD|VAN|V)$/.test(equipmentCode)) {
+    if (!/^(VZ|VE|VR|VT|VM|RZ|R|F|SD|VAN|V)$/.test(equipmentCode)) {
       skippedRows.push(`Row ${index + 1}: equipment unreadable for load ${digits}`);
       continue;
     }

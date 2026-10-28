@@ -285,7 +285,7 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
     const orderMatch = numberText.match(/22\d{5}/)?.[0];
     const id = line.verifiedOrderId || orderMatch || '';
     const equipment = line.verifiedEquipmentCode
-      || equipmentText.toUpperCase().match(/\b(V53|VM|VT|VZ|VE|VR|RZ|R|F|SD|VAN|V)\b/)?.[0]?.replace(/^V53$/, 'V').replace(/^VM$/, 'VT') || '';
+      || equipmentText.toUpperCase().match(/\b(V53|VM|VT|VZ|VE|VR|RZ|R|F|SD|VAN|V)\b/)?.[0]?.replace(/^V53$/, 'V') || '';
     const rowText = line.text.toLowerCase();
     if (/distance/.test(rowText) && /weight/.test(rowText) && /comment/.test(rowText)) return null;
     if (/\border\b/.test(rowText) && /\bearly\b/.test(rowText) && /\blate\b/.test(rowText)) return null;

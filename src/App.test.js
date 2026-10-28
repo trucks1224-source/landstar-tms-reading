@@ -353,7 +353,7 @@ test('VM screenshot equipment imports as team van', () => {
   const parsed = parseScreenshotTimes('2280274', [
     '10/28/2026 08...', '10/28/2026 1500', '10/30/2026 0...', '10/30/2026 1500'
   ], customers[0], false, 'VM');
-  assert.equal(parsed.eCode, 'VT');
+  assert.equal(parsed.eCode, 'VM');
   assert.equal(policy.getLandstarEquipmentCode(parsed.eCode), 'VAN');
   assert.equal(policy.isTeamEquipment(parsed.eCode), true);
   assert.equal(policy.getLandstarEquipmentCode('VM'), 'VAN');
@@ -368,7 +368,7 @@ test('screenshot equipment OCR restores the letter whitelist after reading load 
     async setParameters(value) { parameters.push(value); },
     async recognize() { return { data: { text: 'VM' } }; }
   }, {});
-  assert.equal(recognized, 'VT');
+  assert.equal(recognized, 'VM');
   assert.deepEqual(parameters, [{
     tessedit_pageseg_mode: '8',
     tessedit_char_whitelist: 'VEZRFSADNMT53'
@@ -401,7 +401,7 @@ test('equipment OCR retries unreadable cells in high contrast without guessing a
       return { data: { text: attempts === 1 ? '' : 'V M\n' } };
     }
   };
-  assert.equal(await recognize(worker, original), 'VT');
+  assert.equal(await recognize(worker, original), 'VM');
   assert.equal(attempts, 2);
   assert.deepEqual(writes[0], [0, 0, 0, 255, 255, 255, 255, 255]);
   attempts = 0;

@@ -1641,6 +1641,10 @@ function getLandstarCommodity(value) {
   return 'CGAPP';
 }
 
+function isHazmatLoad(load) {
+  return getLandstarCommodity(load?.eCode) === 'HAZMAT';
+}
+
 function getLandstarCommodityValue(code) {
   const commodityValues = {
     CGAPP: 'CGAPP-CONSUMER GOODS OR APPLIANCES',
@@ -4791,8 +4795,10 @@ export default function App({ sharing = null } = {}) {
                   customer === selectedBroker && exportErrorIds.includes(String(ord.id))
                     ? 'bg-red-950/50 border-red-500 shadow-md'
                     : customer === selectedBroker && selectedOrder?.id === ord.id
-                      ? 'bg-[#1c2541] border-blue-500 shadow-md'
-                      : 'bg-[#161f36]/60 border-transparent hover:bg-[#1c2541]/50'
+                      ? `bg-[#1c2541] ${isHazmatLoad(ord) ? 'border-orange-400 border-l-4' : 'border-blue-500'} shadow-md`
+                      : isHazmatLoad(ord)
+                        ? 'bg-orange-950/40 border-orange-500/70 border-l-4 hover:bg-orange-900/40'
+                        : 'bg-[#161f36]/60 border-transparent hover:bg-[#1c2541]/50'
                 }`}
               >
                 <input
@@ -4812,7 +4818,10 @@ export default function App({ sharing = null } = {}) {
                         <span className="bg-red-700 text-white text-[9px] px-1.5 py-0.5 rounded font-bold">EXPORT ERROR</span>
                       )}
                       <span className="bg-blue-900/60 text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{getDisplayEquipmentCode(ord.eCode)}</span>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ord.status === 'ENT' ? 'tms-ent' : ord.status === 'ON HOLD' ? 'bg-red-900/60 text-red-300' : ord.status === 'OPEN' ? 'tms-open' : 'bg-blue-900/60 text-blue-300'}`}>{ord.status}</span>
+                                            {isHazmatLoad(ord) && (
+                                              <span aria-label={`Hazmat load ${ord.id}`} title="Hazmat load" className="bg-orange-500 text-black text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">☢ HAZ</span>
+                                            )}
+                                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ord.status === 'ENT' ? 'tms-ent' : ord.status === 'ON HOLD' ? 'bg-red-900/60 text-red-300' : ord.status === 'OPEN' ? 'tms-open' : 'bg-blue-900/60 text-blue-300'}`}>{ord.status}</span>
                     </div>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'tms-ent' : ord.tag === 'HOLD' ? 'bg-red-600 text-white' : ord.tag === 'OPEN' ? 'tms-open' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
                   </div>

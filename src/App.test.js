@@ -16,7 +16,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
-  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate,
+  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported
 };`, { loader: 'jsx', format: 'cjs' });
@@ -859,6 +859,13 @@ test('loads with and without rates are told apart for bulk selection', () => {
   for (const rateInput of [undefined, '', '0', 0, '$0']) {
     assert.equal(policy.hasLoadRate({ rateInput }), false, String(rateInput));
   }
+});
+
+test('hazmat equipment codes are flagged as hazmat loads', () => {
+  assert.equal(policy.isHazmatLoad({ eCode: 'VZ' }), true);
+  assert.equal(policy.isHazmatLoad({ eCode: 'RZ' }), true);
+  assert.equal(policy.isHazmatLoad({ eCode: 'V' }), false);
+  assert.equal(policy.isHazmatLoad({}), false);
 });
 
 test('rate per mile is calculated from rate and miles', () => {

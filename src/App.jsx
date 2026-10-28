@@ -5144,24 +5144,24 @@ export default function App({ sharing = null } = {}) {
                         onChange={(e) => handleInputChange('rateInput', e.target.value)}
                         onKeyDown={handleRateKeyDown}
                         placeholder="Enter DAT quote"
-                        className="w-32 min-w-0 bg-[#0b132b] border border-emerald-500/60 rounded p-2 text-sm text-white font-mono font-bold"
+                        className="flex-1 basis-0 min-w-0 h-12 bg-[#0b132b] border-2 border-emerald-500 rounded px-3 text-xl text-white font-mono font-extrabold"
                       />
                       <button
                         type="button"
                         onClick={() => copyToClipboard(selectedOrder.rateInput || '', 'Rate')}
                         title="Copy Rate"
-                        className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer"
+                        className="shrink-0 h-12 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer"
                       >
                         📋
                       </button>
                       {(() => {
                         const shownRate = ['user-entered', 'dat-screenshot', 'dat-api'].includes(selectedOrder.rateSource) ? selectedOrder.rateInput : '';
                         const rpm = getRatePerMile(shownRate, selectedOrder.miles);
-                        return rpm ? (
-                          <div aria-label="Rate per mile" title="Rate ÷ miles" className="flex-1 flex items-center justify-center bg-emerald-950 border-2 border-emerald-500 text-emerald-300 px-3 rounded text-2xl font-mono font-extrabold whitespace-nowrap">
-                            ${rpm}/mi
+                        return (
+                          <div aria-label="Rate per mile" title="Rate ÷ miles" className="flex-1 basis-0 min-w-0 h-12 flex items-center justify-center bg-emerald-950 border-2 border-emerald-500 text-emerald-300 px-3 rounded text-xl font-mono font-extrabold whitespace-nowrap">
+                            {rpm ? `$${rpm}/mi` : '$/mi'}
                           </div>
-                        ) : null;
+                        );
                       })()}
                     </div>
                     <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. Press Enter to go to the next load.</p>

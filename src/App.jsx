@@ -4007,7 +4007,8 @@ export default function App({ sharing = null } = {}) {
         "Brokerable": brokerable,
         "Carrier Amt": rate,
         "Carrier Load Alerts": "",
-        "Load Attributes": "",
+        // The Landstar template has no Team column; team is set through this attribute.
+        "Load Attributes": isTeamLoad(ord) ? 'Team Required' : '',
         "Comments": "",
         "Fuel Surcharge Rate Type": "",
         "Fuel Surcharge": "",

@@ -1655,8 +1655,8 @@ function playExportSound() {
       gain.gain.setValueAtTime(0.0001, start);
       [0, 0.42].forEach((offset) => {
         gain.gain.setValueAtTime(0.0001, start + offset);
-        gain.gain.exponentialRampToValueAtTime(0.14, start + offset + 0.025);
-        gain.gain.setValueAtTime(0.14, start + offset + 0.23);
+        gain.gain.exponentialRampToValueAtTime(0.08, start + offset + 0.025);
+        gain.gain.setValueAtTime(0.08, start + offset + 0.23);
         gain.gain.exponentialRampToValueAtTime(0.0001, start + offset + 0.29);
       });
       osc.connect(gain).connect(ctx.destination);

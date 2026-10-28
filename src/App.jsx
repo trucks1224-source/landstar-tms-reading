@@ -5144,7 +5144,7 @@ export default function App({ sharing = null } = {}) {
                         onChange={(e) => handleInputChange('rateInput', e.target.value)}
                         onKeyDown={handleRateKeyDown}
                         placeholder="Enter DAT quote"
-                        className="w-full bg-[#0b132b] border border-emerald-500/60 rounded p-2 text-sm text-white font-mono font-bold"
+                        className="w-32 min-w-0 bg-[#0b132b] border border-emerald-500/60 rounded p-2 text-sm text-white font-mono font-bold"
                       />
                       <button
                         type="button"
@@ -5158,7 +5158,7 @@ export default function App({ sharing = null } = {}) {
                         const shownRate = ['user-entered', 'dat-screenshot', 'dat-api'].includes(selectedOrder.rateSource) ? selectedOrder.rateInput : '';
                         const rpm = getRatePerMile(shownRate, selectedOrder.miles);
                         return rpm ? (
-                          <div aria-label="Rate per mile" title="Rate ÷ miles" className="shrink-0 flex items-center bg-emerald-950 border border-emerald-600/60 text-emerald-300 px-2 rounded text-xs font-mono font-bold whitespace-nowrap">
+                          <div aria-label="Rate per mile" title="Rate ÷ miles" className="flex-1 flex items-center justify-center bg-emerald-950 border-2 border-emerald-500 text-emerald-300 px-3 rounded text-2xl font-mono font-extrabold whitespace-nowrap">
                             ${rpm}/mi
                           </div>
                         ) : null;

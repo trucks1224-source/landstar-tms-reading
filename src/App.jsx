@@ -1571,6 +1571,13 @@ function isTeamEquipment(value) {
   return ['VM', 'VT'].includes(String(value || '').trim().toUpperCase());
 }
 
+function getRatePerMile(rate, miles) {
+  const rateValue = Number(String(rate || '').replace(/[$,]/g, ''));
+  const mileValue = Number(String(miles || '').replace(/[,\s]/g, ''));
+  if (!(rateValue > 0) || !(mileValue > 0)) return '';
+  return (rateValue / mileValue).toFixed(2);
+}
+
 function isTeamLoad(load) {
   return String(load?.team || '').trim().toLowerCase() === 'true' || isTeamEquipment(load?.eCode);
 }
@@ -5147,6 +5154,15 @@ export default function App({ sharing = null } = {}) {
                       >
                         📋
                       </button>
+                      {(() => {
+                        const shownRate = ['user-entered', 'dat-screenshot', 'dat-api'].includes(selectedOrder.rateSource) ? selectedOrder.rateInput : '';
+                        const rpm = getRatePerMile(shownRate, selectedOrder.miles);
+                        return rpm ? (
+                          <div aria-label="Rate per mile" title="Rate ÷ miles" className="shrink-0 flex items-center bg-emerald-950 border border-emerald-600/60 text-emerald-300 px-2 rounded text-xs font-mono font-bold whitespace-nowrap">
+                            ${rpm}/mi
+                          </div>
+                        ) : null;
+                      })()}
                     </div>
                     <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. Press Enter to go to the next load.</p>
                   </div>

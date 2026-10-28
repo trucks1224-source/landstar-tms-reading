@@ -15,7 +15,7 @@ export {
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
-  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad,
+  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported
 };`, { loader: 'jsx', format: 'cjs' });
@@ -793,6 +793,14 @@ test('load cards show their rates and zero for loads without a rate', () => {
   app.render();
   const updated = app.find(node => node.props?.['aria-label'] === 'Rate for load 0');
   assert.equal(updated.props.children.join('').trim(), 'Rate: $1,800');
+});
+
+test('rate per mile is calculated from rate and miles', () => {
+  assert.equal(policy.getRatePerMile('6200', '1841.0'), '3.37');
+  assert.equal(policy.getRatePerMile('$1,500', '500'), '3.00');
+  assert.equal(policy.getRatePerMile('', '500'), '');
+  assert.equal(policy.getRatePerMile('1500', ''), '');
+  assert.equal(policy.getRatePerMile('1500', '0'), '');
 });
 
 test('load cards have a copy button for the pickup and delivery city/state', () => {

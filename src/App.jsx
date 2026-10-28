@@ -285,7 +285,7 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
     const orderMatch = numberText.match(/22\d{5}/)?.[0];
     const id = line.verifiedOrderId || orderMatch || '';
     const equipment = line.verifiedEquipmentCode
-      || equipmentText.toUpperCase().match(/\b(V53|VM|VZ|VE|VR|RZ|R|F|SD|VAN|V)\b/)?.[0]?.replace(/^V53$/, 'V').replace(/^VM$/, 'VT') || '';
+      || equipmentText.toUpperCase().match(/\b(V53|VM|VT|VZ|VE|VR|RZ|R|F|SD|VAN|V)\b/)?.[0]?.replace(/^V53$/, 'V').replace(/^VM$/, 'VT') || '';
     const rowText = line.text.toLowerCase();
     if (/distance/.test(rowText) && /weight/.test(rowText) && /comment/.test(rowText)) return null;
     if (/\border\b/.test(rowText) && /\bearly\b/.test(rowText) && /\blate\b/.test(rowText)) return null;
@@ -977,6 +977,7 @@ function getEquipmentDescription(eCode) {
     case 'VZ': return 'VAN:VAN, VAN:53VN, REFR:REFR';
     case 'VAN':
     case 'V': return 'VAN:VAN, VAN:53VN';
+    case 'VM':
     case 'VT': return 'VAN:VAN, VAN:53VN';
     case 'VR': return 'VAN:VAN, REFR:REFR';
     case 'R': return 'REFR:REFR';
@@ -1566,7 +1567,7 @@ function normalizeMilesValue(value) {
 }
 
 function isTeamEquipment(value) {
-  return String(value || '').trim().toUpperCase() === 'VT';
+  return ['VM', 'VT'].includes(String(value || '').trim().toUpperCase());
 }
 
 function getLandstarEquipmentCode(value) {
@@ -1576,6 +1577,7 @@ function getLandstarEquipmentCode(value) {
     VAN: 'VAN',
     V: 'VAN',
     VT: 'VAN',
+    VM: 'VAN',
     VE: 'VAN',
     VR: 'VAN',
     R: 'REFR',
@@ -3967,7 +3969,7 @@ export default function App({ sharing = null } = {}) {
         "Visibility Code": visibilityCode,
         "Bill as Miles": allowMissingMiles && !(miles > 0) ? '' : miles,
         "Equipment 1(Required)": equipment,
-        "Equipment 2": String(ord.eCode || '').trim().toUpperCase() === 'VT' ? '53VN' : String(ord.eCode || '').trim().toUpperCase() === 'D-LG,D-ST' ? 'D-ST' : '',
+        "Equipment 2": isTeamEquipment(ord.eCode) ? '53VN' : String(ord.eCode || '').trim().toUpperCase() === 'D-LG,D-ST' ? 'D-ST' : '',
         "Equipment 3": "",
         "Weight(Required)": weight ?? '',
         "Rate Type(Required)": "Flat Rate",

@@ -56,14 +56,40 @@ export function detectScreenshotGrid(canvas) {
 }
 
 export async function recognizeScreenshotEquipment(worker, canvas) {
+  const normalizeCode = text => {
+    const raw = text.trim().toUpperCase().replace(/[\s.]/g, '');
+    const code = { V53: 'V', VM: 'VT' }[raw] || raw;
+    return /^(VZ|VE|VR|VT|RZ|R|F|SD|VAN|V)$/.test(code) ? code : '';
+  };
   await worker.setParameters({
     tessedit_pageseg_mode: '8',
-    tessedit_char_whitelist: 'VEZRFSADNM53'
+    tessedit_char_whitelist: 'VEZRFSADNMT53'
   });
   const { data } = await worker.recognize(canvas);
-  const rawEquipmentCode = data.text.trim().toUpperCase().replace(/[\s.]/g, '');
-  // V53 is a 53' van; VM is a team van.
-  return { V53: 'V', VM: 'VT' }[rawEquipmentCode] || rawEquipmentCode;
+  const code = normalizeCode(data.text);
+  if (code) return code;
+
+  // Small colored glyphs can disappear during OCR even though they are legible.
+  // Retry a high-contrast copy without guessing an equipment code.
+  const monochrome = document.createElement('canvas');
+  monochrome.width = canvas.width;
+  monochrome.height = canvas.height;
+  const context = monochrome.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Could not improve screenshot equipment contrast.');
+  await worker.setParameters({ tessedit_pageseg_mode: '7' });
+  for (const threshold of [180, 130]) {
+    context.drawImage(canvas, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+    for (let offset = 0; offset < pixels.data.length; offset += 4) {
+      const value = (pixels.data[offset] + pixels.data[offset + 1] + pixels.data[offset + 2]) / 3 < threshold ? 0 : 255;
+      pixels.data[offset] = pixels.data[offset + 1] = pixels.data[offset + 2] = value;
+    }
+    context.putImageData(pixels, 0, 0);
+    const { data: retryData } = await worker.recognize(monochrome);
+    const retryCode = normalizeCode(retryData.text);
+    if (retryCode) return retryCode;
+  }
+  return '';
 }
 
 export async function readScreenshotGrid(worker, canvas, grid, onProgress, sourceImage) {
@@ -158,7 +184,7 @@ export async function readScreenshotGrid(worker, canvas, grid, onProgress, sourc
     const { data: orderData } = await worker.recognize(orderCanvas);
     const digits = orderData.text.replace(/\s/g, '');
     if (!/^\d{7}$/.test(digits)) {
-      throw new Error(`Could not read the load number in screenshot row ${index + 1}. Existing loads were not deleted.`);
+      throw new Error(`Could not read the full load number in screenshot row ${index + 1}. Widen the Order column and take a new screenshot. Existing loads were not deleted.`);
     }
     const equipmentLeft = Math.floor(grid.columns[0] / scaleX) + 1;
     const equipmentWidth = Math.floor(grid.columns[1] / scaleX) - equipmentLeft;

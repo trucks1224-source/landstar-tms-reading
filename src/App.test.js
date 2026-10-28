@@ -356,6 +356,10 @@ test('VM screenshot equipment imports as team van', () => {
   assert.equal(parsed.eCode, 'VT');
   assert.equal(policy.getLandstarEquipmentCode(parsed.eCode), 'VAN');
   assert.equal(policy.isTeamEquipment(parsed.eCode), true);
+  assert.equal(policy.getLandstarEquipmentCode('VM'), 'VAN');
+  assert.equal(policy.getEquipmentDescription('VM'), 'VAN:VAN, VAN:53VN');
+  assert.equal(policy.isTeamEquipment(' vm '), true);
+  assert.equal(policy.isTeamEquipment('V'), false);
 });
 
 test('screenshot equipment OCR restores the letter whitelist after reading load digits', async () => {
@@ -367,8 +371,46 @@ test('screenshot equipment OCR restores the letter whitelist after reading load 
   assert.equal(recognized, 'VT');
   assert.deepEqual(parameters, [{
     tessedit_pageseg_mode: '8',
-    tessedit_char_whitelist: 'VEZRFSADNM53'
+    tessedit_char_whitelist: 'VEZRFSADNMT53'
   }]);
+});
+
+test('equipment OCR retries unreadable cells in high contrast without guessing a van', async () => {
+  const source = await readFile(new URL('./lib/screenshotTable.js', import.meta.url), 'utf8');
+  const { code: equipmentCode } = await transform(source, { format: 'cjs' });
+  const original = { width: 2, height: 1 };
+  const monochrome = {};
+  const writes = [];
+  monochrome.getContext = () => ({
+    drawImage(canvas) { assert.equal(canvas, original); },
+    getImageData() { return { data: new Uint8ClampedArray([80, 90, 100, 255, 240, 240, 240, 255]) }; },
+    putImageData(pixels) { writes.push(Array.from(pixels.data)); }
+  });
+  const context = {
+    module: { exports: {} },
+    document: { createElement: () => monochrome }
+  };
+  vm.runInNewContext(equipmentCode, context);
+  const recognize = context.module.exports.recognizeScreenshotEquipment;
+  let attempts = 0;
+  const worker = {
+    async setParameters() {},
+    async recognize(canvas) {
+      attempts += 1;
+      assert.equal(canvas, attempts === 1 ? original : monochrome);
+      return { data: { text: attempts === 1 ? '' : 'V M\n' } };
+    }
+  };
+  assert.equal(await recognize(worker, original), 'VT');
+  assert.equal(attempts, 2);
+  assert.deepEqual(writes[0], [0, 0, 0, 255, 255, 255, 255, 255]);
+  attempts = 0;
+  worker.recognize = async () => {
+    attempts += 1;
+    return { data: { text: 'UNKNOWN' } };
+  };
+  assert.equal(await recognize(worker, original), '');
+  assert.equal(attempts, 3);
 });
 
 test('Para red screenshot numbers import ON HOLD and reopen when no longer red', () => {
@@ -722,6 +764,15 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}) 
     }
   };
 }
+
+test('VM and VT vans display Team true while ordinary vans display false', () => {
+  for (const [eCode, expected] of [['VM', 'true'], ['VT', 'true'], ['V', 'false'], ['VZ', 'false']]) {
+    const app = createAppHarness(customers[0], [{ ...load, eCode }]);
+    const team = app.find(node => node.props?.id === 'load-team');
+    assert.ok(team);
+    assert.equal(team.props.value, expected, eCode);
+  }
+});
 
 test('load cards show their rates and zero for loads without a rate', () => {
   const cases = [

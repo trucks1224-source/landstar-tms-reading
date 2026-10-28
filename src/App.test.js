@@ -795,6 +795,27 @@ test('load cards show their rates and zero for loads without a rate', () => {
   assert.equal(updated.props.children.join('').trim(), 'Rate: $1,800');
 });
 
+test('With rate and No rate buttons show only those loads', () => {
+  const app = createAppHarness(customers[0], [
+    { ...load, id: '1', rateInput: '1500', rateSource: 'user-entered' },
+    { ...load, id: '2', rateInput: '' },
+    { ...load, id: '3', rateInput: '0' }
+  ]);
+  const shownIds = () => ['1', '2', '3'].filter(id => app.find(node => node.props?.['aria-label'] === `Rate for load ${id}`));
+  const clickButton = prefix => app.find(node => node.type === 'button'
+    && String([node.props.children].flat(Infinity).join('')).startsWith(prefix)).props.onClick();
+  assert.deepEqual(shownIds(), ['1', '2', '3']);
+  clickButton('With rate (1)');
+  app.render();
+  assert.deepEqual(shownIds(), ['1']);
+  clickButton('No rate (2)');
+  app.render();
+  assert.deepEqual(shownIds(), ['2', '3']);
+  clickButton('All (3)');
+  app.render();
+  assert.deepEqual(shownIds(), ['1', '2', '3']);
+});
+
 test('loads with and without rates are told apart for bulk selection', () => {
   assert.equal(policy.hasLoadRate({ rateInput: '$1,500' }), true);
   for (const rateInput of [undefined, '', '0', 0, '$0']) {

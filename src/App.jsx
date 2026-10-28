@@ -2275,7 +2275,7 @@ export default function App({ sharing = null } = {}) {
 
   const [filter, setFilter] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [loadFilters, setLoadFilters] = useState({ minMiles: '', maxMiles: '' });
+  const [loadFilters, setLoadFilters] = useState({ rate: '' });
   const [laneSort, setLaneSort] = useState('');
  
   const [isAddingBroker, setIsAddingBroker] = useState(false);
@@ -4320,14 +4320,15 @@ export default function App({ sharing = null } = {}) {
   };
 
   const isGlobalSearch = Boolean(searchQuery.trim());
-  const visibleOrderEntries = getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery).filter(({ order: ord }) => {
-    const matchesFilter = filter === 'ALL' || ord.status === filter;
-    const miles = Number(String(ord.miles || '').replace(/[^0-9.]/g, ''));
-    const minimumMiles = loadFilters.minMiles === '' ? null : Number(loadFilters.minMiles);
-    const maximumMiles = loadFilters.maxMiles === '' ? null : Number(loadFilters.maxMiles);
-    const matchesMinimumMiles = minimumMiles === null || (Number.isFinite(miles) && miles >= minimumMiles);
-    const matchesMaximumMiles = maximumMiles === null || (Number.isFinite(miles) && miles <= maximumMiles);
-    return matchesFilter && matchesMinimumMiles && matchesMaximumMiles;
+  const statusOrderEntries = getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery)
+    .filter(({ order: ord }) => filter === 'ALL' || ord.status === filter);
+  const rateCountOrders = statusOrderEntries.filter(({ customer }) => customer === selectedBroker).map(({ order }) => order);
+  const withRateCount = rateCountOrders.filter(hasLoadRate).length;
+  const noRateCount = rateCountOrders.length - withRateCount;
+  const visibleOrderEntries = statusOrderEntries.filter(({ order: ord }) => {
+    if (loadFilters.rate === 'with') return hasLoadRate(ord);
+    if (loadFilters.rate === 'without') return !hasLoadRate(ord);
+    return true;
   }).sort(({ order: left }, { order: right }) => {
     if (laneSort === 'pickup-asc' || laneSort === 'pickup-desc') {
       const difference = getPickupSortValue(left) - getPickupSortValue(right);
@@ -4658,35 +4659,22 @@ export default function App({ sharing = null } = {}) {
             </button>
           </div>
           <div className="flex items-center gap-1.5 mb-1 px-1">
-            <span className="text-[11px] text-gray-400">Select:</span>
-            <button
-              type="button"
-              onClick={() => setSelectedIds(filteredOrders.map(o => o.id))}
-              className="bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
-            >
-              All
-            </button>
-            <button
-              type="button"
-              onClick={() => setSelectedIds(filteredOrders.filter(hasLoadRate).map(o => o.id))}
-              className="bg-emerald-700 hover:bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
-            >
-              With rate ({filteredOrders.filter(hasLoadRate).length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setSelectedIds(filteredOrders.filter(o => !hasLoadRate(o)).map(o => o.id))}
-              className="bg-amber-700 hover:bg-amber-600 text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
-            >
-              No rate ({filteredOrders.filter(o => !hasLoadRate(o)).length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setSelectedIds([])}
-              className="bg-[#0b132b] border border-[#1c2541] hover:border-blue-500 text-gray-300 text-[10px] px-2 py-0.5 rounded cursor-pointer"
-            >
-              None
-            </button>
+            <span className="text-[11px] text-gray-400">Show:</span>
+            {[
+              ['', `All (${rateCountOrders.length})`, 'bg-blue-600 border-blue-400'],
+              ['with', `With rate (${withRateCount})`, 'bg-emerald-600 border-emerald-300'],
+              ['without', `No rate (${noRateCount})`, 'bg-amber-600 border-amber-300']
+            ].map(([value, label, activeClass]) => (
+              <button
+                key={value || 'all'}
+                type="button"
+                aria-pressed={loadFilters.rate === value}
+                onClick={() => { setLoadFilters(prev => ({ ...prev, rate: value })); setSelectedIds([]); }}
+                className={`text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer border ${loadFilters.rate === value ? `${activeClass} ring-2 ring-white/60` : 'bg-slate-700 border-transparent hover:bg-slate-600'}`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
           <div className="relative mt-1">
@@ -4732,11 +4720,11 @@ export default function App({ sharing = null } = {}) {
               <option value="destination-state-desc">Delivery state: Z to A</option>
             </select>
           </div>
-          {(loadFilters.minMiles || loadFilters.maxMiles || laneSort) && (
+          {(loadFilters.rate || laneSort) && (
             <button
               type="button"
               onClick={() => {
-                setLoadFilters({ minMiles: '', maxMiles: '' });
+                setLoadFilters({ rate: '' });
                 setLaneSort('');
               }}
               className="mt-1 text-[10px] text-blue-300 hover:text-white"

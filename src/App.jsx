@@ -3260,8 +3260,13 @@ export default function App({ sharing = null } = {}) {
         block.paragraphs.flatMap(paragraph => paragraph.lines)
       );
       const tableGrid = importMode === 'ai' ? detectScreenshotGrid(canvas) : null;
+      let gridSkippedRows = [];
       if (tableGrid) {
         lines = await readScreenshotGrid(worker, canvas, tableGrid, setScreenshotImportProgress, image);
+        gridSkippedRows = lines.skippedRows || [];
+        if (!lines.length) {
+          throw new Error(`No screenshot rows could be read. Existing loads were not deleted.\n${gridSkippedRows.join('\n')}`);
+        }
       }
       const dataLines = lines
         .filter(line => line.bbox.y0 >= canvas.height * 0.035)
@@ -3500,8 +3505,8 @@ export default function App({ sharing = null } = {}) {
             ? parseNtgScreenshotLines(lines, canvas.width, canvas.height)
             : parseScreenshotLines(lines, canvas.width, canvas.height, brokerName);
       }
-      if (tableGrid && recognizedLoads.length !== tableGrid.rows.length) {
-        throw new Error(`Read ${recognizedLoads.length} of ${tableGrid.rows.length} screenshot load rows. Existing loads were not deleted. Use a clearer image with every origin and destination visible.`);
+      if (tableGrid && recognizedLoads.length !== tableGrid.rows.length - gridSkippedRows.length) {
+        throw new Error(`Read ${recognizedLoads.length} of ${tableGrid.rows.length - gridSkippedRows.length} screenshot load rows. Existing loads were not deleted. Use a clearer image with every origin and destination visible.`);
       }
       
       // Run ZIP Code Auto-fill on Screenshot loads
@@ -3745,7 +3750,8 @@ export default function App({ sharing = null } = {}) {
       const mergedOrders = new Map(existingOrders.map(order => [order.id, order]));
       mergedImportedLoads.forEach(order => mergedOrders.set(order.id, order));
       const replacement = replaceImportedCustomerLoads(brokerName, isDatImport ? importedLoads : recognizedLoads, existingOrders,
-        isDatImport ? { additive: true, allowGeneratedIds: true } : {});
+        isDatImport ? { additive: true, allowGeneratedIds: true }
+          : gridSkippedRows.length ? { additive: true, allowGeneratedIds: !preservesImportedLoadStatus(brokerName) } : {});
       const finalLoads = replacement ? replacement.loads : Array.from(mergedOrders.values());
       const nextOrders = {
         ...customerOrdersMap,
@@ -3774,6 +3780,7 @@ export default function App({ sharing = null } = {}) {
         getImportReplacementMessage(replacement) +
         (isDatImport && skippedDuplicateCount ? `• Duplicate lane/pickup-day rows skipped: ${skippedDuplicateCount}\n` : '') +
         (datUnreadableRows.length ? `• Skipped unreadable rows (not imported):\n${datUnreadableRows.join('\n')}\n` : '') +
+        (gridSkippedRows.length ? `• Skipped rows (not imported; existing loads kept). Add these by hand or widen the column and re-import:\n${gridSkippedRows.join('\n')}\n` : '') +
         (exportedCount > 0
           ? replacement?.usesScreenshotStatus
             ? `• Previously exported; status taken from screenshot color: ${exportedCount}\n`
@@ -4738,7 +4745,16 @@ export default function App({ sharing = null } = {}) {
                     </div>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'tms-ent' : ord.tag === 'HOLD' ? 'bg-red-600 text-white' : ord.tag === 'OPEN' ? 'tms-open' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
                   </div>
-                  <div className="text-xs font-medium text-gray-200 mb-1 truncate">{ord.route}</div>
+                  <div className="flex items-center gap-1.5 mb-1 min-w-0">
+                    <div className="text-xs font-medium text-gray-200 truncate">{ord.route}</div>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); copyToClipboard(ord.route || '', 'Pickup and Delivery'); }}
+                      title="Copy pickup and delivery city/state"
+                      aria-label={`Copy route for load ${ord.id}`}
+                      className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-1.5 py-0.5 rounded text-[10px] cursor-pointer"
+                    >📋</button>
+                  </div>
                   <div className="text-[11px] text-gray-400">{ord.puDate} {ord.delDate}</div>
                   <div aria-label={`Rate for load ${ord.id}`} className="mt-1 text-xs text-emerald-400 font-bold">
                     Rate: ${(Number(String(ord.rateInput || '').replace(/[$,]/g, '')) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}

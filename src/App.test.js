@@ -793,6 +793,15 @@ test('load cards show their rates and zero for loads without a rate', () => {
   assert.equal(updated.props.children.join('').trim(), 'Rate: $1,800');
 });
 
+test('load cards have a copy button for the pickup and delivery city/state', () => {
+  const app = createAppHarness(customers[0], [{ ...load, id: '77', route: 'COMMERCE, CA → CALEXICO, CA' }]);
+  const button = app.find(node => node.props?.['aria-label'] === 'Copy route for load 77');
+  assert.ok(button);
+  let stopped = false;
+  button.props.onClick({ stopPropagation: () => { stopped = true; } });
+  assert.ok(stopped);
+});
+
 test('sort controls order loads independently by pickup/delivery city or state in both directions', () => {
   const app = createAppHarness(customers[0], [
     { ...load, id: '1', origCity: 'Atlanta', origSt: 'GA', destCity: 'Seattle', destSt: 'WA' },

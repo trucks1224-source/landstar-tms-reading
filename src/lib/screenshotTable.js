@@ -94,6 +94,7 @@ export async function recognizeScreenshotEquipment(worker, canvas) {
 
 export async function readScreenshotGrid(worker, canvas, grid, onProgress, sourceImage) {
   const lines = [];
+  const skippedRows = [];
   const padding = 16;
   const nativeCanvas = document.createElement('canvas');
   nativeCanvas.width = sourceImage.width;
@@ -184,7 +185,8 @@ export async function readScreenshotGrid(worker, canvas, grid, onProgress, sourc
     const { data: orderData } = await worker.recognize(orderCanvas);
     const digits = orderData.text.replace(/\s/g, '');
     if (!/^\d{7}$/.test(digits)) {
-      throw new Error(`Could not read the full load number in screenshot row ${index + 1}. Widen the Order column and take a new screenshot. Existing loads were not deleted.`);
+      skippedRows.push(`Row ${index + 1}: load number cut off or unreadable${digits ? ` (${digits}…)` : ''}`);
+      continue;
     }
     const equipmentLeft = Math.floor(grid.columns[0] / scaleX) + 1;
     const equipmentWidth = Math.floor(grid.columns[1] / scaleX) - equipmentLeft;
@@ -203,7 +205,8 @@ export async function readScreenshotGrid(worker, canvas, grid, onProgress, sourc
     );
     const equipmentCode = await recognizeScreenshotEquipment(worker, equipmentCanvas);
     if (!/^(VZ|VE|VR|VT|RZ|R|F|SD|VAN|V)$/.test(equipmentCode)) {
-      throw new Error(`Could not read equipment for load ${digits}. Existing loads were not deleted.`);
+      skippedRows.push(`Row ${index + 1}: equipment unreadable for load ${digits}`);
+      continue;
     }
     lines.push({
       text: data.text,
@@ -216,5 +219,6 @@ export async function readScreenshotGrid(worker, canvas, grid, onProgress, sourc
     });
   }
   await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
+  lines.skippedRows = skippedRows;
   return lines;
 }

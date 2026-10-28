@@ -4233,7 +4233,7 @@ export default function App({ sharing = null } = {}) {
         "Carrier Load Alerts": "",
         // The Landstar template has no Team column; team is set through this attribute.
         "Load Attributes": [isHazmatLoad(ord) && 'Hazmat', isTeamLoad(ord) && 'Team Required'].filter(Boolean).join(', '),
-        "Comments": isTankerLoad(ord) ? 'Tanker (N) Endorsement required' : '',
+        "Comments": "",
         "Fuel Surcharge Rate Type": "",
         "Fuel Surcharge": "",
         "Team": isTeamLoad(ord) ? 'true' : 'false'
@@ -5424,7 +5424,7 @@ export default function App({ sharing = null } = {}) {
                       className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
                     />
                     {isTankerLoad(selectedOrder) && (
-                      <p className="text-xs text-yellow-300 font-bold mt-1">🛢 Tanker (N) Endorsement required — sent to Landstar in Comments</p>
+                      <p className="text-xs text-yellow-300 font-bold mt-1">🛢 Tanker (N) Endorsement required</p>
                     )}
                   </div>
                   <div>

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { detectScreenshotGrid, readScreenshotGrid } from './lib/screenshotTable.js';
+import { findNtgCardRegions } from './lib/ntgCards.js';
 
 const exportedLoadRetentionMs = 30 * 24 * 60 * 60 * 1000;
 
@@ -405,7 +406,7 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
   }).filter(Boolean);
 }
 
-function findNtgCards(lines, imageWidth, imageHeight) {
+function findNtgCards(lines, imageWidth, imageHeight, { wholeCard = false } = {}) {
   const words = lines.flatMap(line => line.words || [])
     .map(word => {
       const x0 = word.bbox.x0 / imageWidth;
@@ -413,6 +414,9 @@ function findNtgCards(lines, imageWidth, imageHeight) {
       return { text: String(word.text || '').trim(), x0, x1, cx: (x0 + x1) / 2, cy: (word.bbox.y0 + word.bbox.y1) / 2, h: word.bbox.y1 - word.bbox.y0 };
     })
     .filter(word => word.text);
+  if (wholeCard) {
+    return { cards: words.length ? [{ cy: imageHeight * 0.3, top: 0, bottom: imageHeight, words }] : [], spacing: imageHeight };
+  }
   const markers = words
     .filter(word => (word.cx > 0.5 && /^(sto\w{0,2}|weight|total)$/i.test(word.text)) || (word.x0 < 0.2 && /^\d{7}$/.test(word.text)))
     .sort((a, b) => a.cy - b.cy);
@@ -438,8 +442,8 @@ function findNtgCards(lines, imageWidth, imageHeight) {
   return { cards, spacing };
 }
 
-function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
-  const { cards: anchors } = findNtgCards(lines, imageWidth, imageHeight);
+function parseNtgScreenshotLines(lines, imageWidth, imageHeight, options = {}) {
+  const { cards: anchors } = findNtgCards(lines, imageWidth, imageHeight, options);
   const toRows = region => {
     const rows = [];
     region.slice().sort((a, b) => a.cy - b.cy).forEach(word => {
@@ -454,18 +458,20 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
     return rows.map(row => ({ ...row, text: row.words.sort((a, b) => a.x0 - b.x0).map(word => word.text).join(' ') }));
   };
   const parseCity = text => {
-    const match = text.replace(/[|]/g, '').match(/^(.*?)[,.]?\s+([A-Za-z]{2})$/);
+    const match = text.replace(/[|]/g, '').replace(/(\s+\d{1,2})+\s*$/, '').match(/^(.*?)[,.]?\s+([A-Za-z]{2})$/);
     const state = match?.[2].toUpperCase();
     if (!match || !stateCodes.has(state)) return null;
     const city = match[1].replace(/[^A-Za-z\s.'-]/g, '').replace(/\s+/g, ' ').trim().toUpperCase();
     return city ? { city, state } : null;
   };
   const parseDates = text => {
-    const cleaned = text.replace(/[Oo]/g, '0');
-    const dateMatch = cleaned.match(/(1[0-2]|0?[1-9])\s*\/\s*(3[01]|[12]\d|0?[1-9])\s*\/\s*(20\d{2}|\d{2})/);
+    const cleaned = text.replace(/[Oo]/g, '0').replace(/(\d)\s*[vV|\\]\s*(\d)/g, '$1/$2');
+    const dateMatch = cleaned.match(/(1[0-2]|0?[1-9])\s*\/?\s*(3[01]|[12]\d|0?[1-9])\s*\/\s*(20\d{2}|\d{2})/);
     if (!dateMatch) return '';
     const date = `${dateMatch[1].padStart(2, '0')}/${dateMatch[2].padStart(2, '0')}/${dateMatch[3].length === 2 ? `20${dateMatch[3]}` : dateMatch[3]}`;
-    const times = Array.from(cleaned.slice(dateMatch.index + dateMatch[0].length).matchAll(/(\d{1,2})\s*[:;.-]\s*(\d{2})/g))
+    const timeText = cleaned.slice(dateMatch.index + dateMatch[0].length)
+      .replace(/\b[D0]?[BR0-9][\s:;.]*\d{2}\b/g, value => value.replace(/D/g, '0').replace(/[BR]/g, '8'));
+    const times = Array.from(timeText.matchAll(/\b([01]?\d|2[0-3])\s*[:;.]?\s*([0-5]\d)\b/g))
       .map(match => `${match[1].padStart(2, '0')}${match[2]}`);
     const start = times[0] || '0800';
     const end = times[1] || (times[0] ? times[0] : '1600');
@@ -487,9 +493,14 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
     const rateWord = card.find(word => /^\$\s*[\d,]+(\.\d+)?$/.test(word.text));
     const rate = rateWord ? rateWord.text.replace(/[^0-9.]/g, '') : '';
     const weightWord = card
-      .filter(word => word.cx >= statsLeft && word !== rateWord && /^(\d{1,3}(,\d{3})+|\d{4,6})(\.\d+)?$/.test(word.text))
+      .filter(word => word.cx >= statsLeft && word !== rateWord && /^(\d{1,3}([,.]\d{3})+|\d{4,6})(\.\d+)?$/.test(word.text))
       .sort((a, b) => a.x0 - b.x0)[0];
-    const weight = weightWord ? String(Math.round(Number(weightWord.text.replace(/,/g, '')))) : '';
+    // "2.293" is a misread "2,293"; a decimal weight like "39,974.4" keeps its decimal.
+    const weightText = weightWord ? weightWord.text.replace(/^(\d{1,3})\.(\d{3})(?=$|\.)/, '$1,$2') : '';
+    let weightValue = weightWord ? Math.round(Number(weightText.replace(/,/g, ''))) : 0;
+    // OCR sometimes drops the separators in weights like "39,974.4", producing 399744.
+    while (weightValue > 60000 && !/[.,]/.test(weightWord.text)) weightValue = Math.round(weightValue / 10);
+    const weight = weightValue ? String(weightValue) : '';
 
     const originRows = toRows(card.filter(word => word.x0 > 0.08 && word.cx < centerX - 0.06));
     const destRows = toRows(card.filter(word => word.cx > centerX + 0.06 && word.cx < statsLeft));
@@ -507,11 +518,14 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
     const equipmentText = card.map(word => word.text).join(' ');
     const isReefer = /reefer/i.test(equipmentText);
     const isFlatbed = /flat\s*bed|\bflat\b/i.test(equipmentText);
-    const tags = [/hazmat/i.test(equipmentText) && 'Hazmat', /tanker/i.test(equipmentText) && 'Tanker (N) Endorsement'].filter(Boolean);
+    const tags = [/haz|\b\w{1,2}zmat\b/i.test(equipmentText) && 'Hazmat', /tanker/i.test(equipmentText) && 'Tanker (N) Endorsement'].filter(Boolean);
+    const isHazmat = tags.includes('Hazmat');
     const shortDate = value => value.replace(/^(\d{2})\/(\d{2})\/\d{4}\s+(\d{4}).*$/, '$1/$2 $3');
     return {
       id: idWord ? idWord.text : `NTG-${Date.now()}-${index}`,
-      eCode: /straight\s*truck/i.test(equipmentText) ? 'D-LG' : /sprinter|box\s*truck/i.test(equipmentText) ? 'D-LG,D-ST' : isFlatbed ? 'F' : isReefer ? (/\bvan\b/i.test(equipmentText) ? 'VR' : tags.includes('Hazmat') ? 'RZ' : 'R') : tags.includes('Hazmat') ? 'VZ' : 'V',
+      eCode: /straight\s*truck/i.test(equipmentText) ? 'D-LG' : /sprinter|box\s*truck/i.test(equipmentText) ? 'D-LG,D-ST' : isFlatbed ? 'F,SD' : isHazmat ? (isReefer && !/\bvan\b/i.test(equipmentText) ? 'RZ' : 'VZ') : isReefer ? (/\bvan\b/i.test(equipmentText) ? 'VR' : 'R') : 'V',
+      ...(isHazmat ? { hazmat: 'true' } : {}),
+      ...(tags.some(tag => /tanker/i.test(tag)) ? { tanker: 'true' } : {}),
       status: 'OPEN',
       tag: 'OPEN',
       route: `${origin.location.city}, ${origin.location.state} → ${destination.location.city}, ${destination.location.state}`,
@@ -538,6 +552,158 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
       notes: idWord ? '' : 'Load number was unreadable from the NTG screenshot; please enter it.'
     };
   }).filter(Boolean);
+}
+
+async function readCanvasStrip(worker, canvas, x0, y0, x1, y1, pattern, thresholds = [150, 110, 190, 0]) {
+  const left = Math.max(0, Math.round(x0));
+  const top = Math.max(0, Math.round(y0));
+  const width = Math.min(canvas.width, Math.round(x1)) - left;
+  const height = Math.min(canvas.height, Math.round(y1)) - top;
+  if (width < 4 || height < 4) return '';
+  for (const threshold of thresholds) {
+    const cropCanvas = document.createElement('canvas');
+    cropCanvas.width = width * 2 + 64;
+    cropCanvas.height = height * 2 + 64;
+    const cropContext = cropCanvas.getContext('2d', { willReadFrequently: true });
+    cropContext.fillStyle = '#fff';
+    cropContext.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+    cropContext.drawImage(canvas, left, top, width, height, 32, 32, width * 2, height * 2);
+    if (threshold) {
+      const pixels = cropContext.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
+      for (let offset = 0; offset < pixels.data.length; offset += 4) {
+        const luminance = pixels.data[offset] * 0.299 + pixels.data[offset + 1] * 0.587 + pixels.data[offset + 2] * 0.114;
+        const value = luminance < threshold ? 0 : 255;
+        pixels.data[offset] = value;
+        pixels.data[offset + 1] = value;
+        pixels.data[offset + 2] = value;
+        pixels.data[offset + 3] = 255;
+      }
+      cropContext.putImageData(pixels, 0, 0);
+    }
+    const { data: stripData } = await worker.recognize(cropCanvas);
+    const found = stripData.text.match(pattern)?.[0];
+    if (found) return found;
+  }
+  return '';
+}
+
+// Picks the most common digit at each position across several OCR readings of one load number.
+function voteNtgLoadNumber(candidates) {
+  const readings = candidates.filter(candidate => /^\d{7}$/.test(candidate));
+  if (!readings.length) return null;
+  const value = Array.from({ length: 7 }, (_, position) => {
+    const counts = {};
+    readings.forEach(reading => { counts[reading[position]] = (counts[reading[position]] || 0) + 1; });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+  }).join('').replace(/^0/, '9');
+  return { value, unanimous: readings.length >= 2 && readings.every(reading => reading === value) };
+}
+
+// Re-reads the small parts of one cropped NTG/Beon load card that full-card OCR tends to miss.
+async function fillMissingNtgCardDetails(worker, canvas, lines) {
+  const W = canvas.width;
+  const H = canvas.height;
+  const words = lines.flatMap(line => line.words || [])
+    .map(word => ({ text: String(word.text || '').trim(), ...word.bbox }))
+    .filter(word => word.text);
+  const add = (text, x0, y0, x1, y1) => lines.push({ text, bbox: { x0, y0, x1, y1 }, words: [{ text, bbox: { x0, y0, x1, y1 } }] });
+  const find = pattern => words.find(word => pattern.test(word.text));
+  const allText = words.map(word => word.text).join(' ');
+  const milesWord = words.find(word => /miles?$/i.test(word.text) && word.x0 > W * 0.15 && word.x1 < W * 0.65);
+  const totalLabel = words.find(word => /^total$/i.test(word.text) && word.x0 > W * 0.6);
+  const weightLabel = words.find(word => /^w\w{2,4}t$/i.test(word.text) && word.x0 > W * 0.6);
+  const label = totalLabel || weightLabel;
+  const labelHeight = label ? label.y1 - label.y0 : H * 0.08;
+  const valueTop = label ? label.y1 + labelHeight * 0.2 : H * 0.35;
+  const valueBottom = label ? label.y1 + labelHeight * 3 : H * 0.75;
+
+  await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '0123456789,.$' });
+  const idCandidates = words.filter(word => word.x0 < W * 0.2 && /^\d{7}$/.test(word.text)).map(word => word.text);
+  for (const threshold of [0, 150, 110, 190, 130, 170]) {
+    const reading = await readCanvasStrip(worker, canvas, 0, 0, W * 0.08, H, /\d{7}/, [threshold]);
+    if (reading) idCandidates.push(reading.slice(0, 7));
+  }
+  const loadNumber = voteNtgLoadNumber(idCandidates);
+  if (loadNumber) {
+    const text = loadNumber.value;
+    lines.unshift({ text, bbox: { x0: W * 0.01, y0: H * 0.45, x1: W * 0.05, y1: H * 0.5 }, words: [{ text, bbox: { x0: W * 0.01, y0: H * 0.45, x1: W * 0.05, y1: H * 0.5 } }] });
+    if (!loadNumber.unanimous) lines.ntgIdUncertain = true;
+  }
+  const statsLeft = W * 0.67;
+  if (!words.some(word => word.x0 > statsLeft && /^\$\s*[\d,]+(\.\d+)?$/.test(word.text))) {
+    const rateLeft = totalLabel ? totalLabel.x0 - W * 0.01 : W * 0.765;
+    const rateText = await readCanvasStrip(worker, canvas, rateLeft, valueTop, rateLeft + W * 0.075, valueBottom, /\d[\d,]*\.\d{2}/);
+    if (rateText) add(`$${rateText}`, rateLeft + W * 0.01, (valueTop + valueBottom) / 2 - 4, rateLeft + W * 0.06, (valueTop + valueBottom) / 2 + 4);
+  }
+  if (!words.some(word => word.x0 > statsLeft && /^(\d{1,3}(,\d{3})+|\d{4,6})(\.\d+)?$/.test(word.text))) {
+    const weightLeft = weightLabel ? weightLabel.x0 - W * 0.02 : W * 0.69;
+    const weightRight = totalLabel ? totalLabel.x0 - W * 0.01 : W * 0.765;
+    const weightText = await readCanvasStrip(worker, canvas, weightLeft, valueTop, weightRight, valueBottom, /\d{1,3}(,\d{3})+(\.\d+)?|\d{4,6}(\.\d+)?/);
+    if (weightText) add(weightText, weightLeft + W * 0.01, (valueTop + valueBottom) / 2 - 4, weightRight - W * 0.01, (valueTop + valueBottom) / 2 + 4);
+  }
+
+  await worker.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '' });
+  if (!/van|reefer|flat|truck|sprinter|hot\s*shot|step|conestoga/i.test(allText)) {
+    const lineHeight = milesWord ? milesWord.y1 - milesWord.y0 : H * 0.08;
+    const top = milesWord ? milesWord.y0 - lineHeight * 3.4 : 0;
+    const bottom = milesWord ? milesWord.y0 - lineHeight * 0.3 : H * 0.5;
+    const equipment = await readCanvasStrip(worker, canvas, W * 0.2, top, W * 0.52, bottom, /[\w /]*(van|reefer|flat\s*bed|truck|sprinter|hot\s*shot)[\w /]*/i);
+    const centerX = milesWord ? (milesWord.x0 + milesWord.x1) / 2 : W * 0.37;
+    if (equipment) add(equipment.trim(), centerX - 4, top, centerX + 4, bottom);
+  }
+  if (!/haz|\b\w{1,2}zmat\b/i.test(allText)) {
+    const tagText = await readCanvasStrip(worker, canvas, 0, H * 0.7, W * 0.35, H, /.*(haz|tank).*/is);
+    const tags = [/haz/i.test(tagText) && 'Hazmat', /tank/i.test(tagText) && 'Tanker'].filter(Boolean);
+    if (tags.length) add(tags.join(' '), W * 0.01, H * 0.9, W * 0.1, H * 0.95);
+  }
+}
+
+async function readNtgScreenshotCards(worker, image, onProgress) {
+  const analysis = document.createElement('canvas');
+  analysis.width = image.naturalWidth || image.width;
+  analysis.height = image.naturalHeight || image.height;
+  const analysisContext = analysis.getContext('2d', { willReadFrequently: true });
+  if (!analysisContext) return [];
+  analysisContext.drawImage(image, 0, 0);
+  const regions = findNtgCardRegions(
+    analysisContext.getImageData(0, 0, analysis.width, analysis.height).data, analysis.width, analysis.height
+  );
+  const loads = [];
+  for (const [index, region] of regions.entries()) {
+    onProgress?.(`Reading NTG load card ${index + 1} of ${regions.length}...`);
+    const regionWidth = region.x1 - region.x0;
+    const regionHeight = region.y1 - region.y0;
+    const scale = Math.max(1, Math.min(4, 3600 / regionWidth));
+    const cardCanvas = document.createElement('canvas');
+    cardCanvas.width = Math.round(regionWidth * scale);
+    cardCanvas.height = Math.round(regionHeight * scale);
+    const cardContext = cardCanvas.getContext('2d', { willReadFrequently: true });
+    if (!cardContext) continue;
+    cardContext.imageSmoothingQuality = 'high';
+    cardContext.drawImage(image, region.x0, region.y0, regionWidth, regionHeight, 0, 0, cardCanvas.width, cardCanvas.height);
+    const pixels = cardContext.getImageData(0, 0, cardCanvas.width, cardCanvas.height);
+    for (let offset = 0; offset < pixels.data.length; offset += 4) {
+      const gray = pixels.data[offset] * 0.299 + pixels.data[offset + 1] * 0.587 + pixels.data[offset + 2] * 0.114;
+      pixels.data[offset] = gray;
+      pixels.data[offset + 1] = gray;
+      pixels.data[offset + 2] = gray;
+    }
+    cardContext.putImageData(pixels, 0, 0);
+    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
+    const { data } = await worker.recognize(cardCanvas, {}, { blocks: true });
+    const lines = (data.blocks || []).flatMap(block => block.paragraphs.flatMap(paragraph => paragraph.lines));
+    await fillMissingNtgCardDetails(worker, cardCanvas, lines);
+    loads.push(...parseNtgScreenshotLines(lines, cardCanvas.width, cardCanvas.height, { wholeCard: true })
+      .map(load => ({
+        ...load,
+        id: /^NTG-/.test(load.id) ? `NTG-${Date.now()}-${index}` : load.id,
+        ...(lines.ntgIdUncertain && !/^NTG-/.test(load.id)
+          ? { notes: [load.notes, 'Load number was hard to read from the screenshot; please verify it.'].filter(Boolean).join(' ') }
+          : {})
+      })));
+  }
+  await worker.setParameters({ tessedit_pageseg_mode: '3', tessedit_char_whitelist: '' });
+  return loads;
 }
 
 function editDistance(a, b) {
@@ -996,6 +1162,7 @@ function getEquipmentDescription(eCode) {
     case 'R': return 'REFR:REFR';
     case 'RZ': return 'REFR:REFR';
     case 'F': return '48FL, 53FL, FLAT';
+    case 'F,SD': return '48FL, 53FL, FLAT, STEP:SD';
     case 'SD': return 'STEP:SD';
     case 'D-LG': return 'D-LG';
     case 'D-LG,D-ST': return 'D-LG, D-ST';
@@ -1287,7 +1454,7 @@ function parseChScreenshotLines(lines, imageWidth, imageHeight, selectedBroker, 
     const rate = Number(rateText);
     const hasRate = rate >= 100 && rate <= 20000;
 
-    const mode = /^R/.test(modeText) ? 'R' : /^F/.test(modeText) ? 'F' : 'V';
+    const mode = /^R/.test(modeText) ? 'R' : /^F/.test(modeText) ? 'F,SD' : 'V';
     const order = {
       id: idMatch[1],
       eCode: mode,
@@ -1618,6 +1785,7 @@ function getLandstarEquipmentCode(value) {
     R: 'REFR',
     RZ: 'REFR',
     F: 'FLAT',
+    'F,SD': 'FLAT',
     SD: 'STEP'
   };
   if (equipmentCodes[code]) return equipmentCodes[code];
@@ -1670,7 +1838,21 @@ function playExportSound() {
 }
 
 function isHazmatLoad(load) {
-  return getLandstarCommodity(load?.eCode) === 'HAZMAT';
+  return getLandstarCommodity(load?.eCode) === 'HAZMAT'
+    || String(load?.hazmat || '').toLowerCase() === 'true'
+    || /\bhazmat\b/i.test(String(load?.planningComment || ''));
+}
+
+function isTankerLoad(load) {
+  return String(load?.tanker || '').toLowerCase() === 'true' || /tanker/i.test(String(load?.planningComment || ''));
+}
+
+function isFlatbedEquipment(value) {
+  return ['F', 'F,SD'].includes(String(value || '').replace(/\s/g, '').toUpperCase());
+}
+
+function getLoadCommodity(load) {
+  return isHazmatLoad(load) ? 'HAZMAT' : getLandstarCommodity(load?.eCode);
 }
 
 function getLandstarCommodityValue(code) {
@@ -3471,40 +3653,13 @@ export default function App({ sharing = null } = {}) {
       const isNtgImport = importMode === 'ntg';
       const isChImport = importMode === 'ch';
       let chSkipNote = '';
+      let ntgCardLoads = [];
       if (isNtgImport) {
+        ntgCardLoads = await readNtgScreenshotCards(worker, image, setScreenshotImportProgress);
+      }
+      if (isNtgImport && !ntgCardLoads.length) {
         const { cards: ntgCards, spacing: ntgSpacing } = findNtgCards(lines, canvas.width, canvas.height);
-        const readStrip = async (x0, y0, x1, y1, pattern) => {
-          const left = Math.max(0, Math.round(x0));
-          const top = Math.max(0, Math.round(y0));
-          const width = Math.min(canvas.width, Math.round(x1)) - left;
-          const height = Math.min(canvas.height, Math.round(y1)) - top;
-          if (width < 4 || height < 4) return '';
-          for (const threshold of [150, 110, 190, 0]) {
-            const cropCanvas = document.createElement('canvas');
-            cropCanvas.width = width * 2 + 64;
-            cropCanvas.height = height * 2 + 64;
-            const cropContext = cropCanvas.getContext('2d', { willReadFrequently: true });
-            cropContext.fillStyle = '#fff';
-            cropContext.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
-            cropContext.drawImage(canvas, left, top, width, height, 32, 32, width * 2, height * 2);
-            if (threshold) {
-              const pixels = cropContext.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
-              for (let offset = 0; offset < pixels.data.length; offset += 4) {
-                const luminance = pixels.data[offset] * 0.299 + pixels.data[offset + 1] * 0.587 + pixels.data[offset + 2] * 0.114;
-                const value = luminance < threshold ? 0 : 255;
-                pixels.data[offset] = value;
-                pixels.data[offset + 1] = value;
-                pixels.data[offset + 2] = value;
-                pixels.data[offset + 3] = 255;
-              }
-              cropContext.putImageData(pixels, 0, 0);
-            }
-            const { data: stripData } = await worker.recognize(cropCanvas);
-            const found = stripData.text.match(pattern)?.[0];
-            if (found) return found;
-          }
-          return '';
-        };
+        const readStrip = (x0, y0, x1, y1, pattern) => readCanvasStrip(worker, canvas, x0, y0, x1, y1, pattern);
         const cardNeedsId = card => !card.words.some(word => word.x0 < 0.2 && /^\d{7}$/.test(word.text));
         const cardNeedsWeight = card => !card.words.some(word =>
           word.cx > 0.6 && /^(\d{1,3}(,\d{3})+|\d{4,6})(\.\d+)?$/.test(word.text)
@@ -3575,7 +3730,7 @@ export default function App({ sharing = null } = {}) {
         recognizedLoads = isDatImport
           ? parseDatScreenshotLines(lines, canvas.width, canvas.height, brokerName, laneRates)
           : isNtgImport
-            ? parseNtgScreenshotLines(lines, canvas.width, canvas.height)
+            ? (ntgCardLoads.length ? ntgCardLoads : parseNtgScreenshotLines(lines, canvas.width, canvas.height))
             : parseScreenshotLines(lines, canvas.width, canvas.height, brokerName);
       }
       if (tableGrid && recognizedLoads.length !== tableGrid.rows.length - gridSkippedRows.length) {
@@ -4005,7 +4160,7 @@ export default function App({ sharing = null } = {}) {
       const deliveryFrom = toExcelDateTime(delParts[0]);
       const deliveryThru = toExcelDateTime(delParts[1] || delParts[0], delParts[0]);
       const equipment = getLandstarEquipmentCode(ord.eCode);
-      const commodity = getLandstarCommodity(ord.eCode);
+      const commodity = getLoadCommodity(ord);
       const miles = Number(normalizeMilesValue(ord.miles));
       const weight = parseWeightPounds(ord.weight);
       const rate = Number(String(ord.rateInput || '').replace(/[$,]/g, ''));
@@ -4065,7 +4220,7 @@ export default function App({ sharing = null } = {}) {
         "Visibility Code": visibilityCode,
         "Bill as Miles": allowMissingMiles && !(miles > 0) ? '' : miles,
         "Equipment 1(Required)": equipment,
-        "Equipment 2": isTeamLoad(ord) ? '53VN' : String(ord.eCode || '').trim().toUpperCase() === 'D-LG,D-ST' ? 'D-ST' : '',
+        "Equipment 2": isTeamLoad(ord) ? '53VN' : isFlatbedEquipment(ord.eCode) ? 'STEP' : String(ord.eCode || '').trim().toUpperCase() === 'D-LG,D-ST' ? 'D-ST' : '',
         "Equipment 3": "",
         "Weight(Required)": weight ?? '',
         "Rate Type(Required)": "Flat Rate",
@@ -4075,8 +4230,8 @@ export default function App({ sharing = null } = {}) {
         "Carrier Amt": rate,
         "Carrier Load Alerts": "",
         // The Landstar template has no Team column; team is set through this attribute.
-        "Load Attributes": isTeamLoad(ord) ? 'Team Required' : '',
-        "Comments": "",
+        "Load Attributes": [isHazmatLoad(ord) && 'Hazmat', isTeamLoad(ord) && 'Team Required'].filter(Boolean).join(', '),
+        "Comments": isTankerLoad(ord) ? 'Tanker (N) Endorsement required' : '',
         "Fuel Surcharge Rate Type": "",
         "Fuel Surcharge": "",
         "Team": isTeamLoad(ord) ? 'true' : 'false'
@@ -4850,6 +5005,9 @@ export default function App({ sharing = null } = {}) {
                                             {isHazmatLoad(ord) && (
                                               <span aria-label={`Hazmat load ${ord.id}`} title="Hazmat load" className="bg-orange-500 text-black text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">☢ HAZ</span>
                                             )}
+                                            {isTankerLoad(ord) && (
+                                              <span aria-label={`Tanker endorsement load ${ord.id}`} title="Tanker (N) Endorsement required" className="bg-yellow-400 text-black text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">🛢 TANKER</span>
+                                            )}
                                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ord.status === 'ENT' ? 'tms-ent' : ord.status === 'ON HOLD' ? 'bg-red-900/60 text-red-300' : ord.status === 'OPEN' ? 'tms-open' : 'bg-blue-900/60 text-blue-300'}`}>{ord.status}</span>
                     </div>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'tms-ent' : ord.tag === 'HOLD' ? 'bg-red-600 text-white' : ord.tag === 'OPEN' ? 'tms-open' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
@@ -5259,10 +5417,13 @@ export default function App({ sharing = null } = {}) {
                     <label className="text-xs text-gray-400 block mb-1">Commodity</label>
                     <input
                       type="text"
-                      value={getLandstarCommodity(selectedOrder.eCode)}
+                      value={getLoadCommodity(selectedOrder)}
                       readOnly
                       className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
                     />
+                    {isTankerLoad(selectedOrder) && (
+                      <p className="text-xs text-yellow-300 font-bold mt-1">🛢 Tanker (N) Endorsement required — sent to Landstar in Comments</p>
+                    )}
                   </div>
                   <div>
                     <label htmlFor="load-team" className="text-xs text-gray-400 block mb-1">Team</label>

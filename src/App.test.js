@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import { transform } from 'esbuild';
 import * as XLSX from 'xlsx';
 import * as screenshotTable from './lib/screenshotTable.js';
+import * as ntgCards from './lib/ntgCards.js';
 import zipcodes from 'zipcodes';
 
 const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8');
@@ -16,7 +17,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
-  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad,
+  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported
 };`, { loader: 'jsx', format: 'cjs' });
@@ -24,6 +25,7 @@ const context = {
   module: { exports: {} },
   require(name) {
     if (name === './lib/screenshotTable.js') return screenshotTable;
+    if (name === './lib/ntgCards.js') return ntgCards;
     if (['react', 'xlsx', './lib/supabase'].includes(name)) return {};
     throw new Error(`Unexpected dependency: ${name}`);
   }
@@ -720,6 +722,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}) 
     },
     require(name) {
       if (name === './lib/screenshotTable.js') return screenshotTable;
+      if (name === './lib/ntgCards.js') return ntgCards;
       if (name === 'react') return react;
       if (name === 'xlsx') return XLSX;
       if (name === './lib/supabase') return { supabase };
@@ -866,6 +869,37 @@ test('hazmat equipment codes are flagged as hazmat loads', () => {
   assert.equal(policy.isHazmatLoad({ eCode: 'RZ' }), true);
   assert.equal(policy.isHazmatLoad({ eCode: 'V' }), false);
   assert.equal(policy.isHazmatLoad({}), false);
+});
+
+test('hazmat and tanker tags carry through to commodity and flags', () => {
+  assert.equal(policy.isHazmatLoad({ eCode: 'F,SD', hazmat: 'true' }), true);
+  assert.equal(policy.getLoadCommodity({ eCode: 'F,SD', hazmat: 'true' }), 'HAZMAT');
+  assert.equal(policy.isTankerLoad({ tanker: 'true' }), true);
+  assert.equal(policy.isTankerLoad({ planningComment: 'Tanker (N) Endorsement' }), true);
+  assert.equal(policy.isTankerLoad({}), false);
+});
+
+test('flatbed loads map to F,SD and export as FLAT', () => {
+  assert.equal(policy.getLandstarEquipmentCode('F,SD'), 'FLAT');
+  assert.match(policy.getEquipmentDescription('F,SD'), /STEP/);
+});
+
+test('NTG load number readings are majority voted digit by digit', () => {
+  assert.deepEqual({ ...policy.voteNtgLoadNumber(['9779123', '9779423', '9779123']) }, { value: '9779123', unanimous: false });
+  assert.deepEqual({ ...policy.voteNtgLoadNumber(['9548267', '9548267']) }, { value: '9548267', unanimous: true });
+  assert.equal(policy.voteNtgLoadNumber(['0760122']).value, '9760122');
+  assert.equal(policy.voteNtgLoadNumber(['77912', 'abc']), null);
+});
+
+test('NTG card regions are found between grey gaps', () => {
+  const w = 100, h = 120, data = new Uint8ClampedArray(w * h * 4).fill(255);
+  for (let y = 0; y < h; y++) {
+    if (y < 5 || (y >= 55 && y < 62) || y >= 112) {
+      for (let x = 0; x < w; x++) data.fill(220, (y * w + x) * 4, (y * w + x) * 4 + 3);
+    }
+  }
+  const regions = ntgCards.findNtgCardRegions(data, w, h);
+  assert.deepEqual(regions.map(r => [r.y0, r.y1]), [[5, 55], [62, 112]]);
 });
 
 test('rate per mile is calculated from rate and miles', () => {

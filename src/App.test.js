@@ -723,6 +723,25 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}) 
   };
 }
 
+test('load cards show their rates and zero for loads without a rate', () => {
+  const cases = [
+    [undefined, '0'], [null, '0'], ['', '0'], [0, '0'], ['0', '0'],
+    ['1500', '1,500'], ['$2,200.50', '2,200.5']
+  ];
+  const app = createAppHarness(customers[0], cases.map(([rateInput], index) => ({
+    ...load, id: String(index), rateInput
+  })));
+  cases.forEach(([, expected], index) => {
+    const rate = app.find(node => node.props?.['aria-label'] === `Rate for load ${index}`);
+    assert.ok(rate);
+    assert.equal(rate.props.children.join('').trim(), `Rate: $${expected}`);
+  });
+  app.enterRate('1800');
+  app.render();
+  const updated = app.find(node => node.props?.['aria-label'] === 'Rate for load 0');
+  assert.equal(updated.props.children.join('').trim(), 'Rate: $1,800');
+});
+
 test('sort controls order loads independently by pickup/delivery city or state in both directions', () => {
   const app = createAppHarness(customers[0], [
     { ...load, id: '1', origCity: 'Atlanta', origSt: 'GA', destCity: 'Seattle', destSt: 'WA' },

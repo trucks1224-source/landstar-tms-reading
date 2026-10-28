@@ -4738,6 +4738,9 @@ export default function App({ sharing = null } = {}) {
                   </div>
                   <div className="text-xs font-medium text-gray-200 mb-1 truncate">{ord.route}</div>
                   <div className="text-[11px] text-gray-400">{ord.puDate} {ord.delDate}</div>
+                  <div aria-label={`Rate for load ${ord.id}`} className="mt-1 text-xs text-emerald-400 font-bold">
+                    Rate: ${(Number(String(ord.rateInput || '').replace(/[$,]/g, '')) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                  </div>
                   {ord.planningComment && <div className="mt-1 text-[11px] text-amber-300 font-semibold truncate">{ord.planningComment}</div>}
                 </div>
               </div>

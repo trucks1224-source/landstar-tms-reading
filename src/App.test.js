@@ -881,6 +881,9 @@ test('hazmat and tanker tags carry through to commodity and flags', () => {
 
 test('flatbed loads map to F,SD and export as FLAT', () => {
   assert.equal(policy.getLandstarEquipmentCode('F,SD'), 'FLAT');
+  assert.equal(policy.getLandstarEquipmentCode('FH'), 'FLAT');
+  assert.equal(policy.isHazmatLoad({ eCode: 'FH' }), true);
+  assert.equal(policy.getLoadCommodity({ eCode: 'FH' }), 'HAZMAT');
   assert.match(policy.getEquipmentDescription('F,SD'), /STEP/);
 });
 

@@ -523,7 +523,7 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight, options = {}) {
     const shortDate = value => value.replace(/^(\d{2})\/(\d{2})\/\d{4}\s+(\d{4}).*$/, '$1/$2 $3');
     return {
       id: idWord ? idWord.text : `NTG-${Date.now()}-${index}`,
-      eCode: /straight\s*truck/i.test(equipmentText) ? 'D-LG' : /sprinter|box\s*truck/i.test(equipmentText) ? 'D-LG,D-ST' : isFlatbed ? 'F,SD' : isHazmat ? (isReefer && !/\bvan\b/i.test(equipmentText) ? 'RZ' : 'VZ') : isReefer ? (/\bvan\b/i.test(equipmentText) ? 'VR' : 'R') : 'V',
+      eCode: /straight\s*truck/i.test(equipmentText) ? 'D-LG' : /sprinter|box\s*truck/i.test(equipmentText) ? 'D-LG,D-ST' : isFlatbed ? (isHazmat ? 'FH' : 'F,SD') : isHazmat ? (isReefer && !/\bvan\b/i.test(equipmentText) ? 'RZ' : 'VZ') : isReefer ? (/\bvan\b/i.test(equipmentText) ? 'VR' : 'R') : 'V',
       ...(isHazmat ? { hazmat: 'true' } : {}),
       ...(tags.some(tag => /tanker/i.test(tag)) ? { tanker: 'true' } : {}),
       status: 'OPEN',
@@ -1163,6 +1163,7 @@ function getEquipmentDescription(eCode) {
     case 'RZ': return 'REFR:REFR';
     case 'F': return '48FL, 53FL, FLAT';
     case 'F,SD': return '48FL, 53FL, FLAT, STEP:SD';
+    case 'FH': return '48FL, 53FL, FLAT, STEP:SD';
     case 'SD': return 'STEP:SD';
     case 'D-LG': return 'D-LG';
     case 'D-LG,D-ST': return 'D-LG, D-ST';
@@ -1786,6 +1787,7 @@ function getLandstarEquipmentCode(value) {
     RZ: 'REFR',
     F: 'FLAT',
     'F,SD': 'FLAT',
+    FH: 'FLAT',
     SD: 'STEP'
   };
   if (equipmentCodes[code]) return equipmentCodes[code];
@@ -1800,7 +1802,7 @@ function getLandstarEquipmentCode(value) {
 
 function getLandstarCommodity(value) {
   const equipmentCode = String(value || '').trim().toUpperCase().split(':')[0];
-  if (equipmentCode === 'VZ' || equipmentCode === 'RZ') {
+  if (['VZ', 'RZ', 'FH'].includes(equipmentCode)) {
     return 'HAZMAT';
   }
   if (equipmentCode === 'VE') {
@@ -1848,7 +1850,7 @@ function isTankerLoad(load) {
 }
 
 function isFlatbedEquipment(value) {
-  return ['F', 'F,SD'].includes(String(value || '').replace(/\s/g, '').toUpperCase());
+  return ['F', 'F,SD', 'FH'].includes(String(value || '').replace(/\s/g, '').toUpperCase());
 }
 
 function getLoadCommodity(load) {

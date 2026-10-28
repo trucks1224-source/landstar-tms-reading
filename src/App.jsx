@@ -361,7 +361,8 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
 
     return {
       id: id || `IMG-${Date.now()}-${index}`,
-      eCode: equipment || (isRxoCustomer(selectedBroker) ? 'VAN:VAN' : 'VZ'),
+      eCode: isTeamEquipment(equipment) ? 'V' : equipment || (isRxoCustomer(selectedBroker) ? 'VAN:VAN' : 'VZ'),
+      team: isTeamEquipment(equipment) ? 'true' : 'false',
       status: isParaImport && line.orderNumberHighlighted ? 'ON HOLD' : 'OPEN',
       tag: isParaImport && line.orderNumberHighlighted ? 'HOLD' : 'OPEN',
       ...(isParaImport && typeof line.orderNumberHighlighted === 'boolean'
@@ -1570,6 +1571,17 @@ function isTeamEquipment(value) {
   return ['VM', 'VT'].includes(String(value || '').trim().toUpperCase());
 }
 
+function isTeamLoad(load) {
+  return String(load?.team || '').trim().toLowerCase() === 'true' || isTeamEquipment(load?.eCode);
+}
+
+// Team vans (VM/VT) are shown as a plain V; the Team flag carries the team part.
+function getDisplayEquipmentCode(value) {
+  const code = String(value || '').trim().toUpperCase();
+  if (code === 'VE') return 'VAN';
+  return isTeamEquipment(code) ? 'V' : value;
+}
+
 function getLandstarEquipmentCode(value) {
   const code = String(value || '').trim().toUpperCase();
   const equipmentCodes = {
@@ -2449,6 +2461,9 @@ export default function App({ sharing = null } = {}) {
   const handleInputChange = (field, value) => {
     if (!selectedOrder) return;
     let updatedOrder = { ...selectedOrder, [field]: value };
+    if (field === 'eCode' && isTeamEquipment(selectedOrder.eCode)) {
+      updatedOrder.team = 'true';
+    }
     if (field === 'rateInput') {
       if (String(value).trim()) {
         updatedOrder.rateSource = 'user-entered';
@@ -3976,7 +3991,7 @@ export default function App({ sharing = null } = {}) {
         "Visibility Code": visibilityCode,
         "Bill as Miles": allowMissingMiles && !(miles > 0) ? '' : miles,
         "Equipment 1(Required)": equipment,
-        "Equipment 2": isTeamEquipment(ord.eCode) ? '53VN' : String(ord.eCode || '').trim().toUpperCase() === 'D-LG,D-ST' ? 'D-ST' : '',
+        "Equipment 2": isTeamLoad(ord) ? '53VN' : String(ord.eCode || '').trim().toUpperCase() === 'D-LG,D-ST' ? 'D-ST' : '',
         "Equipment 3": "",
         "Weight(Required)": weight ?? '',
         "Rate Type(Required)": "Flat Rate",
@@ -3989,7 +4004,7 @@ export default function App({ sharing = null } = {}) {
         "Comments": "",
         "Fuel Surcharge Rate Type": "",
         "Fuel Surcharge": "",
-        "Team": isTeamEquipment(ord.eCode) ? 'true' : 'false'
+        "Team": isTeamLoad(ord) ? 'true' : 'false'
       };
     });
 
@@ -4740,7 +4755,7 @@ export default function App({ sharing = null } = {}) {
                       {customer === selectedBroker && exportErrorIds.includes(String(ord.id)) && (
                         <span className="bg-red-700 text-white text-[9px] px-1.5 py-0.5 rounded font-bold">EXPORT ERROR</span>
                       )}
-                      <span className="bg-blue-900/60 text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{String(ord.eCode || '').trim().toUpperCase() === 'VE' ? 'VAN' : ord.eCode}</span>
+                      <span className="bg-blue-900/60 text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{getDisplayEquipmentCode(ord.eCode)}</span>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ord.status === 'ENT' ? 'tms-ent' : ord.status === 'ON HOLD' ? 'bg-red-900/60 text-red-300' : ord.status === 'OPEN' ? 'tms-open' : 'bg-blue-900/60 text-blue-300'}`}>{ord.status}</span>
                     </div>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'tms-ent' : ord.tag === 'HOLD' ? 'bg-red-600 text-white' : ord.tag === 'OPEN' ? 'tms-open' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
@@ -5011,7 +5026,7 @@ export default function App({ sharing = null } = {}) {
                       <label className="text-xs text-gray-400 block mt-2 mb-1">SOURCE EQUIPMENT CODE (VE = VAN / CHEM)</label>
                     </>
                   )}
-                  <input type="text" value={selectedOrder.eCode} onChange={(e) => handleInputChange('eCode', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white outline-none" />
+                  <input type="text" value={isTeamEquipment(selectedOrder.eCode) ? 'V' : selectedOrder.eCode} onChange={(e) => handleInputChange('eCode', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white outline-none" />
                   <div className="text-[11px] text-emerald-400 mt-1 font-mono">{getEquipmentDescription(selectedOrder.eCode)}</div>
                 </div>
               </div>
@@ -5151,7 +5166,7 @@ export default function App({ sharing = null } = {}) {
                     <input
                       id="load-team"
                       type="text"
-                      value={isTeamEquipment(selectedOrder.eCode) ? 'true' : 'false'}
+                      value={isTeamLoad(selectedOrder) ? 'true' : 'false'}
                       readOnly
                       className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
                     />

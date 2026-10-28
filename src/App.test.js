@@ -15,7 +15,7 @@ export {
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
-  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment,
+  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported
 };`, { loader: 'jsx', format: 'cjs' });
@@ -347,15 +347,17 @@ test('V53 screenshot equipment imports as van', () => {
   assert.equal(policy.getEquipmentDescription(parsed.eCode), 'VAN:VAN, VAN:53VN');
   assert.equal(policy.getLandstarEquipmentCode(parsed.eCode), 'VAN');
   assert.equal(policy.isTeamEquipment(parsed.eCode), false);
+  assert.equal(policy.isTeamLoad(parsed), false);
 });
 
 test('VM screenshot equipment imports as team van', () => {
   const parsed = parseScreenshotTimes('2280274', [
     '10/28/2026 08...', '10/28/2026 1500', '10/30/2026 0...', '10/30/2026 1500'
   ], customers[0], false, 'VM');
-  assert.equal(parsed.eCode, 'VM');
+  assert.equal(parsed.eCode, 'V');
+  assert.equal(parsed.team, 'true');
   assert.equal(policy.getLandstarEquipmentCode(parsed.eCode), 'VAN');
-  assert.equal(policy.isTeamEquipment(parsed.eCode), true);
+  assert.equal(policy.isTeamLoad(parsed), true);
   assert.equal(policy.getLandstarEquipmentCode('VM'), 'VAN');
   assert.equal(policy.getEquipmentDescription('VM'), 'VAN:VAN, VAN:53VN');
   assert.equal(policy.isTeamEquipment(' vm '), true);
@@ -766,11 +768,11 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}) 
 }
 
 test('VM and VT vans display Team true while ordinary vans display false', () => {
-  for (const [eCode, expected] of [['VM', 'true'], ['VT', 'true'], ['V', 'false'], ['VZ', 'false']]) {
-    const app = createAppHarness(customers[0], [{ ...load, eCode }]);
+  for (const [extra, expected] of [[{ eCode: 'VM' }, 'true'], [{ eCode: 'VT' }, 'true'], [{ eCode: 'V', team: 'true' }, 'true'], [{ eCode: 'V' }, 'false'], [{ eCode: 'VZ' }, 'false']]) {
+    const app = createAppHarness(customers[0], [{ ...load, ...extra }]);
     const team = app.find(node => node.props?.id === 'load-team');
     assert.ok(team);
-    assert.equal(team.props.value, expected, eCode);
+    assert.equal(team.props.value, expected, JSON.stringify(extra));
   }
 });
 

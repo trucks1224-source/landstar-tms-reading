@@ -164,10 +164,12 @@ export async function readScreenshotGrid(worker, canvas, grid, onProgress, sourc
       nativeCanvas, equipmentLeft, equipmentTop, equipmentWidth, equipmentHeight,
       padding, padding, equipmentWidth * 5, equipmentHeight * 5
     );
-    await worker.setParameters({ tessedit_char_whitelist: 'VEZRFSADN' });
+    await worker.setParameters({ tessedit_char_whitelist: 'VEZRFSADNM53' });
     const { data: equipmentData } = await worker.recognize(equipmentCanvas);
-    const equipmentCode = equipmentData.text.trim().toUpperCase().replace(/[\s.]/g, '');
-    if (!/^(VZ|VE|VR|RZ|R|F|SD|VAN)$/.test(equipmentCode)) {
+    const rawEquipmentCode = equipmentData.text.trim().toUpperCase().replace(/[\s.]/g, '');
+    // V53 is a 53' van; VM is a team van.
+    const equipmentCode = { V53: 'V', VM: 'VT' }[rawEquipmentCode] || rawEquipmentCode;
+    if (!/^(VZ|VE|VR|VT|RZ|R|F|SD|VAN|V)$/.test(equipmentCode)) {
       throw new Error(`Could not read equipment for load ${digits}. Existing loads were not deleted.`);
     }
     lines.push({

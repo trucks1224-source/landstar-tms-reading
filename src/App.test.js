@@ -15,7 +15,7 @@ export {
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
-  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue,
+  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported
 };`, { loader: 'jsx', format: 'cjs' });
@@ -337,6 +337,25 @@ test('2279123 verified VE overrides whole-row OCR VZ and corrects saved equipmen
   assert.equal(policy.getEquipmentDescription(saved.eCode), 'VAN:VAN');
   assert.equal(policy.getLandstarEquipmentCode(saved.eCode), 'VAN');
   assert.equal(policy.getLandstarCommodity(saved.eCode), 'CHEM');
+});
+
+test('V53 screenshot equipment imports as van', () => {
+  const parsed = parseScreenshotTimes('2280197', [
+    '10/28/2026 07...', '10/28/2026 1500', '10/30/2026 0...', '10/30/2026 1300'
+  ], customers[0], false, 'V53');
+  assert.equal(parsed.eCode, 'V');
+  assert.equal(policy.getEquipmentDescription(parsed.eCode), 'VAN:VAN, VAN:53VN');
+  assert.equal(policy.getLandstarEquipmentCode(parsed.eCode), 'VAN');
+  assert.equal(policy.isTeamEquipment(parsed.eCode), false);
+});
+
+test('VM screenshot equipment imports as team van', () => {
+  const parsed = parseScreenshotTimes('2280274', [
+    '10/28/2026 08...', '10/28/2026 1500', '10/30/2026 0...', '10/30/2026 1500'
+  ], customers[0], false, 'VM');
+  assert.equal(parsed.eCode, 'VT');
+  assert.equal(policy.getLandstarEquipmentCode(parsed.eCode), 'VAN');
+  assert.equal(policy.isTeamEquipment(parsed.eCode), true);
 });
 
 test('Para red screenshot numbers import ON HOLD and reopen when no longer red', () => {

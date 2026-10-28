@@ -2,12 +2,32 @@ import React, { useEffect, useState } from 'react';
 import App from './App.jsx';
 import { supabase } from './lib/supabase.js';
 import {
+  addSharedMembers,
+  clearLocalWorkspace,
   flushCloudSyncNow,
+  getSharedCustomers,
+  leaveSharedCustomer,
+  listTeammates,
+  onSharedCustomersChange,
   onSyncStatus,
+  removeSharedMember,
+  shareCustomer,
   startCloudSync,
   stopCloudSync,
+  stopSharingCustomer,
   subscribeToRemoteChanges
 } from './lib/cloudSync.js';
+
+const sharing = {
+  getSharedCustomers,
+  onSharedCustomersChange,
+  listTeammates,
+  shareCustomer,
+  addSharedMembers,
+  removeSharedMember,
+  stopSharingCustomer,
+  leaveSharedCustomer
+};
 
 const statusLabels = {
   idle: '☁ Not synced',
@@ -73,6 +93,7 @@ function SyncBadge({ email }) {
   const handleSignOut = async () => {
     await flushCloudSyncNow();
     await supabase.auth.signOut();
+    clearLocalWorkspace();
   };
 
   return (
@@ -88,13 +109,12 @@ function SyncBadge({ email }) {
   );
 }
 
-// Signs the team in and keeps the shared database in step with the app. When
-// Supabase is not configured the app runs on browser storage only, as before.
+// Signs each teammate in to their own workspace and keeps it in step with the
+// database. When Supabase is not configured the app runs on browser storage only.
 export default function AuthGate() {
   const [session, setSession] = useState(null);
   const [phase, setPhase] = useState(supabase ? 'loading' : 'local');
   const [syncError, setSyncError] = useState('');
-  const [appVersion, setAppVersion] = useState(0);
 
   useEffect(() => {
     if (!supabase) return undefined;
@@ -117,19 +137,15 @@ export default function AuthGate() {
     if (!supabase || !userId) return undefined;
     let cancelled = false;
     let unsubscribe = () => {};
-    let remountTimer = null;
     setSyncError('');
-    startCloudSync()
+    startCloudSync(userId)
       .then(() => {
         if (cancelled) return;
-        unsubscribe = subscribeToRemoteChanges(() => {
-          window.clearTimeout(remountTimer);
-          remountTimer = window.setTimeout(() => setAppVersion(version => version + 1), 400);
-        });
+        unsubscribe = subscribeToRemoteChanges(userId);
         setPhase('ready');
       })
       .catch(error => {
-        console.error('Could not load shared data:', error);
+        console.error('Could not load your workspace:', error);
         if (!cancelled) {
           setSyncError(error.message || 'Could not reach the cloud database.');
           setPhase('error');
@@ -137,7 +153,6 @@ export default function AuthGate() {
       });
     return () => {
       cancelled = true;
-      window.clearTimeout(remountTimer);
       unsubscribe();
       stopCloudSync();
     };
@@ -154,7 +169,7 @@ export default function AuthGate() {
   if (phase === 'loading' || phase === 'syncing') {
     return (
       <div className="h-screen flex items-center justify-center bg-[#0b132b] text-xs text-gray-300">
-        {phase === 'syncing' ? 'Loading shared data…' : 'Loading…'}
+        {phase === 'syncing' ? 'Loading your workspace…' : 'Loading…'}
       </div>
     );
   }
@@ -162,7 +177,7 @@ export default function AuthGate() {
   if (phase === 'error') {
     return (
       <div className="h-screen flex flex-col items-center justify-center gap-3 bg-[#0b132b] text-xs text-gray-200">
-        <p>Could not load shared data: {syncError}</p>
+        <p>Could not load your workspace: {syncError}</p>
         <p className="text-gray-400">Your data in this browser is untouched. Check the connection and the Supabase setup, then retry.</p>
         <button
           type="button"
@@ -176,7 +191,7 @@ export default function AuthGate() {
   }
   return (
     <>
-      <App key={appVersion} />
+      <App sharing={sharing} userId={userId} />
       <SyncBadge email={session?.user?.email} />
     </>
   );

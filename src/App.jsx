@@ -285,7 +285,7 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
     const orderMatch = numberText.match(/22\d{5}/)?.[0];
     const id = line.verifiedOrderId || orderMatch || '';
     const equipment = line.verifiedEquipmentCode
-      || equipmentText.toUpperCase().match(/\b(VZ|VE|VR|RZ|R|F|SD|VAN)\b/)?.[0] || '';
+      || equipmentText.toUpperCase().match(/\b(V53|VM|VZ|VE|VR|RZ|R|F|SD|VAN|V)\b/)?.[0]?.replace(/^V53$/, 'V').replace(/^VM$/, 'VT') || '';
     const rowText = line.text.toLowerCase();
     if (/distance/.test(rowText) && /weight/.test(rowText) && /comment/.test(rowText)) return null;
     if (/\border\b/.test(rowText) && /\bearly\b/.test(rowText) && /\blate\b/.test(rowText)) return null;
@@ -361,8 +361,6 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
 
     return {
       id: id || `IMG-${Date.now()}-${index}`,
-      postingCode: 'ANQ',
-      visibilityGroup: 'ANQ',
       eCode: equipment || (isRxoCustomer(selectedBroker) ? 'VAN:VAN' : 'VZ'),
       status: isParaImport && line.orderNumberHighlighted ? 'ON HOLD' : 'OPEN',
       tag: isParaImport && line.orderNumberHighlighted ? 'HOLD' : 'OPEN',
@@ -500,8 +498,6 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight) {
     const shortDate = value => value.replace(/^(\d{2})\/(\d{2})\/\d{4}\s+(\d{4}).*$/, '$1/$2 $3');
     return {
       id: idWord ? idWord.text : `NTG-${Date.now()}-${index}`,
-      postingCode: 'ANQ',
-      visibilityGroup: 'ANQ',
       eCode: /straight\s*truck/i.test(equipmentText) ? 'D-LG' : /sprinter|box\s*truck/i.test(equipmentText) ? 'D-LG,D-ST' : isFlatbed ? 'F' : isReefer ? (/\bvan\b/i.test(equipmentText) ? 'VR' : tags.includes('Hazmat') ? 'RZ' : 'R') : tags.includes('Hazmat') ? 'VZ' : 'V',
       status: 'OPEN',
       tag: 'OPEN',
@@ -911,8 +907,6 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
 
     const order = {
       id: `DAT-${Date.now()}-${index}`,
-      postingCode: 'ANQ',
-      visibilityGroup: 'ANQ',
       eCode: equipment,
       team: equipment === 'VT' ? 'true' : 'false',
       status: 'OPEN',
@@ -1282,8 +1276,6 @@ function parseChScreenshotLines(lines, imageWidth, imageHeight, selectedBroker, 
     const mode = /^R/.test(modeText) ? 'R' : /^F/.test(modeText) ? 'F' : 'V';
     const order = {
       id: idMatch[1],
-      postingCode: 'ANQ',
-      visibilityGroup: 'ANQ',
       eCode: mode,
       status: 'OPEN',
       tag: 'OPEN',
@@ -1425,8 +1417,6 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
     const eCode = /\bHAZMAT\b/i.test(messageText.slice(0, 500)) ? 'VZ' : 'VAN:VAN';
     const order = {
       id,
-      postingCode: 'ANQ',
-      visibilityGroup: 'ANQ',
       eCode,
       status: 'OPEN',
       tag: 'OPEN',
@@ -1573,6 +1563,10 @@ function normalizeMilesValue(value) {
   if (decimal) return `${decimal[1]}.${decimal[2]}`;
   const digits = compact.replace(/\D/g, '');
   return digits.length >= 7 ? digits.slice(0, -6) : digits;
+}
+
+function isTeamEquipment(value) {
+  return String(value || '').trim().toUpperCase() === 'VT';
 }
 
 function getLandstarEquipmentCode(value) {
@@ -2114,12 +2108,70 @@ function normalizeCustomerOrders(value) {
     const merged = new Map((normalized[normalizedName] || []).map(load => [load.id, load]));
     loads.forEach(load => {
       if (!load || load.id == null) return;
-      const normalizedLoad = { postingCode: 'ANQ', brokerable: 'false', ...load, visibilityGroup: 'ANQ' };
+      // Visibility group and the default posting code come from each user's My Settings
+      // at export time, so shared loads never carry one teammate's codes to another.
+      const { visibilityGroup, ...rest } = load;
+      const normalizedLoad = { brokerable: 'false', ...rest };
+      const postingCode = String(normalizedLoad.postingCode || '').trim().toUpperCase();
+      if (!postingCode || postingCode === 'ANQ') delete normalizedLoad.postingCode;
       merged.set(load.id, normalizedLoad);
     });
     normalized[normalizedName] = Array.from(merged.values());
   });
   return normalized;
+}
+
+const horizontalFlag = (...colors) => `linear-gradient(to bottom, ${colors.map((color, index) => `${color} ${(index * 100) / colors.length}% ${((index + 1) * 100) / colors.length}%`).join(', ')})`;
+const verticalFlag = (...colors) => horizontalFlag(...colors).replace('to bottom', 'to right');
+
+// Simplified flags (no emblems) drawn with CSS, since Windows does not show emoji flags.
+const countryFlags = {
+  CO: { name: 'Colombia', background: 'linear-gradient(to bottom, #fcd116 0% 50%, #003893 50% 75%, #ce1126 75% 100%)' },
+  US: { name: 'United States', background: 'linear-gradient(#3c3b6e, #3c3b6e) 0 0 / 40% 54% no-repeat, repeating-linear-gradient(to bottom, #b22234 0 7.69%, #fff 7.69% 15.38%)' },
+  MX: { name: 'Mexico', background: verticalFlag('#006847', '#fff', '#ce1126') },
+  VE: { name: 'Venezuela', background: horizontalFlag('#ffcc00', '#00247d', '#cf142b') },
+  EC: { name: 'Ecuador', background: 'linear-gradient(to bottom, #ffdd00 0% 50%, #034ea2 50% 75%, #ed1c24 75% 100%)' },
+  PE: { name: 'Peru', background: verticalFlag('#d91023', '#fff', '#d91023') },
+  AR: { name: 'Argentina', background: horizontalFlag('#74acdf', '#fff', '#74acdf') },
+  GT: { name: 'Guatemala', background: verticalFlag('#4997d0', '#fff', '#4997d0') },
+  HN: { name: 'Honduras', background: horizontalFlag('#0073cf', '#fff', '#0073cf') },
+  SV: { name: 'El Salvador', background: horizontalFlag('#0047ab', '#fff', '#0047ab') },
+  NI: { name: 'Nicaragua', background: horizontalFlag('#0067c6', '#fff', '#0067c6') },
+  CU: { name: 'Cuba', background: 'linear-gradient(to bottom right, #cf142b 0 25%, transparent 25%) 0 0 / 80% 100% no-repeat, repeating-linear-gradient(to bottom, #002a8f 0 20%, #fff 20% 40%)' },
+  HT: { name: 'Haiti', background: horizontalFlag('#00209f', '#d21034') },
+  PR: { name: 'Puerto Rico', background: 'linear-gradient(to bottom right, #0050f0 0 25%, transparent 25%) 0 0 / 80% 100% no-repeat, repeating-linear-gradient(to bottom, #ed0000 0 20%, #fff 20% 40%)' },
+  UA: { name: 'Ukraine', background: horizontalFlag('#0057b7', '#ffd700') },
+  PL: { name: 'Poland', background: horizontalFlag('#fff', '#dc143c') },
+  RU: { name: 'Russia', background: horizontalFlag('#fff', '#0039a6', '#d52b1e') },
+  IN: { name: 'India', background: horizontalFlag('#ff9933', '#fff', '#138808') },
+  NG: { name: 'Nigeria', background: verticalFlag('#008751', '#fff', '#008751') },
+  IT: { name: 'Italy', background: verticalFlag('#009246', '#fff', '#ce2b37') },
+  FR: { name: 'France', background: verticalFlag('#0055a4', '#fff', '#ef4135') },
+  DE: { name: 'Germany', background: horizontalFlag('#000', '#dd0000', '#ffce00') }
+};
+
+const emptyProfile = { phone: '', postingCode: '', visibilityGroup: '', flag: 'CO' };
+
+function getUserProfile() {
+  if (typeof localStorage === 'undefined') return { ...emptyProfile };
+  try {
+    const saved = JSON.parse(localStorage.getItem('landstar_profile'));
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return { ...emptyProfile };
+    return {
+      phone: String(saved.phone || ''),
+      postingCode: String(saved.postingCode || ''),
+      visibilityGroup: String(saved.visibilityGroup || ''),
+      flag: saved.flag === 'NONE' || countryFlags[saved.flag] ? saved.flag : 'CO'
+    };
+  } catch (error) {
+    console.error('Could not load My Settings:', error);
+    return { ...emptyProfile };
+  }
+}
+
+function formatPhone(digits) {
+  const value = String(digits || '').replace(/\D/g, '');
+  return value.length === 10 ? `${value.slice(0, 3)}-${value.slice(3, 6)}-${value.slice(6)}` : value;
 }
 
 const defaultCustomerDatasets = {
@@ -2142,7 +2194,7 @@ function getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery) {
     .map(order => ({ customer, order })));
 }
 
-export default function App() {
+export default function App({ sharing = null } = {}) {
   const [brokers, setBrokers] = useState(() => {
     try {
       return normalizeBrokerList(JSON.parse(localStorage.getItem('landstar_brokers')));
@@ -2225,6 +2277,14 @@ export default function App() {
   const [gmailAuthReady, setGmailAuthReady] = useState(false);
   const [gmailImportProgress, setGmailImportProgress] = useState('');
   const [storageError, setStorageError] = useState('');
+  const [profile, setProfile] = useState(getUserProfile);
+  const [profileDraft, setProfileDraft] = useState(null);
+  const [sharedCustomers, setSharedCustomers] = useState(() => sharing?.getSharedCustomers() || {});
+  const [shareCustomerName, setShareCustomerName] = useState(null);
+  const [teammates, setTeammates] = useState([]);
+  const [shareSelection, setShareSelection] = useState([]);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareMessage, setShareMessage] = useState('');
 
   const getLatestExportedRegistry = () => {
     try {
@@ -2540,6 +2600,113 @@ export default function App() {
     }
   };
 
+  // Picks up changes saved from another browser or by teammates on shared customers
+  // without resetting the customer and load being worked on.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const reloadSavedData = () => {
+      let nextBrokers;
+      let nextOrders;
+      let nextRates;
+      let nextRegistry;
+      try {
+        nextBrokers = normalizeBrokerList(JSON.parse(localStorage.getItem('landstar_brokers')));
+        nextOrders = removeExpiredExportedLoads(
+          normalizeCustomerOrders(JSON.parse(localStorage.getItem('landstar_customerOrdersMap')))
+        );
+        const savedRates = JSON.parse(localStorage.getItem('landstar_laneRates'));
+        nextRates = savedRates && typeof savedRates === 'object' && !Array.isArray(savedRates) ? savedRates : {};
+        const savedRegistry = JSON.parse(localStorage.getItem('landstar_exportedLoads'));
+        nextRegistry = savedRegistry && typeof savedRegistry === 'object' && !Array.isArray(savedRegistry) ? savedRegistry : {};
+      } catch (error) {
+        console.error('Could not load the latest saved data:', error);
+        return;
+      }
+      const nextSelected = nextBrokers.includes(selectedBroker) ? selectedBroker : nextBrokers[0];
+      setBrokers(nextBrokers);
+      setCustomerOrdersMap(nextOrders);
+      setLaneRates(nextRates);
+      setExportedLoadRegistry(nextRegistry);
+      setProfile(getUserProfile());
+      setSelectedBroker(nextSelected);
+      setSelectedOrder(current => {
+        const loads = nextOrders[nextSelected] || [];
+        return (current && loads.find(load => String(load.id) === String(current.id))) || loads[0] || null;
+      });
+    };
+    window.addEventListener('landstar-data-changed', reloadSavedData);
+    return () => window.removeEventListener('landstar-data-changed', reloadSavedData);
+  }, [selectedBroker]);
+
+  useEffect(() => (sharing ? sharing.onSharedCustomersChange(setSharedCustomers) : undefined), [sharing]);
+
+  const openProfileSettings = () => setProfileDraft({ ...profile, phone: formatPhone(profile.phone) });
+
+  const handleSaveProfile = (e) => {
+    e.preventDefault();
+    const nextProfile = {
+      phone: profileDraft.phone.replace(/\D/g, ''),
+      postingCode: profileDraft.postingCode.trim().toUpperCase(),
+      visibilityGroup: profileDraft.visibilityGroup.trim().toUpperCase(),
+      flag: profileDraft.flag
+    };
+    if (nextProfile.phone.length !== 10) {
+      alert('Enter a 10-digit phone number.');
+      return;
+    }
+    if (!nextProfile.postingCode || !nextProfile.visibilityGroup) {
+      alert('Enter your posting code and visibility group.');
+      return;
+    }
+    try {
+      localStorage.setItem('landstar_profile', JSON.stringify(nextProfile));
+    } catch (error) {
+      console.error('Could not save My Settings:', error);
+      alert('Could not save My Settings. Check available browser storage and try again.');
+      return;
+    }
+    setProfile(nextProfile);
+    setProfileDraft(null);
+  };
+
+  const openShareDialog = async (customer) => {
+    setShareCustomerName(customer);
+    setShareSelection([]);
+    setShareMessage('Loading teammates…');
+    try {
+      setTeammates(await sharing.listTeammates());
+      setShareMessage('');
+    } catch (error) {
+      console.error('Could not load teammates:', error);
+      setShareMessage(error.message || 'Could not load teammates.');
+    }
+  };
+
+  const runShareAction = async (action, successMessage) => {
+    setShareBusy(true);
+    setShareMessage('');
+    try {
+      await action();
+      setShareSelection([]);
+      setShareMessage(successMessage);
+      return true;
+    } catch (error) {
+      console.error('Customer sharing failed:', error);
+      setShareMessage(error.message || 'Something went wrong. Try again.');
+      return false;
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const teammateEmail = (userId) => teammates.find(person => person.id === userId)?.email || 'a teammate';
+
+  const toggleShareSelection = (userId) => {
+    setShareSelection(current => current.includes(userId)
+      ? current.filter(id => id !== userId)
+      : [...current, userId]);
+  };
+
   const renderCopyableField = (label, field) => (
     <div className="min-w-0">
       <label className="text-xs text-gray-400 block mb-1">{label}</label>
@@ -2578,6 +2745,10 @@ export default function App() {
 
   const handleSaveEditBroker = (oldName, e) => {
     e.preventDefault();
+    if (sharedCustomers[oldName]) {
+      alert('This customer is shared, so its name cannot be changed. Use 🤝 Share to stop sharing first.');
+      return;
+    }
     const newName = normalizeCustomerName(editBrokerInput);
     if (newName && !brokers.includes(newName)) {
       const updatedBrokers = brokers.map(b => b === oldName ? newName : b);
@@ -2600,6 +2771,12 @@ export default function App() {
 
   const handleDeleteBroker = (brokerToDelete, e) => {
     e.stopPropagation();
+    if (sharedCustomers[brokerToDelete]) {
+      alert(sharedCustomers[brokerToDelete].isOwner
+        ? 'This customer is shared. Use 🤝 Share → Stop sharing before deleting it.'
+        : 'This customer is shared with you. Use 🤝 Share → Leave to remove it from your list.');
+      return;
+    }
     if (brokers.length <= 1) {
       alert("You must keep at least one customer/broker.");
       return;
@@ -2903,8 +3080,6 @@ export default function App() {
 
           importedRows.push({
             id: loadId,
-            postingCode: 'ANQ',
-            visibilityGroup: 'ANQ',
             eCode: eCodeVal,
             status: 'OPEN',
             tag: 'OPEN',
@@ -3630,6 +3805,13 @@ export default function App() {
 
   const handleExportToLandstar = async () => {
     setExportErrorIds([]);
+    const exportPhone = profile.phone.replace(/\D/g, '');
+    const exportVisibilityGroup = profile.visibilityGroup.trim().toUpperCase();
+    if (exportPhone.length !== 10 || !profile.postingCode.trim() || !exportVisibilityGroup) {
+      alert('Open ⚙ My Settings and enter your 10-digit phone number, posting code and visibility group before exporting.');
+      openProfileSettings();
+      return;
+    }
     const loadsToExport = selectedIds.length > 0
       ? orders.filter(o => selectedIds.includes(o.id))
       : filteredOrders.slice(0, 25);
@@ -3731,8 +3913,8 @@ export default function App() {
       const miles = Number(normalizeMilesValue(ord.miles));
       const weight = parseWeightPounds(ord.weight);
       const rate = Number(String(ord.rateInput || '').replace(/[$,]/g, ''));
-      const postingCode = String(ord.postingCode || 'ANQ').trim().toUpperCase();
-      const visibilityCode = 'ANQ';
+      const postingCode = String(ord.postingCode || profile.postingCode).trim().toUpperCase();
+      const visibilityCode = exportVisibilityGroup;
       const brokerable = ['true', 'y'].includes(String(ord.brokerable || '').trim().toLowerCase()) ? 'Y' : 'N';
       const today = new Date();
       const todaySerial = (Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - Date.UTC(1899, 11, 30)) / 86400000;
@@ -3768,7 +3950,7 @@ export default function App() {
 
       return {
         "Customer ID(Required)": customerIdVal,
-        "Posting Call Back 10 Digits Phone Number": "4845756486",
+        "Posting Call Back 10 Digits Phone Number": exportPhone,
         "Origin City": originCity,
         "Origin Zipcode(Required)": originZip,
         "Origin State": originState,
@@ -3798,7 +3980,7 @@ export default function App() {
         "Comments": "",
         "Fuel Surcharge Rate Type": "",
         "Fuel Surcharge": "",
-        "Team": String(ord.eCode || '').trim().toUpperCase() === 'VT' ? 'true' : 'false'
+        "Team": isTeamEquipment(ord.eCode) ? 'true' : 'false'
       };
     });
 
@@ -4337,10 +4519,20 @@ export default function App() {
                   <span
                     className="truncate flex-1 cursor-pointer"
                     onClick={() => handleSelectBroker(broker)}
+                    title={sharedCustomers[broker] ? 'Shared customer – teammates see the same loads' : undefined}
                   >
-                    {broker} {selectedBroker === broker && ' ✓'}
+                    {sharedCustomers[broker] && '🤝 '}{broker} {selectedBroker === broker && ' ✓'}
                   </span>
                   <div className="flex items-center space-x-1 ml-2">
+                    {sharing && (
+                      <button
+                        onClick={() => openShareDialog(broker)}
+                        title="Share this customer with teammates"
+                        className="bg-slate-700 hover:bg-emerald-600 text-gray-200 hover:text-white px-1.5 py-0.5 rounded text-[10px]"
+                      >
+                        🤝 Share
+                      </button>
+                    )}
                     <button
                       onClick={() => { setEditingBroker(broker); setEditBrokerInput(broker); }}
                       title="Edit Customer"
@@ -4558,11 +4750,182 @@ export default function App() {
       <div className="tms-workspace flex-1 flex flex-col overflow-y-auto p-6">
         <div className="tms-brand">
           <span>Broski Transportation &amp; Logistics</span>
-          <a className="tms-brand-phone" href="tel:+14845756486">
-            <span className="tms-colombia-flag" role="img" aria-label="Colombian flag" />
-            <span>484-575-6486</span>
-          </a>
+          {profile.phone ? (
+            <a className="tms-brand-phone" href={`tel:+1${profile.phone}`}>
+              {countryFlags[profile.flag] && (
+                <span
+                  className="tms-colombia-flag"
+                  role="img"
+                  aria-label={`${countryFlags[profile.flag].name} flag`}
+                  style={{ background: countryFlags[profile.flag].background }}
+                />
+              )}
+              <span>{formatPhone(profile.phone)}</span>
+            </a>
+          ) : (
+            <span className="text-xs text-amber-400">Add your phone in ⚙ My Settings</span>
+          )}
+          <button
+            type="button"
+            onClick={openProfileSettings}
+            className="bg-slate-700 hover:bg-slate-600 text-white text-xs px-2.5 py-1 rounded font-medium cursor-pointer"
+          >
+            ⚙ My Settings
+          </button>
         </div>
+        {profileDraft && (
+          <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60" role="dialog" aria-label="My Settings">
+            <form onSubmit={handleSaveProfile} className="w-80 bg-[#121829] border border-[#1c2541] rounded-lg p-5 space-y-3">
+              <h2 className="text-sm font-bold text-gray-100">⚙ My Settings</h2>
+              <p className="text-[11px] text-gray-400">Used on your exports. Each teammate has their own.</p>
+              {[
+                ['phone', 'Call back phone (10 digits)', '484-555-1234'],
+                ['postingCode', 'Posting code', 'ANQ'],
+                ['visibilityGroup', 'Visibility group', 'ANQ']
+              ].map(([field, label, example]) => (
+                <label key={field} className="block text-xs text-gray-400">
+                  {label}
+                  <input
+                    type="text"
+                    value={profileDraft[field]}
+                    onChange={(e) => setProfileDraft(current => ({ ...current, [field]: e.target.value }))}
+                    placeholder={example}
+                    className="mt-1 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
+                  />
+                </label>
+              ))}
+              <label className="block text-xs text-gray-400">
+                Flag next to your phone
+                <div className="mt-1 flex items-center gap-2">
+                  <select
+                    value={profileDraft.flag}
+                    onChange={(e) => setProfileDraft(current => ({ ...current, flag: e.target.value }))}
+                    className="flex-1 bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
+                  >
+                    {Object.entries(countryFlags)
+                      .sort(([, a], [, b]) => a.name.localeCompare(b.name))
+                      .map(([code, flag]) => <option key={code} value={code}>{flag.name}</option>)}
+                    <option value="NONE">No flag</option>
+                  </select>
+                  {countryFlags[profileDraft.flag] && (
+                    <span className="tms-colombia-flag" aria-hidden="true" style={{ background: countryFlags[profileDraft.flag].background }} />
+                  )}
+                </div>
+              </label>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setProfileDraft(null)} className="bg-gray-600 hover:bg-gray-500 text-white px-3 py-1.5 text-xs rounded">Cancel</button>
+                <button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 text-xs rounded font-bold">Save</button>
+              </div>
+            </form>
+          </div>
+        )}
+        {shareCustomerName && (() => {
+          const shareInfo = sharedCustomers[shareCustomerName];
+          const memberIds = shareInfo?.memberIds || [];
+          const choices = teammates.filter(person => person.id !== shareInfo?.ownerId && !memberIds.includes(person.id));
+          const closeShareDialog = () => {
+            setShareCustomerName(null);
+            setShareMessage('');
+          };
+          const renderChoices = (buttonLabel, onSubmit) => (
+            <>
+              {choices.length ? choices.map(person => (
+                <label key={person.id} className="flex items-center gap-2 text-xs text-gray-200">
+                  <input type="checkbox" checked={shareSelection.includes(person.id)} onChange={() => toggleShareSelection(person.id)} />
+                  {person.email}
+                </label>
+              )) : <p className="text-[11px] text-gray-500">No other teammates to add.</p>}
+              <button
+                type="button"
+                disabled={shareBusy || !shareSelection.length}
+                onClick={onSubmit}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white px-3 py-1.5 text-xs rounded font-bold"
+              >
+                {buttonLabel}
+              </button>
+            </>
+          );
+          return (
+            <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60" role="dialog" aria-label="Share customer">
+              <div className="w-96 max-h-[80vh] overflow-y-auto bg-[#121829] border border-[#1c2541] rounded-lg p-5 space-y-3">
+                <h2 className="text-sm font-bold text-gray-100">🤝 Share “{shareCustomerName}”</h2>
+                {!shareInfo && (
+                  <>
+                    <p className="text-[11px] text-gray-400">
+                      Teammates you pick will see and edit this customer’s loads and lane rates live, together with you.
+                      Everyone keeps their own phone, posting code and visibility group.
+                    </p>
+                    {renderChoices('Share', () => runShareAction(
+                      () => sharing.shareCustomer(shareCustomerName, shareSelection),
+                      'Shared. Your teammates will see this customer the next time their page updates.'
+                    ))}
+                  </>
+                )}
+                {shareInfo && (
+                  <>
+                    <p className="text-[11px] text-gray-400">
+                      {shareInfo.isOwner ? 'You shared this customer.' : `Shared with you by ${teammateEmail(shareInfo.ownerId)}.`}
+                    </p>
+                    <div className="space-y-1">
+                      <span className="text-[11px] font-bold text-gray-300">Shared with:</span>
+                      {memberIds.length ? memberIds.map(memberId => (
+                        <div key={memberId} className="flex items-center justify-between text-xs text-gray-200">
+                          <span>{teammateEmail(memberId)}</span>
+                          {shareInfo.isOwner && (
+                            <button
+                              type="button"
+                              disabled={shareBusy}
+                              onClick={() => runShareAction(() => sharing.removeSharedMember(shareCustomerName, memberId), 'Teammate removed.')}
+                              className="bg-slate-700 hover:bg-red-600 text-white px-1.5 py-0.5 rounded text-[10px]"
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                      )) : <p className="text-[11px] text-gray-500">Nobody yet.</p>}
+                    </div>
+                    {shareInfo.isOwner ? (
+                      <>
+                        <span className="block text-[11px] font-bold text-gray-300">Add teammates:</span>
+                        {renderChoices('Add', () => runShareAction(
+                          () => sharing.addSharedMembers(shareCustomerName, shareSelection),
+                          'Teammates added.'
+                        ))}
+                        <button
+                          type="button"
+                          disabled={shareBusy}
+                          onClick={async () => {
+                            if (!window.confirm(`Stop sharing "${shareCustomerName}"? Teammates lose access. You keep all its loads and lane rates.`)) return;
+                            if (await runShareAction(() => sharing.stopSharingCustomer(shareCustomerName), '')) closeShareDialog();
+                          }}
+                          className="w-full bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white px-3 py-1.5 text-xs rounded font-bold"
+                        >
+                          Stop sharing
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={shareBusy}
+                        onClick={async () => {
+                          if (!window.confirm(`Leave "${shareCustomerName}"? It will be removed from your list. The other teammates keep it.`)) return;
+                          if (await runShareAction(() => sharing.leaveSharedCustomer(shareCustomerName), '')) closeShareDialog();
+                        }}
+                        className="w-full bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white px-3 py-1.5 text-xs rounded font-bold"
+                      >
+                        Leave this customer
+                      </button>
+                    )}
+                  </>
+                )}
+                {shareMessage && <p role="status" className="text-[11px] text-amber-300">{shareMessage}</p>}
+                <button type="button" onClick={closeShareDialog} className="w-full bg-gray-600 hover:bg-gray-500 text-white px-3 py-1.5 text-xs rounded">
+                  Close
+                </button>
+              </div>
+            </div>
+          );
+        })()}
         {selectedOrder ? (
           <>
             <div className="tms-action-bar flex items-center justify-between bg-[#161f36] px-4 py-3 rounded-lg mb-6 border border-[#1c2541]">
@@ -4617,7 +4980,7 @@ export default function App() {
                 </div>
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">VISIBILITY GROUP</label>
-                  <input type="text" value="ANQ" readOnly className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono" />
+                  <input type="text" value={profile.visibilityGroup} placeholder="Set in ⚙ My Settings" readOnly title="Change in ⚙ My Settings" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono placeholder-amber-400" />
                 </div>
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">EQUIPMENT</label>
@@ -4641,7 +5004,8 @@ export default function App() {
                   <label className="text-xs text-gray-400 block mb-1">POSTING CODE</label>
                   <input
                     type="text"
-                    value={selectedOrder.postingCode || 'ANQ'}
+                    value={selectedOrder.postingCode || profile.postingCode}
+                    placeholder="Set in ⚙ My Settings"
                     onChange={(e) => handleInputChange('postingCode', e.target.value)}
                     className="w-full bg-[#0b132b] border border-emerald-500/60 rounded p-2 text-sm text-white font-mono"
                   />
@@ -4751,14 +5115,26 @@ export default function App() {
                     <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. Press Enter to go to the next load.</p>
                   </div>
                 </div>
-                <div className="mt-3">
-                  <label className="text-xs text-gray-400 block mb-1">Commodity</label>
-                  <input
-                    type="text"
-                    value={getLandstarCommodity(selectedOrder.eCode)}
-                    readOnly
-                    className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
-                  />
+                <div className="mt-3 grid grid-cols-[1fr_8rem] gap-4">
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">Commodity</label>
+                    <input
+                      type="text"
+                      value={getLandstarCommodity(selectedOrder.eCode)}
+                      readOnly
+                      className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="load-team" className="text-xs text-gray-400 block mb-1">Team</label>
+                    <input
+                      id="load-team"
+                      type="text"
+                      value={isTeamEquipment(selectedOrder.eCode) ? 'true' : 'false'}
+                      readOnly
+                      className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -4768,17 +5144,26 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-4 mb-3">
                   <div>
                     <label htmlFor="assignment-driver" className="text-xs text-gray-400 block mb-1">Driver Name</label>
-                    <input id="assignment-driver" type="text" value={selectedOrder.driver || ''} onChange={(e) => handleInputChange('driver', e.target.value)} placeholder="Enter driver name" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <div className="flex gap-1">
+                      <input id="assignment-driver" type="text" value={selectedOrder.driver || ''} onChange={(e) => handleInputChange('driver', e.target.value)} placeholder="Enter driver name" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                      <button type="button" onClick={() => copyToClipboard(selectedOrder.driver || '', 'Driver Name')} title="Copy Driver Name" aria-label="Copy Driver Name" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
+                    </div>
                   </div>
                   <div>
                     <label htmlFor="assignment-truck" className="text-xs text-gray-400 block mb-1">Truck Number</label>
-                    <input id="assignment-truck" type="text" value={selectedOrder.truck || ''} onChange={(e) => handleInputChange('truck', e.target.value)} placeholder="Truck number" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <div className="flex gap-1">
+                      <input id="assignment-truck" type="text" value={selectedOrder.truck || ''} onChange={(e) => handleInputChange('truck', e.target.value)} placeholder="Truck number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                      <button type="button" onClick={() => copyToClipboard(selectedOrder.truck || '', 'Truck Number')} title="Copy Truck Number" aria-label="Copy Truck Number" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
+                    </div>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label htmlFor="assignment-trailer" className="text-xs text-gray-400 block mb-1">Trailer Number</label>
-                    <input id="assignment-trailer" type="text" value={selectedOrder.trailer || ''} onChange={(e) => handleInputChange('trailer', e.target.value)} placeholder="Trailer number" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <div className="flex gap-1">
+                      <input id="assignment-trailer" type="text" value={selectedOrder.trailer || ''} onChange={(e) => handleInputChange('trailer', e.target.value)} placeholder="Trailer number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                      <button type="button" onClick={() => copyToClipboard(selectedOrder.trailer || '', 'Trailer Number')} title="Copy Trailer Number" aria-label="Copy Trailer Number" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
+                    </div>
                   </div>
                   <div>
                     <label htmlFor="assignment-pickup-eta" className="text-xs text-gray-400 block mb-1">Pickup ETA</label>
@@ -4787,7 +5172,10 @@ export default function App() {
                 </div>
                 <div className="mt-3">
                   <label htmlFor="assignment-driver-phone" className="text-xs text-gray-400 block mb-1">Driver Cell Phone</label>
-                  <input id="assignment-driver-phone" type="tel" value={selectedOrder.driverPhone || ''} onChange={(e) => handleInputChange('driverPhone', e.target.value)} placeholder="Enter cell phone number" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                  <div className="flex gap-1">
+                    <input id="assignment-driver-phone" type="tel" value={selectedOrder.driverPhone || ''} onChange={(e) => handleInputChange('driverPhone', e.target.value)} placeholder="Enter cell phone number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <button type="button" onClick={() => copyToClipboard(selectedOrder.driverPhone || '', 'Driver Cell Phone')} title="Copy Driver Cell Phone" aria-label="Copy Driver Cell Phone" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
+                  </div>
                 </div>
               </div>
 

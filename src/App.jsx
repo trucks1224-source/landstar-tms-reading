@@ -1871,7 +1871,7 @@ function deduplicateDatImports(importedLoads, existingLoads) {
 }
 
 function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
-  additive = !preservesImportedLoadStatus(customer), allowGeneratedIds = additive, now = Date.now()
+  additive = !preservesImportedLoadStatus(customer), allowGeneratedIds = additive, now = Date.now(), keepManualEnt = false
 } = {}) {
   if (!importedLoads.length) {
     throw new Error('The imported load list is empty. Existing loads were not deleted.');
@@ -1940,10 +1940,13 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
   }
   const retained = existingLoads.filter(load => {
     if (matchedIds.has(String(load.id))) return false;
-    if (importedLaneDays.has(createLaneDayKey(load))) return false;
     const exportedAt = Date.parse(load.landstarExportedAt);
-    const retainedArchive = load.status === 'ENT' && Number.isFinite(exportedAt)
-      && now - exportedAt < exportedLoadRetentionMs;
+    // Screenshot imports also keep loads moved to ENT by hand (no export date).
+    const retainedArchive = load.status === 'ENT' && (Number.isFinite(exportedAt)
+      ? now - exportedAt < exportedLoadRetentionMs
+      : keepManualEnt);
+    if (retainedArchive) return true;
+    if (importedLaneDays.has(createLaneDayKey(load))) return false;
     return retainedArchive || (additive && !(load.status === 'ENT' && Number.isFinite(exportedAt)
       && now - exportedAt >= exportedLoadRetentionMs));
   });
@@ -3777,7 +3780,7 @@ export default function App({ sharing = null } = {}) {
       mergedImportedLoads.forEach(order => mergedOrders.set(order.id, order));
       const replacement = replaceImportedCustomerLoads(brokerName, isDatImport ? importedLoads : recognizedLoads, existingOrders,
         isDatImport ? { additive: true, allowGeneratedIds: true }
-          : gridSkippedRows.length ? { additive: true, allowGeneratedIds: !preservesImportedLoadStatus(brokerName) } : {});
+          : gridSkippedRows.length ? { additive: true, allowGeneratedIds: !preservesImportedLoadStatus(brokerName) } : { keepManualEnt: true });
       const finalLoads = replacement ? replacement.loads : Array.from(mergedOrders.values());
       const nextOrders = {
         ...customerOrdersMap,

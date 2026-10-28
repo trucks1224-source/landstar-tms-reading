@@ -807,6 +807,19 @@ test('Copy Selected button counts checked loads', () => {
   assert.match([copyButton().props.children].flat(Infinity).join(''), /\(2\)/);
 });
 
+test('Para screenshot import keeps loads moved to ENT by hand', () => {
+  const existing = [
+    { ...load, id: '2270001', status: 'ENT', tag: 'ENT' },
+    { ...load, id: '2270002', status: 'OPEN', tag: 'OPEN' }
+  ];
+  const imported = [{ ...load, id: '2280389', origCity: 'ATLANTA', origSt: 'GA', destCity: 'WADDELL', destSt: 'AZ' }];
+  const result = policy.replaceImportedCustomerLoads('Para 1522166 - ATZ', imported, existing, { keepManualEnt: true });
+  const ids = result.loads.map(order => String(order.id));
+  assert.ok(ids.includes('2270001'), 'ENT load kept');
+  assert.ok(ids.includes('2280389'), 'new load added');
+  assert.ok(!ids.includes('2270002'), 'OPEN load missing from screenshot is replaced');
+});
+
 test('With rate and No rate buttons show only those loads', () => {
   const app = createAppHarness(customers[0], [
     { ...load, id: '1', rateInput: '1500', rateSource: 'user-entered' },

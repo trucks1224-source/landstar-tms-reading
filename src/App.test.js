@@ -358,6 +358,19 @@ test('VM screenshot equipment imports as team van', () => {
   assert.equal(policy.isTeamEquipment(parsed.eCode), true);
 });
 
+test('screenshot equipment OCR restores the letter whitelist after reading load digits', async () => {
+  const parameters = [];
+  const recognized = await screenshotTable.recognizeScreenshotEquipment({
+    async setParameters(value) { parameters.push(value); },
+    async recognize() { return { data: { text: 'VM' } }; }
+  }, {});
+  assert.equal(recognized, 'VT');
+  assert.deepEqual(parameters, [{
+    tessedit_pageseg_mode: '8',
+    tessedit_char_whitelist: 'VEZRFSADNM53'
+  }]);
+});
+
 test('Para red screenshot numbers import ON HOLD and reopen when no longer red', () => {
   const times = ['10/28/2026 08...', '10/28/2026 1400', '10/29/2026 0...', '10/29/2026 1400'];
   const red = parseScreenshotTimes('2279568', times, customers[0], true);

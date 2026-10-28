@@ -55,6 +55,17 @@ export function detectScreenshotGrid(canvas) {
   return rows.length >= 2 ? { columns: [...vertical, width], rows } : null;
 }
 
+export async function recognizeScreenshotEquipment(worker, canvas) {
+  await worker.setParameters({
+    tessedit_pageseg_mode: '8',
+    tessedit_char_whitelist: 'VEZRFSADNM53'
+  });
+  const { data } = await worker.recognize(canvas);
+  const rawEquipmentCode = data.text.trim().toUpperCase().replace(/[\s.]/g, '');
+  // V53 is a 53' van; VM is a team van.
+  return { V53: 'V', VM: 'VT' }[rawEquipmentCode] || rawEquipmentCode;
+}
+
 export async function readScreenshotGrid(worker, canvas, grid, onProgress, sourceImage) {
   const lines = [];
   const padding = 16;
@@ -164,11 +175,7 @@ export async function readScreenshotGrid(worker, canvas, grid, onProgress, sourc
       nativeCanvas, equipmentLeft, equipmentTop, equipmentWidth, equipmentHeight,
       padding, padding, equipmentWidth * 5, equipmentHeight * 5
     );
-    await worker.setParameters({ tessedit_char_whitelist: 'VEZRFSADNM53' });
-    const { data: equipmentData } = await worker.recognize(equipmentCanvas);
-    const rawEquipmentCode = equipmentData.text.trim().toUpperCase().replace(/[\s.]/g, '');
-    // V53 is a 53' van; VM is a team van.
-    const equipmentCode = { V53: 'V', VM: 'VT' }[rawEquipmentCode] || rawEquipmentCode;
+    const equipmentCode = await recognizeScreenshotEquipment(worker, equipmentCanvas);
     if (!/^(VZ|VE|VR|VT|RZ|R|F|SD|VAN|V)$/.test(equipmentCode)) {
       throw new Error(`Could not read equipment for load ${digits}. Existing loads were not deleted.`);
     }

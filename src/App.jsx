@@ -43,7 +43,7 @@ function removeExpiredExportedLoads(customerOrders, now = Date.now()) {
   const nextOrders = {};
   Object.entries(customerOrders).forEach(([customer, loads]) => {
     nextOrders[customer] = loads.filter(load => {
-      if (!load.landstarExportedAt) return true;
+      if (load.status !== 'ENT' || !load.landstarExportedAt) return true;
       const exportedAt = Date.parse(load.landstarExportedAt);
       const keep = !Number.isFinite(exportedAt) || now - exportedAt < exportedLoadRetentionMs;
       if (!keep) changed = true;
@@ -51,6 +51,12 @@ function removeExpiredExportedLoads(customerOrders, now = Date.now()) {
     });
   });
   return changed ? nextOrders : customerOrders;
+}
+
+function markLoadsExported(loads, exportedIds, exportedAt) {
+  return loads.map(load => exportedIds.has(String(load.id))
+    ? { ...load, status: 'ENT', tag: 'ENT', landstarExportedAt: exportedAt }
+    : load);
 }
 
 const screenshotColumns = [0, 0.024, 0.081, 0.171, 0.27, 0.352, 0.452, 0.547, 0.58, 0.616, 0.693, 0.724, 0.78, 0.815, 0.856, 1];
@@ -358,10 +364,10 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
       postingCode: 'ANQ',
       visibilityGroup: 'ANQ',
       eCode: equipment || (isRxoCustomer(selectedBroker) ? 'VAN:VAN' : 'VZ'),
-      status: isParaImport && line.orderNumberHighlighted ? 'ENT' : 'OPEN',
-      tag: isParaImport && line.orderNumberHighlighted ? 'ENT' : 'OPEN',
+      status: isParaImport && line.orderNumberHighlighted ? 'ON HOLD' : 'OPEN',
+      tag: isParaImport && line.orderNumberHighlighted ? 'HOLD' : 'OPEN',
       ...(isParaImport && typeof line.orderNumberHighlighted === 'boolean'
-        ? { screenshotStatus: line.orderNumberHighlighted ? 'ENT' : 'OPEN' }
+        ? { screenshotStatus: line.orderNumberHighlighted ? 'ON HOLD' : 'OPEN' }
         : {}),
       route: `${origin}${originState ? `, ${originState}` : ''} → ${destination}${destinationState ? `, ${destinationState}` : ''}`,
       puDate: pickupFrom || pickupTo ? `PU: ${shortDateTime(pickupFrom || pickupTo)}` : 'PU: Today',
@@ -625,6 +631,19 @@ function correctCitiesFromZip(loads, zipData) {
   return loads;
 }
 
+function parseDatRateText(text) {
+  const lines = String(text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  for (const line of lines) {
+    if (/\/\s*mi\b/i.test(line)) continue;
+    const match = line.match(/^\$?\s*(\d{1,3}(?:,\d{3})+|\d{3,5})(?:\.00)?\s*$/);
+    if (match) {
+      const rate = Number(match[1].replace(/,/g, ''));
+      if (rate >= 100 && rate < 100000) return rate;
+    }
+  }
+  return 0;
+}
+
 function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker, laneRates) {
   const cleanCell = words => words
     .sort((a, b) => a.bbox.x0 - b.bbox.x0)
@@ -702,6 +721,7 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
     const centerY = (word.bbox.y0 + word.bbox.y1) / 2;
     const text = word.text.replace(/[Oo]/g, '0');
     return centerY > pickupHeaderY
+      && !/[$]|\/\s*mi\b/i.test(text)
       && /\b(?:0?[1-9]|1[0-2])\s*[/.-]\s*(?:0?[1-9]|[12]\d|3[01])(?:\s*[/.-]\s*\d{2,4})?\b/.test(text);
   }).sort((a, b) => a.bbox.y0 - b.bbox.y0);
   const datRows = [];
@@ -797,6 +817,8 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
   };
   const getTextRow = text => {
     const normalizedText = String(text || '')
+      .replace(/\$?\s*\d[\d,.]*\s*[/°*]\s*mi\b/gi, ' ')
+      .replace(/\/\s*mi\b/gi, ' ')
       .replace(/[Oo](?=\d)/g, '0')
       .replace(/[IlM1|]bs\b/g, ' lbs');
     const dateMatch = normalizedText.match(/\b(1[0-2]|0?[1-9])\s*[/.-]\s*(3[01]|[12]\d|0?[1-9])\b/);
@@ -830,7 +852,7 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
   };
   const loads = [];
   rowsToRead.forEach((line, index) => {
-    if (!line.words?.length || line.bbox.y0 < imageHeight * 0.035) return;
+    if (!line.words?.length) return;
     const textRow = getTextRow(line.text);
     const origin = getLocation(getHeaderCell(line, 'origin')) || textRow?.origin;
     const destination = getLocation(getHeaderCell(line, 'destination')) || textRow?.destination;
@@ -920,7 +942,7 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       notes: `DAT screenshot does not include ZIP codes. ${trip ? 'Trip value was imported as miles; verify it.' : 'Trip miles were not recognized; enter them before export.'}`
     };
     const savedLaneRate = getSavedLaneRate(laneRates, selectedBroker, order);
-    if (!order.rateInput && savedLaneRate) {
+    if (savedLaneRate && (!order.rateInput || getFixedLaneRate(selectedBroker, order))) {
       order.rateInput = savedLaneRate;
       order.rateSource = 'user-entered';
     }
@@ -1789,9 +1811,7 @@ function keepPreviouslyExportedLoadsOpen(loads, exportedLoadIds, customer) {
 }
 
 function getReimportedLoadStatus(existingLoad, wasPreviouslyExported) {
-  return wasPreviouslyExported || existingLoad.status === 'ENT'
-    ? { status: 'OPEN', tag: 'OPEN' }
-    : { status: existingLoad.status, tag: existingLoad.tag };
+  return { status: 'OPEN', tag: 'OPEN' };
 }
 
 function getImportedLoadKey(load) {
@@ -1803,77 +1823,126 @@ function getImportedLoadKey(load) {
   return key;
 }
 
-function replaceImportedCustomerLoads(customer, importedLoads, existingLoads) {
-  if (!preservesImportedLoadStatus(customer)) return null;
+function deduplicateDatImports(importedLoads, existingLoads) {
+  const existingByLaneDay = new Map(existingLoads.map(load => [createLaneDayKey(load), load]).filter(([key]) => key));
+  const seenLaneDays = new Set();
+  const unreadableRows = [];
+  let skippedDuplicateCount = 0;
+  const loads = importedLoads.flatMap((load, index) => {
+    const key = createLaneDayKey(load);
+    if (!key) {
+      unreadableRows.push(`Row ${index + 1}: ${load.route || `${load.origCity || '?'} → ${load.destCity || '?'}`} (pickup: ${load.pickupTime || load.puDate || 'unreadable'})`);
+      return [];
+    }
+    if (seenLaneDays.has(key)) {
+      skippedDuplicateCount += 1;
+      return [];
+    }
+    seenLaneDays.add(key);
+    const existing = existingByLaneDay.get(key);
+    if (existing) {
+      return [{ ...load, id: existing.id, sourceLoadId: existing.sourceLoadId || existing.id }];
+    }
+    return [load];
+  });
+  if (unreadableRows.length === importedLoads.length && unreadableRows.length) {
+    throw new Error(`No DAT rows had a readable lane and pickup date. Existing loads were not changed.\n${unreadableRows.join('\n')}`);
+  }
+  return { loads, skippedDuplicateCount, unreadableRows };
+}
+
+function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
+  additive = !preservesImportedLoadStatus(customer), allowGeneratedIds = additive, now = Date.now()
+} = {}) {
   if (!importedLoads.length) {
     throw new Error('The imported load list is empty. Existing loads were not deleted.');
   }
   const loadKey = load => normalizeLoadId(getBaseLoadId(load));
-  const existingById = new Map();
-  existingLoads.forEach(load => {
-    const key = loadKey(load);
-    if (!existingById.has(key)) existingById.set(key, load);
-  });
   const importedById = new Map();
-  const duplicatedIds = new Set();
+  let duplicateCount = 0;
   importedLoads.forEach(load => {
-    const key = getImportedLoadKey(load);
+    const id = allowGeneratedIds ? getBaseLoadId(load) : getImportedLoadKey(load);
+    if (!id) throw new Error('An imported load has no readable load number. Existing loads were not deleted.');
+    const key = JSON.stringify([id, createLaneDayKey(load)]);
     if (importedById.has(key)) {
-      duplicatedIds.add(key);
+      duplicateCount += 1;
       return;
     }
-    importedById.set(key, load);
+    importedById.set(key, { ...load, id, sourceLoadId: id });
   });
-  const mergedLoads = Array.from(importedById, ([key, load]) => {
-    const existing = existingById.get(key);
+  const importedLaneDays = new Set();
+  const matchedIds = new Set();
+  const mergedLoads = [];
+  let laneDayDuplicateCount = 0;
+  for (const load of importedById.values()) {
+    const laneDay = createLaneDayKey(load);
+    if (laneDay && importedLaneDays.has(laneDay)) {
+      laneDayDuplicateCount += 1;
+      continue;
+    }
+    if (laneDay) importedLaneDays.add(laneDay);
+    const existing = existingLoads.find(order => loadKey(order) === loadKey(load) && !isNewDayForExistingLoad(order, load))
+      || (allowGeneratedIds && existingLoads.find(order => laneDay && createLaneDayKey(order) === laneDay))
+      || existingLoads.find(order => loadKey(order) === loadKey(load));
     const populatedFields = Object.fromEntries(Object.entries(load).filter(([, value]) =>
       value !== undefined && value !== null && String(value).trim() !== ''
     ));
-    const merged = { ...existing, ...populatedFields, id: key, sourceLoadId: key };
+    const merged = { ...existing, ...populatedFields, status: 'OPEN', tag: 'OPEN' };
     if (existing) {
-      ['rateInput', 'rateSource', 'carrier', 'driver', 'truck', 'trailer', 'notes'].forEach(field => {
+      ['rateInput', 'rateSource', 'carrier', 'driver', 'driverPhone', 'truck', 'trailer', 'pickupEta', 'notes'].forEach(field => {
         if (String(existing[field] || '').trim()) merged[field] = existing[field];
       });
-      if (isNewDayForExistingLoad(existing, load)) delete merged.landstarExportedAt;
+      if (allowGeneratedIds && load.rateSource === 'dat-screenshot' && existing.rateSource !== 'user-entered'
+        && Number(load.rateInput) > 0) {
+        merged.rateInput = load.rateInput;
+        merged.rateSource = load.rateSource;
+      }
+      if (!isNewDayForExistingLoad(existing, load)) {
+        merged.id = existing.id;
+        merged.sourceLoadId = existing.sourceLoadId || getBaseLoadId(existing);
+        matchedIds.add(String(existing.id));
+      }
     }
-    if (existing || duplicatedIds.has(key)) {
-      merged.status = 'OPEN';
-      merged.tag = 'OPEN';
+    const fixedLaneRate = getFixedLaneRate(customer, merged);
+    if (fixedLaneRate && (!existing || existing.rateSource !== 'user-entered')) {
+      merged.rateInput = fixedLaneRate;
+      merged.rateSource = 'user-entered';
     }
-    if (isParaCustomer(customer) && ['ENT', 'OPEN'].includes(load.screenshotStatus)) {
-      merged.status = load.screenshotStatus;
-      merged.tag = load.screenshotStatus;
-      if (load.screenshotStatus === 'OPEN') delete merged.landstarExportedAt;
+    delete merged.landstarExportedAt;
+    if (isParaCustomer(customer) && load.screenshotStatus === 'ON HOLD') {
+      merged.status = 'ON HOLD';
+      merged.tag = 'HOLD';
     }
     delete merged.screenshotStatus;
-    return merged;
+    const reservedLoads = existingLoads.filter(order => additive || (order.status === 'ENT'
+      && Number.isFinite(Date.parse(order.landstarExportedAt))
+      && now - Date.parse(order.landstarExportedAt) < exportedLoadRetentionMs));
+    mergedLoads.push(assignImportedLoadIdentity(merged, reservedLoads, mergedLoads));
+  }
+  const retained = existingLoads.filter(load => {
+    if (matchedIds.has(String(load.id))) return false;
+    if (importedLaneDays.has(createLaneDayKey(load))) return false;
+    const exportedAt = Date.parse(load.landstarExportedAt);
+    const retainedArchive = load.status === 'ENT' && Number.isFinite(exportedAt)
+      && now - exportedAt < exportedLoadRetentionMs;
+    return retainedArchive || (additive && !(load.status === 'ENT' && Number.isFinite(exportedAt)
+      && now - exportedAt >= exportedLoadRetentionMs));
   });
-  let laneDayDuplicateCount = 0;
-  const seenLaneDays = new Set();
-  const isRxoPayer = normalizeCustomerName(customer) === rxoPayerCustomerName;
-  const loads = isRxoPayer ? mergedLoads.filter(load => {
-    const key = createLaneDayKey(load);
-    if (!key) return true;
-    if (seenLaneDays.has(key)) {
-      laneDayDuplicateCount += 1;
-      return false;
-    }
-    seenLaneDays.add(key);
-    return true;
-  }) : mergedLoads;
+  const loads = [...mergedLoads, ...retained];
   return {
-    loads,
+    loads, additive, processedLoads: mergedLoads,
     laneDayDuplicateCount,
-    usesScreenshotStatus: isParaCustomer(customer) && importedLoads.some(load => ['ENT', 'OPEN'].includes(load.screenshotStatus)),
-    duplicateCount: importedLoads.length - mergedLoads.length,
-    removedCount: existingLoads.filter(load => !importedById.has(loadKey(load))).length
+    usesScreenshotStatus: isParaCustomer(customer)
+      && importedLoads.some(load => ['ON HOLD', 'OPEN'].includes(load.screenshotStatus)),
+    duplicateCount,
+    removedCount: existingLoads.filter(load => !matchedIds.has(String(load.id)) && !retained.includes(load)).length
   };
 }
 
 function getImportReplacementMessage(replacement) {
   return replacement
-    ? `• Full list replaced; missing loads deleted (including ENT): ${replacement.removedCount}\n` +
-      `• Duplicate load numbers skipped: ${replacement.duplicateCount}; ${replacement.usesScreenshotStatus ? 'screenshot colors applied: red = ENT, non-red = OPEN' : 'existing load numbers set to OPEN'}.\n`
+    ? `• ${replacement.additive ? 'Imported list merged' : 'Full list replaced'}; removed loads: ${replacement.removedCount}. Exported ENT loads retained for 30 days unless re-imported.\n` +
+      `• Duplicate load/day rows skipped: ${replacement.duplicateCount}; ${replacement.usesScreenshotStatus ? 'Para screenshot: red = ON HOLD, non-red = OPEN' : 'imported loads set to OPEN'}.\n`
       + (replacement.laneDayDuplicateCount ? `• Same-lane/pickup-day duplicates skipped: ${replacement.laneDayDuplicateCount} (first load kept).\n` : '')
     : '';
 }
@@ -1923,23 +1992,7 @@ function createLaneScheduleKey(order) {
 }
 
 function markDifferentScheduleLoadsEnt(loads, existingLoads = [], customer) {
-  if (preservesImportedLoadStatus(customer)) return loads;
-  const schedulesByLaneDay = new Map();
-  [...existingLoads, ...loads].forEach(load => {
-    const laneDayKey = createLaneDayKey(load);
-    const scheduleKey = createLaneScheduleKey(load);
-    if (!laneDayKey || !scheduleKey) return;
-    const schedules = schedulesByLaneDay.get(laneDayKey) || new Set();
-    schedules.add(scheduleKey);
-    schedulesByLaneDay.set(laneDayKey, schedules);
-  });
-
-  return loads.map(load => {
-    const laneDayKey = createLaneDayKey(load);
-    const schedules = laneDayKey ? schedulesByLaneDay.get(laneDayKey) : null;
-    if (!schedules || schedules.size < 2) return load;
-    return { ...load, status: 'ENT', tag: 'ENT' };
-  });
+  return loads.map(load => ({ ...load, status: 'OPEN', tag: 'OPEN' }));
 }
 
 function toAlphabeticalSuffix(index) {
@@ -1983,6 +2036,22 @@ function assignImportedLoadIdentity(importedLoad, existingLoads, stagedLoads) {
   return { ...normalizedLoad, id: variantId };
 }
 
+// Fixed lane-rate overrides: these lanes always pay the listed amount.
+const fixedLaneRates = [
+  { origSt: 'ID', destSt: 'FL', rate: '11000' }
+];
+
+function getFixedLaneRate(customer, order) {
+  const text = value => String(value || '').trim().toUpperCase();
+  const match = fixedLaneRates.find(lane =>
+    (!lane.customer || normalizeCustomerName(lane.customer) === normalizeCustomerName(customer))
+    && (!lane.origSt || text(order.origSt) === lane.origSt)
+    && (!lane.destSt || text(order.destSt) === lane.destSt)
+    && (!lane.origCity || text(order.origCity) === lane.origCity)
+    && (!lane.destCity || text(order.destCity) === lane.destCity));
+  return match ? match.rate : '';
+}
+
 function createLaneRateKey(customer, order) {
   const normalize = value => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
   const origin = normalize(order.origCity);
@@ -2001,6 +2070,8 @@ function createLaneRateKey(customer, order) {
 }
 
 function getSavedLaneRate(laneRates, customer, order) {
+  const fixedRate = getFixedLaneRate(customer, order);
+  if (fixedRate) return fixedRate;
   const key = createLaneRateKey(customer, order);
   if (!key) return '';
   if (laneRates[key]) return laneRates[key];
@@ -2059,6 +2130,17 @@ const defaultCustomerDatasets = {
     { id: '24424438', visibilityGroup: 'RXO', eCode: 'VAN:VAN', status: 'OPEN', tag: 'OPEN', route: 'BOLINGBROOK, IL → SCOTTSVILLE, KY', puDate: 'PU: Today', delDate: 'DFL: Upcoming', pickupTime: '10/18/2026 0800 - 1200', origCity: 'BOLINGBROOK', origSt: 'IL', origZip: '60440', weight: '20000 lbs', deliveryTime: '10/20/2026 0800 - 1700', destCity: 'SCOTTSVILLE', destSt: 'KY', destZip: '42164', miles: '431', planningComment: 'Imported from Excel', carrier: '', driver: '', truck: '', trailer: '', rateInput: '', brokerable: 'false', notes: '' }
   ]
 };
+
+function getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery) {
+  const query = searchQuery.trim().toLowerCase();
+  const customers = query ? Object.entries(customerOrdersMap) : [[selectedBroker, customerOrdersMap[selectedBroker] || []]];
+  return customers.flatMap(([customer, loads]) => loads
+    .filter(order => !query || [
+      order.id, order.route, order.origCity, order.origSt,
+      order.destCity, order.destSt, order.planningComment
+    ].some(value => String(value || '').toLowerCase().includes(query)))
+    .map(order => ({ customer, order })));
+}
 
 export default function App() {
   const [brokers, setBrokers] = useState(() => {
@@ -2209,7 +2291,7 @@ export default function App() {
         const fullLists = new Map();
         rows.forEach(row => {
           const customer = normalizeCustomerName(row.customer);
-          if (!preservesImportedLoadStatus(customer)) return;
+          if (!customer || !row.load?.id) return;
           getImportedLoadKey(row.load);
           const loads = fullLists.get(customer) || [];
           loads.push(row.load);
@@ -2217,27 +2299,6 @@ export default function App() {
         });
         setCustomerOrdersMap(current => {
           const next = { ...current };
-          rows.forEach(row => {
-            const customer = normalizeCustomerName(row.customer);
-            if (!customer || !row.load?.id || fullLists.has(customer)) return;
-            const existing = [...(Array.isArray(next[customer]) ? next[customer] : [])];
-            const records = getExportedRecordsForCustomer(getLatestExportedRegistry(), customer);
-            const { exportedLoadIds } = countPreviouslyExportedLoads([row.load], records);
-            const existingIndex = existing.findIndex(load =>
-              normalizeLoadId(load.id) === normalizeLoadId(row.load.id)
-              && !isNewDayForExistingLoad(load, row.load)
-            );
-            if (existingIndex >= 0) {
-              if (!exportedLoadIds.has(normalizeLoadId(row.load.id))) return;
-              existing[existingIndex] = { ...existing[existingIndex], status: 'OPEN', tag: 'OPEN' };
-              next[customer] = existing;
-              return;
-            }
-            next[customer] = [
-              ...keepPreviouslyExportedLoadsOpen([row.load], exportedLoadIds, customer),
-              ...existing
-            ];
-          });
           fullLists.forEach((loads, customer) => {
             next[customer] = replaceImportedCustomerLoads(customer, loads, current[customer] || []).loads;
           });
@@ -2716,6 +2777,7 @@ export default function App() {
       setCustomerOrdersMap(nextOrders);
       setSelectedOrder(finalLoads.find(load => load.id === resolvedLoads[0].id) || finalLoads[0]);
       setSelectedIds([]);
+      setFilter('OPEN');
       
       alert(
         `✉️ Gmail Import Complete for ${selectedBroker}:\n` +
@@ -2937,6 +2999,7 @@ export default function App() {
         setCustomerOrdersMap(nextOrders);
         setSelectedOrder(finalLoads.find(load => load.id === resolvedImportedLoads[0].id) || finalLoads[0]);
         setSelectedIds([]);
+        setFilter('OPEN');
 
         const duplicatesRemoved = replacement ? 0 : duplicateImportCount + duplicateExistingCount;
 
@@ -3309,7 +3372,7 @@ export default function App() {
         setScreenshotImportProgress('Reading DAT rates...');
         await worker.setParameters({
           tessedit_pageseg_mode: '7',
-          tessedit_char_whitelist: '0123456789,$'
+          tessedit_char_whitelist: '0123456789,$./mi'
         });
         for (const load of recognizedLoads) {
           const crop = load.rateCrop;
@@ -3322,19 +3385,21 @@ export default function App() {
             [-0.45, 0.02, 140], [-0.3, 0.2, 140], [-0.5, 0.15, 125]
           ];
           let found = 0;
-          let fallbackRate = 0;
+          const candidates = new Map();
           for (const [top, bottom, threshold] of variants) {
             const y0 = Math.max(0, Math.round(crop.centerY + crop.rowHeight * top));
             const y1 = Math.min(canvas.height, Math.round(crop.centerY + crop.rowHeight * bottom));
             if (y1 <= y0) continue;
             const scale = 4;
             const cropCanvas = document.createElement('canvas');
-            cropCanvas.width = (crop.x1 - crop.x0) * scale;
-            cropCanvas.height = (y1 - y0) * scale;
+            cropCanvas.width = (crop.x1 - crop.x0) * scale + 32;
+            cropCanvas.height = (y1 - y0) * scale + 32;
             const cropContext = cropCanvas.getContext('2d', { willReadFrequently: true });
             if (!cropContext) break;
             cropContext.imageSmoothingQuality = 'high';
-            cropContext.drawImage(canvas, crop.x0, y0, crop.x1 - crop.x0, y1 - y0, 0, 0, cropCanvas.width, cropCanvas.height);
+            cropContext.fillStyle = '#fff';
+            cropContext.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+            cropContext.drawImage(canvas, crop.x0, y0, crop.x1 - crop.x0, y1 - y0, 16, 16, cropCanvas.width - 32, cropCanvas.height - 32);
             const cropData = cropContext.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
             for (let offset = 0; offset < cropData.data.length; offset += 4) {
               const luminance = cropData.data[offset] * 0.299 + cropData.data[offset + 1] * 0.587 + cropData.data[offset + 2] * 0.114;
@@ -3346,16 +3411,13 @@ export default function App() {
             }
             cropContext.putImageData(cropData, 0, 0);
             const { data: rateData } = await worker.recognize(cropCanvas);
-            const rateValue = Number(rateData.text.replace(/[^\d]/g, ''));
+            const rateValue = parseDatRateText(rateData.text);
             if (isPlausible(rateValue)) {
-              found = rateValue;
-              break;
-            }
-            if (!fallbackRate && rateValue >= 100 && rateValue < 100000 && /^\$?\d{1,2},?\d{3}\s*$/.test(rateData.text.trim())) {
-              fallbackRate = rateValue;
+              candidates.set(rateValue, (candidates.get(rateValue) || 0) + 1);
             }
           }
-          if (!found) found = fallbackRate;
+          const ranked = [...candidates].sort((a, b) => b[1] - a[1]);
+          if (ranked[0]?.[1] >= 2 && (!ranked[1] || ranked[0][1] > ranked[1][1])) found = ranked[0][0];
           if (found) {
             load.rateInput = String(found);
             load.rateSource = 'dat-screenshot';
@@ -3368,9 +3430,9 @@ export default function App() {
       await applyDatCityFix();
       recognizedLoads.forEach(load => { delete load.rateCrop; });
 
-      // Auto-fetch DAT Ratecast API rates for any loads missing rates after parsing
+      // DAT screenshots must retain posted rates rather than substitute market estimates.
       for (const load of recognizedLoads) {
-        if (!Number(load.rateInput) > 0) {
+        if (!isDatImport && !(Number(load.rateInput) > 0)) {
           const datRateInfo = await fetchDatRateForImport(load, brokerName, laneRates);
           if (datRateInfo.rateInput) {
             load.rateInput = datRateInfo.rateInput;
@@ -3400,40 +3462,12 @@ export default function App() {
       );
       let importedLoads = recognizedLoads;
       let skippedDuplicateCount = 0;
+      let datUnreadableRows = [];
       if (isDatImport) {
-        const uniqueLoads = [];
-        const seenSchedules = new Map();
-        importedLoads.forEach(load => {
-          const scheduleKey = createLaneScheduleKey(load);
-          const previousIndex = scheduleKey ? seenSchedules.get(scheduleKey) : undefined;
-          if (previousIndex === undefined) {
-            if (scheduleKey) seenSchedules.set(scheduleKey, uniqueLoads.length);
-            uniqueLoads.push(load);
-            return;
-          }
-          skippedDuplicateCount += 1;
-          const previousLoad = uniqueLoads[previousIndex];
-          if (!(Number(previousLoad.rateInput) > 0) && Number(load.rateInput) > 0) {
-            uniqueLoads[previousIndex] = load;
-          }
-        });
-        const existingBySchedule = new Map();
-        existingOrders.forEach(order => {
-          const scheduleKey = createLaneScheduleKey(order);
-          if (scheduleKey && !existingBySchedule.has(scheduleKey)) {
-            existingBySchedule.set(scheduleKey, order);
-          }
-        });
-        importedLoads = uniqueLoads.flatMap(load => {
-          const scheduleKey = createLaneScheduleKey(load);
-          const existingLoad = scheduleKey ? existingBySchedule.get(scheduleKey) : null;
-          if (!existingLoad) return [load];
-          if (!(Number(existingLoad.rateInput) > 0) && Number(load.rateInput) > 0) {
-            return [{ ...load, id: existingLoad.id }];
-          }
-          skippedDuplicateCount += 1;
-          return [];
-        });
+        const deduplicated = deduplicateDatImports(importedLoads, existingOrders);
+        importedLoads = deduplicated.loads;
+        skippedDuplicateCount = deduplicated.skippedDuplicateCount;
+        datUnreadableRows = deduplicated.unreadableRows;
       }
       importedLoads = keepPreviouslyExportedLoadsOpen(
         markDifferentScheduleLoadsEnt(importedLoads, existingOrders, brokerName),
@@ -3442,12 +3476,12 @@ export default function App() {
       );
 
       if (importedLoads.length === 0) {
-        const exportedMessage = exportedCount
+        const exportedMessage = !isDatImport && exportedCount
           ? preservesImportedLoadStatus(brokerName)
             ? ` ${exportedCount} previously exported loads moved to OPEN.`
             : ` ${exportedCount} previously exported loads remain in OPEN.`
           : '';
-        alert(`Read ${recognizedLoads.length} load rows, but none were added for ${brokerName}.${exportedMessage}${skippedDuplicateCount ? ' They duplicated a lane and pickup date already imported.' : ''}`);
+        alert(`Read ${recognizedLoads.length} load rows, but none were added for ${brokerName}.${exportedMessage}${skippedDuplicateCount ? ' They duplicated a lane and pickup date already imported.' : ''}${datUnreadableRows.length ? `\nSkipped unreadable rows:\n${datUnreadableRows.join('\n')}` : ''}`);
         return;
       }
 
@@ -3495,6 +3529,16 @@ export default function App() {
           return { ...rest, ...importedLoad, rateInput: importedLoad.rateInput || existingLoad.rateInput };
         }
         const mergedLoad = { ...importedLoad, ...existingLoad };
+        if (isDatImport && importedLoad.rateSource === 'dat-screenshot'
+          && existingLoad.rateSource !== 'user-entered' && Number(importedLoad.rateInput) > 0) {
+          mergedLoad.rateInput = importedLoad.rateInput;
+          mergedLoad.rateSource = 'dat-screenshot';
+        }
+        const fixedLaneRate = getFixedLaneRate(brokerName, mergedLoad);
+        if (fixedLaneRate && existingLoad.rateSource !== 'user-entered') {
+          mergedLoad.rateInput = fixedLaneRate;
+          mergedLoad.rateSource = 'user-entered';
+        }
         const preserveStatus = preservesImportedLoadStatus(brokerName);
         if (preserveStatus) {
           Object.assign(mergedLoad, getReimportedLoadStatus(existingLoad, wasPreviouslyExported));
@@ -3523,7 +3567,8 @@ export default function App() {
       const newLoads = mergedImportedLoads.filter(order => !existingIds.has(order.id));
       const mergedOrders = new Map(existingOrders.map(order => [order.id, order]));
       mergedImportedLoads.forEach(order => mergedOrders.set(order.id, order));
-      const replacement = replaceImportedCustomerLoads(brokerName, recognizedLoads, existingOrders);
+      const replacement = replaceImportedCustomerLoads(brokerName, isDatImport ? importedLoads : recognizedLoads, existingOrders,
+        isDatImport ? { additive: true, allowGeneratedIds: true } : {});
       const finalLoads = replacement ? replacement.loads : Array.from(mergedOrders.values());
       const nextOrders = {
         ...customerOrdersMap,
@@ -3531,9 +3576,9 @@ export default function App() {
       };
       const saved = persistAppData(brokers, nextOrders);
       setCustomerOrdersMap(nextOrders);
-      setSelectedOrder(replacement ? finalLoads[0] : mergedImportedLoads[0]);
+      setSelectedOrder(replacement.processedLoads[0]);
       setSelectedIds([]);
-      if (replacement?.usesScreenshotStatus) setFilter('ALL');
+      setFilter(replacement.usesScreenshotStatus ? 'ALL' : 'OPEN');
 
       const unreadableIds = isChImport ? 0 : importedLoads.filter(order => order.notes).length;
       const unreadableWeights = importedLoads.filter(order => !order.weight).length;
@@ -3541,12 +3586,8 @@ export default function App() {
       const unreadableRates = isDatImport || isChImport ? importedLoads.filter(order => !(Number(order.rateInput) > 0)).length : 0;
       const missingChStates = isChImport ? importedLoads.filter(order => !order.origSt || !order.destSt).length : 0;
       const missingChMiles = isChImport ? importedLoads.filter(order => order.status !== 'ENT' && !(Number(order.miles) > 0)).length : 0;
-      const newLoadCount = replacement
-        ? finalLoads.filter(load => !existingOrders.some(existing =>
-          normalizeLoadId(getBaseLoadId(existing)) === load.id
-        )).length
-        : newLoads.length;
-      const updatedLoads = (replacement ? finalLoads.length : mergedImportedLoads.length) - newLoadCount;
+      const newLoadCount = replacement.processedLoads.filter(load => !existingIds.has(load.id)).length;
+      const updatedLoads = replacement.processedLoads.length - newLoadCount;
 
       alert(
         `📸 ${isDatImport ? 'DAT' : isNtgImport ? 'NTG' : isChImport ? 'CH' : 'Customer'} Screenshot Import Complete for ${brokerName}:\n` +
@@ -3554,6 +3595,8 @@ export default function App() {
         `• New loads added: ${newLoadCount}\n` +
         `• Existing loads updated: ${updatedLoads}\n` +
         getImportReplacementMessage(replacement) +
+        (isDatImport && skippedDuplicateCount ? `• Duplicate lane/pickup-day rows skipped: ${skippedDuplicateCount}\n` : '') +
+        (datUnreadableRows.length ? `• Skipped unreadable rows (not imported):\n${datUnreadableRows.join('\n')}\n` : '') +
         (exportedCount > 0
           ? replacement?.usesScreenshotStatus
             ? `• Previously exported; status taken from screenshot color: ${exportedCount}\n`
@@ -3780,7 +3823,7 @@ export default function App() {
       return;
     }
 
-    const exportedIds = new Set(loadsToExport.map(order => normalizeLoadId(order.id)));
+    const exportedIds = new Set(loadsToExport.map(order => String(order.id)));
     let exportBlob;
     try {
       const templateResponse = await fetch(`${import.meta.env.BASE_URL}landstar-bulk-template.xlsx`);
@@ -4018,7 +4061,6 @@ export default function App() {
     }
 
     const exportedAt = new Date().toISOString();
-    const exportedLoadIds = new Set(loadsToExport.map(order => normalizeLoadId(order.id)));
     const registryKey = normalizeCustomerName(selectedBroker);
     const latestRegistry = getLatestExportedRegistry();
     const previousRecords = getExportedRecordsForCustomer(latestRegistry, selectedBroker);
@@ -4043,17 +4085,15 @@ export default function App() {
     }
     const nextOrders = {
       ...customerOrdersMap,
-      [selectedBroker]: orders.map(order => exportedLoadIds.has(normalizeLoadId(order.id))
-        ? { ...order, status: 'ENT', tag: 'ENT', landstarExportedAt: exportedAt }
-        : order)
+      [selectedBroker]: markLoadsExported(orders, exportedIds, exportedAt)
     };
     const saved = persistAppData(brokers, nextOrders);
     setExportErrorIds([]);
     setCustomerOrdersMap(nextOrders);
-    setSelectedIds(prev => prev.filter(id => !exportedIds.has(normalizeLoadId(id))));
+    setSelectedIds(prev => prev.filter(id => !exportedIds.has(String(id))));
     setSelectedOrder(
-      selectedOrder && exportedLoadIds.has(normalizeLoadId(selectedOrder.id))
-        ? nextOrders[selectedBroker].find(order => normalizeLoadId(order.id) === normalizeLoadId(selectedOrder.id)) || selectedOrder
+      selectedOrder && exportedIds.has(String(selectedOrder.id))
+        ? nextOrders[selectedBroker].find(order => String(order.id) === String(selectedOrder.id)) || selectedOrder
         : selectedOrder || nextOrders[selectedBroker][0] || null
     );
 
@@ -4061,20 +4101,16 @@ export default function App() {
     if (exportWarnings) alert(exportWarnings);
   };
 
-  const filteredOrders = orders.filter(ord => {
+  const isGlobalSearch = Boolean(searchQuery.trim());
+  const visibleOrderEntries = getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery).filter(({ order: ord }) => {
     const matchesFilter = filter === 'ALL' || ord.status === filter;
-    const normalizedSearch = searchQuery.trim().toLowerCase();
-    const matchesSearch = !normalizedSearch
-      || String(ord.id || '').toLowerCase().includes(normalizedSearch)
-      || String(ord.route || '').toLowerCase().includes(normalizedSearch)
-      || String(ord.planningComment || '').toLowerCase().includes(normalizedSearch);
     const miles = Number(String(ord.miles || '').replace(/[^0-9.]/g, ''));
     const minimumMiles = loadFilters.minMiles === '' ? null : Number(loadFilters.minMiles);
     const maximumMiles = loadFilters.maxMiles === '' ? null : Number(loadFilters.maxMiles);
     const matchesMinimumMiles = minimumMiles === null || (Number.isFinite(miles) && miles >= minimumMiles);
     const matchesMaximumMiles = maximumMiles === null || (Number.isFinite(miles) && miles <= maximumMiles);
-    return matchesFilter && matchesSearch && matchesMinimumMiles && matchesMaximumMiles;
-  }).sort((left, right) => {
+    return matchesFilter && matchesMinimumMiles && matchesMaximumMiles;
+  }).sort(({ order: left }, { order: right }) => {
     if (laneSort === 'pickup-asc' || laneSort === 'pickup-desc') {
       const difference = getPickupSortValue(left) - getPickupSortValue(right);
       return (laneSort === 'pickup-desc' ? -difference : difference)
@@ -4083,19 +4119,35 @@ export default function App() {
     if (!laneSort) return 0;
     const descending = laneSort.endsWith('-desc');
     const sortKey = laneSort.replace(/-asc$|-desc$/, '');
-    const [leftCity, leftState] = sortKey === 'origin'
+    const isOrigin = sortKey.startsWith('origin');
+    const [leftCity, leftState] = isOrigin
       ? [left.origCity, left.origSt]
       : [left.destCity, left.destSt];
-    const [rightCity, rightState] = sortKey === 'origin'
+    const [rightCity, rightState] = isOrigin
       ? [right.origCity, right.origSt]
       : [right.destCity, right.destSt];
-    const comparison = `${leftCity || ''}, ${leftState || ''}`.localeCompare(
-      `${rightCity || ''}, ${rightState || ''}`,
+    const stateFirst = sortKey.endsWith('-state');
+    const leftLocation = stateFirst ? [leftState, leftCity] : [leftCity, leftState];
+    const rightLocation = stateFirst ? [rightState, rightCity] : [rightCity, rightState];
+    const comparison = leftLocation.map(value => String(value || '').trim()).join(', ').localeCompare(
+      rightLocation.map(value => String(value || '').trim()).join(', '),
       undefined,
       { sensitivity: 'base', numeric: true }
     );
     return (descending ? -comparison : comparison) || String(left.id).localeCompare(String(right.id));
   });
+  const filteredOrders = visibleOrderEntries
+    .filter(({ customer }) => customer === selectedBroker)
+    .map(({ order }) => order);
+
+  const handleSelectSearchResult = (customer, order) => {
+    if (customer !== selectedBroker) {
+      setSelectedBroker(customer);
+      setSelectedIds([]);
+      setExportErrorIds([]);
+    }
+    setSelectedOrder(order);
+  };
 
   const handleRateKeyDown = event => {
     if (event.key !== 'Enter') return;
@@ -4146,13 +4198,16 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen bg-[#0b132b] text-white overflow-hidden font-sans">
+    <div className="tms-shell flex h-screen text-white overflow-hidden font-sans">
       {/* Left Sidebar - Order List */}
-      <div className="w-96 bg-[#121829] border-r border-[#1c2541] flex flex-col">
-        <div className="p-3 border-b border-[#1c2541] bg-[#161f36]">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold text-gray-200">Landstar TMS</span>
-            <div className="space-x-1 flex items-center">
+      <div className="tms-sidebar w-96 border-r border-[#1c2541] flex flex-col">
+        <div className="tms-sidebar-header p-3 border-b border-[#1c2541]">
+          <div className="tms-top-controls flex flex-col items-start gap-2 mb-2">
+            <div className="tms-sidebar-logos">
+              <img className="tms-logo" src="/landstar-wordmark.png" alt="Landstar" width="180" height="47" />
+              <img className="tms-eagles-logo" src="/eagles-sidebar.png" alt="Eagles artwork" width="474" height="475" />
+            </div>
+            <div className="flex flex-wrap items-center gap-1">
               <label className={`bg-emerald-600 hover:bg-emerald-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} title="AI Screenshot Import">
                 <span>{isImportingScreenshot && screenshotImportMode === 'ai' ? screenshotImportProgress : '✨ Customer Screenshot'}</span>
                 <input type="file" accept="image/*" onChange={handleScreenshotImport} className="hidden" disabled={isImportingScreenshot} />
@@ -4164,10 +4219,6 @@ export default function App() {
               <label className={`bg-amber-600 hover:bg-amber-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} title="Import loads from an NTG load-board screenshot">
                 <span>{isImportingScreenshot && screenshotImportMode === 'ntg' ? screenshotImportProgress : '🚚 Import NTG Loads'}</span>
                 <input type="file" accept="image/*" onChange={event => handleScreenshotImport(event, 'ntg')} className="hidden" disabled={isImportingScreenshot} />
-              </label>
-              <label className={`bg-rose-600 hover:bg-rose-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} title="Import loads from a C.H. Robinson load-board screenshot (with Weight and Bin columns)">
-                <span>{isImportingScreenshot && screenshotImportMode === 'ch' ? screenshotImportProgress : '📋 Import CH Loads'}</span>
-                <input type="file" accept="image/*" onChange={event => handleScreenshotImport(event, 'ch')} className="hidden" disabled={isImportingScreenshot} />
               </label>
               <label className="bg-blue-600 hover:bg-blue-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center" title="Import Excel Spreadsheet">
                 <span>📂 Import Excel</span>
@@ -4190,23 +4241,7 @@ export default function App() {
             </div>
           </div>
 
-          {preservesImportedLoadStatus(selectedBroker) && (
-            <p className="text-[10px] text-amber-300 mb-2">
-              Import the full load list: each import replaces this customer's list, including ENT.
-              Missing loads are deleted. Duplicate load numbers are kept once; re-imported numbers are set to OPEN except Para screenshot colors.
-              Screenshots must show readable load numbers, including highlighted rows.
-              ZIP verification preserves distinct source cities rather than replacing them with postal-city names.
-              {isParaCustomer(selectedBroker) && (
-                <> Para screenshots: red load numbers = ENT; non-red = OPEN on every import.
-                  Clipped hours use :00 (08... = 0800, 10... = 1000); a lone 0 uses 0800.</>
-              )}
-              {normalizeCustomerName(selectedBroker) === rxoPayerCustomerName && (
-                <> RXO ATZ P keeps only the first load per origin/destination city and state and pickup day, regardless of load number or time.</>
-              )}
-            </p>
-          )}
-
-          <div className="flex items-center justify-end gap-1 mb-2">
+          <div className="tms-top-controls flex items-center justify-end gap-1 mb-2">
             <button
               type="button"
               onClick={handleBackupExport}
@@ -4296,7 +4331,8 @@ export default function App() {
               ) : (
                 <div
                   key={broker}
-                  className={`flex items-center justify-between px-2.5 py-1.5 text-[11px] rounded font-medium border transition-colors ${selectedBroker === broker ? 'bg-blue-600/30 border-blue-500 text-white' : 'bg-[#1c2541] border-[#253259] text-gray-300 hover:bg-[#253259]'}`}
+                  className={`tms-customer flex items-center justify-between px-2.5 py-1.5 text-[11px] rounded font-medium border transition-colors ${selectedBroker === broker ? 'bg-blue-600/30 border-blue-500 text-white' : 'bg-[#1c2541] border-[#253259] text-gray-300 hover:bg-[#253259]'}`}
+                  data-selected={selectedBroker === broker}
                 >
                   <span
                     className="truncate flex-1 cursor-pointer"
@@ -4348,7 +4384,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-gray-400 mb-2">
-            <span>{filteredOrders.length} shown · {orders.length} loads · {entCount} ENT</span>
+            <span>{isGlobalSearch ? `${visibleOrderEntries.length} matches · All customers` : `${filteredOrders.length} shown · ${orders.length} loads · ${entCount} ENT`}</span>
             <span className={storageError ? 'text-amber-400' : 'text-emerald-400'} title={storageError || 'Loads are saved in this browser.'}>
               {storageError || '🔒 Saved in this browser'}
             </span>
@@ -4360,7 +4396,7 @@ export default function App() {
                 <button
                   key={tab}
                   onClick={() => setFilter(tab)}
-                  className={`px-2 py-1 text-[11px] rounded font-semibold ${filter === tab ? 'bg-blue-600 text-white' : 'bg-[#1c2541] text-gray-400'}`}
+                  className={`px-2 py-1 text-[11px] rounded font-semibold ${tab === 'OPEN' ? `tms-open ${filter === tab ? 'ring-2 ring-emerald-200' : ''}` : tab === 'ENT' ? `tms-ent ${filter === tab ? 'ring-2 ring-yellow-200' : ''}` : tab === 'ON HOLD' ? filter === tab ? 'bg-red-600 text-white ring-2 ring-red-300' : 'bg-red-700 hover:bg-red-600 text-white' : filter === tab ? 'bg-blue-600 text-white' : 'bg-[#1c2541] text-gray-400'}`}
                 >
                   {tab}
                 </button>
@@ -4384,7 +4420,7 @@ export default function App() {
                 checked={filteredOrders.length > 0 && filteredOrders.every(o => selectedIds.includes(o.id))}
                 className="cursor-pointer accent-blue-600"
               />
-              <span className="text-[11px] text-gray-400">Select All</span>
+              <span className="text-[11px] text-gray-400">{isGlobalSearch ? 'Select All (current customer)' : 'Select All'}</span>
             </div>
             <button
               onClick={handleSelectFirst25}
@@ -4397,12 +4433,19 @@ export default function App() {
           <div className="relative mt-1">
             <input
               type="text"
-              placeholder="🔍 Search order, city, comment..."
+              placeholder="🔍 All customers: load #, city, state..."
+              aria-label="Search loads across all customers"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-blue-500"
             />
           </div>
+          {isGlobalSearch && (
+            <p className="mt-1 text-[10px] text-gray-400">
+              All customers · Current status and lane filters apply. Click a result to open its customer.
+              Bulk selection and export apply to the selected customer only.
+            </p>
+          )}
           <div className="mt-2 grid grid-cols-2 gap-1.5">
             <input
               type="number"
@@ -4440,10 +4483,14 @@ export default function App() {
               className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1.5 text-xs text-white outline-none focus:border-blue-500"
             >
               <option value="">Sort by city/state (default)</option>
-              <option value="origin-asc">Origin city/state: A to Z</option>
-              <option value="origin-desc">Origin city/state: Z to A</option>
-              <option value="destination-asc">Destination city/state: A to Z</option>
-              <option value="destination-desc">Destination city/state: Z to A</option>
+              <option value="origin-asc">Pickup city: A to Z</option>
+              <option value="origin-desc">Pickup city: Z to A</option>
+              <option value="destination-asc">Delivery city: A to Z</option>
+              <option value="destination-desc">Delivery city: Z to A</option>
+              <option value="origin-state-asc">Pickup state: A to Z</option>
+              <option value="origin-state-desc">Pickup state: Z to A</option>
+              <option value="destination-state-asc">Delivery state: A to Z</option>
+              <option value="destination-state-desc">Delivery state: Z to A</option>
             </select>
           </div>
           {(loadFilters.minMiles || loadFilters.maxMiles || laneSort) && (
@@ -4461,38 +4508,41 @@ export default function App() {
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-2">
-          {filteredOrders.length === 0 ? (
-            <div className="text-center text-gray-500 text-xs py-10">No loads found for {selectedBroker}. Click "📂 Import Excel" above!</div>
+          {visibleOrderEntries.length === 0 ? (
+            <div className="text-center text-gray-500 text-xs py-10">{isGlobalSearch ? 'No matching loads across all customers with the current filters.' : `No loads found for ${selectedBroker}. Click "📂 Import Excel" above!`}</div>
           ) : (
-            filteredOrders.map((ord) => (
+            visibleOrderEntries.map(({ customer, order: ord }) => (
               <div
-                key={ord.id}
-                onClick={() => setSelectedOrder(ord)}
-                className={`p-3 rounded-lg cursor-pointer border transition-all flex items-start space-x-2.5 ${
-                  exportErrorIds.includes(String(ord.id))
+                key={JSON.stringify([customer, ord.id])}
+                onClick={() => handleSelectSearchResult(customer, ord)}
+                className={`tms-load-card p-3 rounded-lg cursor-pointer border transition-all flex items-start space-x-2.5 ${
+                  customer === selectedBroker && exportErrorIds.includes(String(ord.id))
                     ? 'bg-red-950/50 border-red-500 shadow-md'
-                    : selectedOrder?.id === ord.id
+                    : customer === selectedBroker && selectedOrder?.id === ord.id
                       ? 'bg-[#1c2541] border-blue-500 shadow-md'
                       : 'bg-[#161f36]/60 border-transparent hover:bg-[#1c2541]/50'
                 }`}
               >
                 <input
                   type="checkbox"
-                  checked={selectedIds.includes(ord.id)}
+                  checked={customer === selectedBroker && selectedIds.includes(ord.id)}
+                  disabled={customer !== selectedBroker}
+                  title={customer !== selectedBroker ? 'Open this load to select its customer first' : 'Select load'}
                   onChange={(e) => handleToggleSelect(ord.id, e)}
                   className="mt-1 cursor-pointer accent-blue-600"
                 />
                 <div className="flex-1 min-w-0">
+                  {isGlobalSearch && <div className="text-[10px] text-teal-200 mb-1">{customer}</div>}
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center space-x-2">
                       <span className="font-bold text-sm text-blue-400">{ord.id}</span>
-                      {exportErrorIds.includes(String(ord.id)) && (
+                      {customer === selectedBroker && exportErrorIds.includes(String(ord.id)) && (
                         <span className="bg-red-700 text-white text-[9px] px-1.5 py-0.5 rounded font-bold">EXPORT ERROR</span>
                       )}
                       <span className="bg-blue-900/60 text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{String(ord.eCode || '').trim().toUpperCase() === 'VE' ? 'VAN' : ord.eCode}</span>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ord.status === 'ENT' ? 'bg-emerald-900/60 text-emerald-300' : ord.status === 'ON HOLD' ? 'bg-amber-900/60 text-amber-300' : 'bg-blue-900/60 text-blue-300'}`}>{ord.status}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ord.status === 'ENT' ? 'tms-ent' : ord.status === 'ON HOLD' ? 'bg-red-900/60 text-red-300' : ord.status === 'OPEN' ? 'tms-open' : 'bg-blue-900/60 text-blue-300'}`}>{ord.status}</span>
                     </div>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'bg-emerald-600 text-white' : ord.tag === 'HOLD' ? 'bg-amber-600 text-white' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'tms-ent' : ord.tag === 'HOLD' ? 'bg-red-600 text-white' : ord.tag === 'OPEN' ? 'tms-open' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
                   </div>
                   <div className="text-xs font-medium text-gray-200 mb-1 truncate">{ord.route}</div>
                   <div className="text-[11px] text-gray-400">{ord.puDate} {ord.delDate}</div>
@@ -4505,18 +4555,24 @@ export default function App() {
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col overflow-y-auto p-6 bg-[#0b132b]">
+      <div className="tms-workspace flex-1 flex flex-col overflow-y-auto p-6">
+        <div className="tms-brand">
+          <span>Broski Transportation &amp; Logistics</span>
+          <a className="tms-brand-phone" href="tel:+14845756486">
+            <span className="tms-colombia-flag" role="img" aria-label="Colombian flag" />
+            <span>484-575-6486</span>
+          </a>
+        </div>
         {selectedOrder ? (
           <>
-            <div className="flex items-center justify-between bg-[#161f36] px-4 py-3 rounded-lg mb-6 border border-[#1c2541]">
+            <div className="tms-action-bar flex items-center justify-between bg-[#161f36] px-4 py-3 rounded-lg mb-6 border border-[#1c2541]">
               <div className="flex items-center space-x-3">
                 <span className="text-xs font-bold text-gray-400">MOVE TO:</span>
-                <button onClick={() => handleStatusChange('OPEN')} className="bg-emerald-600 hover:bg-emerald-500 px-3 py-1 text-xs font-bold rounded text-white cursor-pointer">OPEN</button>
-                <button onClick={() => handleStatusChange('ON HOLD')} className="bg-amber-600 hover:bg-amber-500 px-3 py-1 text-xs font-bold rounded text-white cursor-pointer">ON HOLD</button>
-                <button onClick={() => handleStatusChange('ENT')} className="bg-emerald-700 hover:bg-emerald-600 px-3 py-1 text-xs font-bold rounded text-white cursor-pointer">ENT</button>
+                <button onClick={() => handleStatusChange('OPEN')} className="tms-open px-3 py-1 text-xs font-bold rounded cursor-pointer">OPEN</button>
+                <button onClick={() => handleStatusChange('ON HOLD')} className="bg-red-600 hover:bg-red-500 px-3 py-1 text-xs font-bold rounded text-white cursor-pointer">ON HOLD</button>
+                <button onClick={() => handleStatusChange('ENT')} className="tms-ent px-3 py-1 text-xs font-bold rounded cursor-pointer">ENT</button>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={handleOpenLandstarLoads} className="bg-blue-600 hover:bg-blue-500 px-3 py-1 text-xs rounded text-white font-medium cursor-pointer">Open Landstar + Copy Lane</button>
                 <button onClick={handleExportToLandstar} className="bg-purple-600 hover:bg-purple-500 px-3 py-1 text-xs rounded text-white font-medium cursor-pointer">📥 Export to Landstar Bulk Excel & Move to ENT</button>
               </div>
             </div>
@@ -4530,15 +4586,9 @@ export default function App() {
                 >
                   <span>📋 Copy Order #</span>
                 </button>
-                <button
-                  onClick={handleOpenDatRateView}
-                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1 rounded font-semibold cursor-pointer shadow flex items-center space-x-1"
-                >
-                  <span>🔎 Open DAT RateView</span>
-                </button>
               </div>
               <div className="flex items-center gap-2">
-                <span className={`text-xs px-2.5 py-1 rounded font-semibold ${selectedOrder.tag === 'ENT' ? 'bg-emerald-600 text-white' : selectedOrder.tag === 'HOLD' ? 'bg-amber-600 text-white' : 'bg-blue-600 text-white'}`}>{selectedOrder.tag}</span>
+                <span className={`text-xs px-2.5 py-1 rounded font-semibold ${selectedOrder.tag === 'ENT' ? 'tms-ent' : selectedOrder.tag === 'HOLD' ? 'bg-red-600 text-white' : selectedOrder.tag === 'OPEN' ? 'tms-open' : 'bg-blue-600 text-white'}`}>{selectedOrder.tag}</span>
                 <button
                   type="button"
                   onClick={handleDelete}
@@ -4549,7 +4599,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="space-y-4 bg-[#161f36]/40 p-5 rounded-xl border border-[#1c2541]">
+            <div className="tms-load-details space-y-4 bg-[#161f36]/40 p-5 rounded-xl border border-[#1c2541]">
               <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">ORDER #</label>
@@ -4712,28 +4762,32 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Carrier & Equipment Assignment */}
+              {/* Driver & Equipment Assignment */}
               <div className="border border-[#1c2541] bg-[#121829]/60 p-4 rounded-lg">
-                <h3 className="text-xs font-bold text-purple-400 uppercase tracking-wide mb-3">Carrier & Equipment Assignment</h3>
+                <h3 className="text-xs font-bold text-purple-400 uppercase tracking-wide mb-3">Driver & Equipment Assignment</h3>
                 <div className="grid grid-cols-2 gap-4 mb-3">
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">Carrier Name</label>
-                    <input type="text" value={selectedOrder.carrier} onChange={(e) => handleInputChange('carrier', e.target.value)} placeholder="Enter carrier name" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <label htmlFor="assignment-driver" className="text-xs text-gray-400 block mb-1">Driver Name</label>
+                    <input id="assignment-driver" type="text" value={selectedOrder.driver || ''} onChange={(e) => handleInputChange('driver', e.target.value)} placeholder="Enter driver name" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                   </div>
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">Driver Name</label>
-                    <input type="text" value={selectedOrder.driver} onChange={(e) => handleInputChange('driver', e.target.value)} placeholder="Enter driver name" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <label htmlFor="assignment-truck" className="text-xs text-gray-400 block mb-1">Truck Number</label>
+                    <input id="assignment-truck" type="text" value={selectedOrder.truck || ''} onChange={(e) => handleInputChange('truck', e.target.value)} placeholder="Truck number" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">Truck #</label>
-                    <input type="text" value={selectedOrder.truck} onChange={(e) => handleInputChange('truck', e.target.value)} placeholder="Truck number" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <label htmlFor="assignment-trailer" className="text-xs text-gray-400 block mb-1">Trailer Number</label>
+                    <input id="assignment-trailer" type="text" value={selectedOrder.trailer || ''} onChange={(e) => handleInputChange('trailer', e.target.value)} placeholder="Trailer number" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                   </div>
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">Trailer #</label>
-                    <input type="text" value={selectedOrder.trailer} onChange={(e) => handleInputChange('trailer', e.target.value)} placeholder="Trailer number" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <label htmlFor="assignment-pickup-eta" className="text-xs text-gray-400 block mb-1">Pickup ETA</label>
+                    <input id="assignment-pickup-eta" type="text" value={selectedOrder.pickupEta || ''} onChange={(e) => handleInputChange('pickupEta', e.target.value)} placeholder="MM/DD/YYYY HH:mm (local pickup time)" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                   </div>
+                </div>
+                <div className="mt-3">
+                  <label htmlFor="assignment-driver-phone" className="text-xs text-gray-400 block mb-1">Driver Cell Phone</label>
+                  <input id="assignment-driver-phone" type="tel" value={selectedOrder.driverPhone || ''} onChange={(e) => handleInputChange('driverPhone', e.target.value)} placeholder="Enter cell phone number" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                 </div>
               </div>
 

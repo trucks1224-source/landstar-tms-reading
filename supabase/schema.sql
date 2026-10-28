@@ -48,8 +48,16 @@ alter table public.gmail_connection enable row level security;
 -- customer's load list and marks them applied, so the server never overwrites
 -- your edits.
 -- For Para 1522166 ATZ, RXO 2429200 ATZ P and Nolan 965974 ATZ H, all pending
--- rows for a customer form a full replacement list: missing loads (including
--- ENT) are removed, load numbers are unique, and existing numbers reopen.
+-- rows for a customer form a full replacement list; other customers merge additively.
+-- All customers import new and matching loads as OPEN, except Para customer screenshots:
+-- red load numbers import as ON HOLD; non-red load numbers import as OPEN.
+-- Keep one directional city/state lane per pickup day; different days stay separate.
+-- Exported ENT loads absent from an import are retained for 30 days after export.
+-- A re-imported load reopens immediately and clears its export-retention timestamp.
+-- DAT screenshot imports are additive without requiring source load IDs.
+-- Existing lane/day results reopen instead of being skipped; repeated input rows collapse.
+-- Re-importing DAT may correct a screenshot rate on an existing lane/day;
+-- manually entered rates are preserved, and unreadable DAT rates are not API estimates.
 create table if not exists public.email_loads (
   id bigint generated always as identity primary key,
   gmail_message_id text not null,

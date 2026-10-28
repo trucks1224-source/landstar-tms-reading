@@ -1,3 +1,214 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+.tms-shell {
+  background-color: #17496b;
+  background-image: linear-gradient(rgba(7, 17, 33, 0.18), rgba(7, 17, 33, 0.18)),
+    url('/broski-background.png');
+  background-position: center;
+  background-size: contain;
+  background-repeat: no-repeat;
+  overflow-x: auto;
+}
+
+.tms-sidebar {
+  flex-shrink: 0;
+  background: linear-gradient(160deg, rgba(20, 96, 123, 0.36), rgba(24, 58, 100, 0.34));
+  border-color: rgba(125, 211, 252, 0.4);
+}
+
+.tms-sidebar-header {
+  background-color: rgba(23, 68, 96, 0.22);
+  border-color: rgba(125, 211, 252, 0.4);
+}
+
+.tms-sidebar-logos {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+}
+
+.tms-eagles-logo {
+  display: block;
+  flex-shrink: 0;
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.tms-logo {
+  display: block;
+  width: 180px;
+  max-width: 100%;
+  height: auto;
+}
+
+.tms-customer {
+  background-color: rgba(37, 83, 117, 0.85);
+  border-color: rgba(125, 211, 252, 0.3);
+  color: #e0f2fe;
+  border-radius: 8px;
+}
+
+.tms-customer:hover {
+  background-color: #28618a;
+}
+
+.tms-customer[data-selected='true'] {
+  background: linear-gradient(110deg, #0f766e, #0369a1);
+  border-color: #5eead4;
+  color: #fff;
+}
+
+.tms-workspace {
+  min-width: 560px;
+  background-color: transparent;
+}
+
+.tms-workspace .rounded-lg,
+.tms-load-details {
+  background-color: rgba(27, 62, 94, 0.38);
+  border-color: rgba(125, 211, 252, 0.42);
+  box-shadow: 0 8px 24px rgba(8, 47, 73, 0.12);
+}
+
+.tms-load-details .rounded-lg {
+  background-color: rgba(15, 42, 64, 0.18);
+}
+
+.tms-workspace label,
+.tms-workspace h2,
+.tms-workspace h3,
+.tms-sidebar-header .text-gray-400 {
+  text-shadow: 0 1px 3px #071121, 0 0 6px #071121;
+}
+
+.tms-shell input:not([type='checkbox']):not([type='file']),
+.tms-shell textarea,
+.tms-shell select {
+  background-color: #193e5b;
+  border-color: #5385a5;
+  border-radius: 7px;
+  color: #fff;
+}
+
+.tms-workspace input:not([type='checkbox']):not([type='file']),
+.tms-workspace textarea {
+  background-color: rgba(15, 42, 64, 0.88);
+}
+
+.tms-shell button,
+.tms-sidebar-header label.cursor-pointer {
+  border-radius: 7px;
+}
+
+.tms-shell button:focus-visible,
+.tms-shell input:focus-visible,
+.tms-shell textarea:focus-visible,
+.tms-shell select:focus-visible,
+.tms-sidebar-header label:focus-within {
+  outline: 2px solid #5eead4;
+  outline-offset: 2px;
+}
+
+.tms-load-card {
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(8, 47, 73, 0.12);
+}
+
+.tms-brand {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 20px;
+  flex-shrink: 0;
+  margin-bottom: 16px;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-shadow: 0 2px 6px #083344;
+  border-left: 4px solid #5eead4;
+  padding: 10px 14px;
+  border-radius: 0 10px 10px 0;
+  background: linear-gradient(90deg, rgba(15, 118, 110, 0.88), rgba(3, 105, 161, 0.35));
+}
+
+.tms-brand-phone {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #fff;
+  font-size: 18px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.tms-colombia-flag {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 30px;
+  height: 20px;
+  border-radius: 2px;
+  background: linear-gradient(to bottom, #fcd116 0% 50%, #003893 50% 75%, #ce1126 75% 100%);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
+}
+
+.tms-brand-phone:hover {
+  text-decoration: underline;
+}
+
+.tms-brand-phone:focus-visible {
+  outline: 2px solid #5eead4;
+  outline-offset: 3px;
+}
+
+.tms-shell input::placeholder,
+.tms-shell textarea::placeholder {
+  color: #b6cede;
+}
+
+.tms-shell .text-gray-400,
+.tms-shell .text-gray-500 {
+  color: #c9deed;
+}
+
+.tms-top-controls,
+.tms-shell .tms-top-controls [class],
+.tms-brand {
+  color: #000;
+  text-shadow: none;
+}
+
+.tms-action-bar,
+.tms-shell .tms-action-bar [class] {
+  color: #fff;
+}
+
+.tms-shell .tms-ent,
+.tms-shell .tms-action-bar .tms-ent {
+  background-color: #facc15;
+  color: #1c1917;
+  text-shadow: none;
+}
+
+.tms-shell button.tms-ent:hover {
+  background-color: #fde047;
+}
+
+.tms-shell .tms-open,
+.tms-shell .tms-action-bar .tms-open {
+  background-color: #059669;
+  color: #fff;
+  text-shadow: none;
+}
+
+.tms-shell button.tms-open:hover {
+  background-color: #047857;
+}

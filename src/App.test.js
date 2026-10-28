@@ -14,9 +14,10 @@ export {
   keepPreviouslyExportedLoadsOpen, markDifferentScheduleLoadsEnt,
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
-  createLaneRateKey, getSavedLaneRate, getEquipmentDescription,
+  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
   getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue,
-  normalizeBrokerList, normalizeCustomerOrders
+  normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
+  parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -44,6 +45,139 @@ const load = {
   pickupTime: '10/27/2026 0800 - 1200',
   deliveryTime: '10/28/2026 0800 - 1600'
 };
+
+test('search finds load numbers, origin/destination cities and states across every customer', () => {
+  const first = { ...load, route: '', planningComment: 'Call dispatcher' };
+  const second = { ...load, id: '7654321', route: '', origCity: 'Vernon', origSt: 'CA', destCity: 'Reno', destSt: 'NV' };
+  const map = { [customers[0]]: [first], [customers[1]]: [second] };
+  for (const query of ['7654321', ' verNON ', 'reno', 'nv']) {
+    const matches = policy.getLoadSearchEntries(map, customers[0], query);
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0].customer, customers[1]);
+    assert.equal(matches[0].order, second);
+  }
+  assert.ok(policy.getLoadSearchEntries(map, customers[0], 'ca').some(entry => entry.order === second));
+  assert.equal(policy.getLoadSearchEntries(map, customers[1], 'chicago')[0].order, first);
+  assert.equal(policy.getLoadSearchEntries(map, customers[1], 'dispatcher')[0].order, first);
+  assert.equal(policy.getLoadSearchEntries(map, customers[0], 'missing').length, 0);
+  assert.equal(policy.getLoadSearchEntries(map, customers[0], '  ')[0].order, first);
+  assert.equal(policy.getLoadSearchEntries(map, customers[0], '').length, 1);
+  assert.equal(Object.hasOwn(second, 'customer'), false);
+});
+
+test('global search retains identical load numbers under separate customers', () => {
+  const map = { [customers[0]]: [load], [customers[1]]: [{ ...load }] };
+  const matches = policy.getLoadSearchEntries(map, customers[0], load.id);
+  assert.equal(matches.length, 2);
+  assert.deepEqual(Array.from(matches, entry => entry.customer), customers.slice(0, 2));
+});
+
+test('headerless DAT rows do not mistake per-mile mi for Michigan and retain the top row', () => {
+  const rows = [
+    ['$3,500', '$4.14/mi', '845', 'Shepherdsville,', 'KY', 'Orlando,', 'FL', '10/28'],
+    ['$3,400', '$1.68/mi', '2019', 'Hammond,', 'IN', 'Santa Ana,', 'CA', '10/29'],
+    ['$3,000', '$4.35/mi', '689', 'Cincinnati,', 'OH', 'Brentwood,', 'NY', '10/29'],
+    ['$2,620', '$4.00/mi', '655', 'Erlanger,', 'KY', 'Savannah,', 'GA', '10/29'],
+    ['$1,450', '$2.70/mi', '538', 'Sparks,', 'NV', 'Buena Park,', 'CA', '10/27'],
+    ['$979', '$3.56/mi', '275', 'Hager City,', 'WI', 'Clinton,', 'IA', '10/29'],
+    ['$921', '$1.41/mi', '655', 'Lindon,', 'UT', 'Los Angeles,', 'CA', '10/28'],
+    ['$805', '$1.98/mi', '407', 'Freeport,', 'TX', 'Laredo,', 'TX', '10/29']
+  ];
+  const lines = rows.map((cells, row) => {
+    const text = [...cells, 'VZ', '53ft', '40,000lbs'];
+    const words = text.map((value, col) => ({
+      text: value, bbox: { x0: col * 70, x1: col * 70 + 60, y0: row * 40 + 2, y1: row * 40 + 12 }
+    }));
+    return { text: text.join(' '), words, bbox: { x0: 0, x1: 813, y0: row * 40 + 2, y1: row * 40 + 12 } };
+  });
+  const loads = policy.parseDatScreenshotLines(lines, 813, 519, customers[2], {});
+  assert.equal(loads.length, rows.length);
+  assert.deepEqual(Array.from(loads, order => order.origCity), [
+    'SHEPHERDSVILLE', 'HAMMOND', 'CINCINNATI', 'ERLANGER', 'SPARKS', 'HAGER CITY', 'LINDON', 'FREEPORT'
+  ]);
+  assert.ok(loads.every(order => policy.createLaneDayKey(order)));
+  assert.equal(loads[1].destCity, 'SANTA ANA');
+});
+
+test('Idaho to Florida lane always pays the fixed $11,000 rate', () => {
+  const idFl = { ...load, origCity: 'Boise', origSt: 'ID', destCity: 'Miami', destSt: 'FL' };
+  assert.equal(policy.getFixedLaneRate(customers[0], idFl), '11000');
+  assert.equal(policy.getSavedLaneRate({}, customers[0], idFl), '11000');
+  const savedKey = policy.createLaneRateKey(customers[0], idFl);
+  assert.equal(policy.getSavedLaneRate({ [savedKey]: '8500' }, customers[0], idFl), '11000');
+  assert.equal(policy.getFixedLaneRate(customers[0], { ...idFl, destSt: 'TX' }), '');
+  assert.equal(policy.getFixedLaneRate(customers[0], { ...idFl, origSt: 'UT' }), '');
+  assert.equal(policy.getSavedLaneRate({}, customers[0], { ...idFl, destSt: 'TX' }), '');
+});
+
+test('fixed Idaho-Florida rate corrects misread existing rates but respects manual rates', () => {
+  const idFl = { ...load, origCity: 'Boise', origSt: 'ID', destCity: 'Miami', destSt: 'FL' };
+  const imported = [{ ...idFl, rateInput: '11000', rateSource: 'user-entered' }];
+  const misread = { ...idFl, rateInput: '1100', rateSource: 'dat-screenshot' };
+  const corrected = policy.replaceImportedCustomerLoads(customers[0], imported, [misread]).loads[0];
+  assert.equal(corrected.rateInput, '11000');
+  assert.equal(corrected.rateSource, 'user-entered');
+  const manual = { ...idFl, rateInput: '12000', rateSource: 'user-entered' };
+  const kept = policy.replaceImportedCustomerLoads(customers[0], imported, [manual]).loads[0];
+  assert.equal(kept.rateInput, '12000');
+  const unrated = { ...idFl, rateInput: '', rateSource: undefined };
+  const filled = policy.replaceImportedCustomerLoads(customers[0], imported, [unrated]).loads[0];
+  assert.equal(filled.rateInput, '11000');
+});
+
+test('DAT rate text reads posted totals without combining per-mile values or extra digits', () => {
+  for (const [text, expected] of [
+    ['$10,500\n', 10500], ['$10,000', 10000], ['$5,700', 5700], ['$3,800', 3800],
+    ['$10,500\n$3.92/mi', 10500], ['$3.92/mi', 0], ['10 500 2676', 0],
+    ['$10500.00', 10500], ['', 0]
+  ]) assert.equal(policy.parseDatRateText(text), expected);
+});
+
+test('DAT re-import corrects screenshot rates but preserves manual rates and assignments', () => {
+  const existing = [{ ...load, id: 'DAT-123-0', rateInput: '1050', rateSource: 'dat-screenshot', driverPhone: '555-1234' }];
+  const imported = [{ ...load, id: 'DAT-456-0', rateInput: '10500', rateSource: 'dat-screenshot' }];
+  const result = policy.deduplicateDatImports(imported, existing);
+  assert.equal(result.loads.length, 1);
+  assert.equal(result.loads[0].id, existing[0].id);
+  assert.equal(result.loads[0].rateInput, '10500');
+  assert.equal(existing[0].driverPhone, '555-1234');
+  for (const prior of [
+    { ...existing[0], rateSource: 'user-entered' }, { ...existing[0], rateInput: '10500' }
+  ]) {
+    const rows = policy.deduplicateDatImports(imported, [prior]).loads;
+    const merged = policy.replaceImportedCustomerLoads(customers[2], rows, [prior],
+      { additive: true, allowGeneratedIds: true }).loads;
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].rateInput, prior.rateInput);
+    assert.equal(merged[0].driverPhone, prior.driverPhone);
+    assert.equal(merged[0].status, 'OPEN');
+  }
+});
+
+test('DAT imports accept temporary IDs and deduplicate lane/day without changing existing loads', () => {
+  const existing = [{ ...load, driverPhone: '555-1234', status: 'ENT', tag: 'ENT' }];
+  const before = JSON.stringify(existing);
+  const imported = [
+    { ...load, id: 'DAT-123-0', pickupTime: '10/27/2026 1800' },
+    { ...load, id: 'DAT-123-1', destCity: 'Hialeah' },
+    { ...load, id: 'DAT-123-2', destCity: 'Hialeah', pickupTime: '10/27/2026 1400', eCode: 'RZ' },
+    { ...load, id: 'DAT-123-3', pickupTime: '10/28/2026 0800' }
+  ];
+  const result = policy.deduplicateDatImports(imported, existing);
+  assert.deepEqual(Array.from(result.loads, order => order.id), [load.id, 'DAT-123-1', 'DAT-123-3']);
+  assert.equal(result.skippedDuplicateCount, 1);
+  assert.equal(JSON.stringify(existing), before);
+  assert.equal(policy.deduplicateDatImports(imported, [...existing, ...result.loads]).loads.length, 3);
+  assert.throws(() => policy.deduplicateDatImports([{ ...load, pickupTime: '', puDate: '' }], existing), /No DAT rows had a readable lane and pickup date/);
+  const partial = policy.deduplicateDatImports([
+    { ...load, pickupTime: '', puDate: '' },
+    { ...load, id: 'DAT-123-4', pickupTime: '10/29/2026 0800' }
+  ], existing);
+  assert.equal(partial.loads.length, 1);
+  assert.equal(partial.unreadableRows.length, 1);
+  assert.match(partial.unreadableRows[0], /Row 1/);
+  assert.equal(JSON.stringify(existing), before);
+});
 
 test('NTG/Nolan is restored from older customer lists and remains after reload', () => {
   for (const saved of [null, [], [customers[0]], [customers[0], customers[1]]]) {
@@ -117,7 +251,7 @@ test('2279568 preserves VERNON rather than the preferred postal city for ZIP 900
     { ...imported, origCity: 'LOS ANGELES' }
   ]).loads[0];
   assert.equal(saved.origCity, 'VERNON');
-  assert.equal(saved.status, 'ENT');
+  assert.equal(saved.status, 'OPEN');
   assert.equal(policy.getLandstarCity(saved.origCity, zipcodes.lookup('90058')), 'VERNON');
 });
 
@@ -205,20 +339,31 @@ test('2279123 verified VE overrides whole-row OCR VZ and corrects saved equipmen
   assert.equal(policy.getLandstarCommodity(saved.eCode), 'CHEM');
 });
 
-test('Para red 2279568 is retained as ENT, then reopens when its next screenshot is not red', () => {
+test('Para red screenshot numbers import ON HOLD and reopen when no longer red', () => {
   const times = ['10/28/2026 08...', '10/28/2026 1400', '10/29/2026 0...', '10/29/2026 1400'];
   const red = parseScreenshotTimes('2279568', times, customers[0], true);
-  assert.equal(red.status, 'ENT');
+  assert.equal(red.status, 'ON HOLD');
+  assert.equal(red.tag, 'HOLD');
   const first = policy.replaceImportedCustomerLoads(customers[0], [red, red], [
     { ...red, status: 'OPEN', tag: 'OPEN' }, { ...load, id: '9999999' }
   ]);
   assert.equal(first.loads.length, 1);
   assert.equal(first.loads[0].id, '2279568');
-  assert.equal(first.loads[0].status, 'ENT');
-  assert.equal(first.loads[0].tag, 'ENT');
+  assert.equal(first.loads[0].status, 'ON HOLD');
+  assert.equal(first.loads[0].tag, 'HOLD');
   assert.equal(first.removedCount, 1);
   assert.equal(first.usesScreenshotStatus, true);
   assert.equal('screenshotStatus' in first.loads[0], false);
+  for (const existing of [[], [{
+    ...load, id: red.id, status: 'ENT', tag: 'ENT',
+    driverPhone: '555-1234', landstarExportedAt: '2026-10-27T12:00:00.000Z'
+  }]]) {
+    const held = policy.replaceImportedCustomerLoads(customers[0], [red], existing).loads[0];
+    assert.equal(held.status, 'ON HOLD');
+    assert.equal(held.tag, 'HOLD');
+    assert.equal('landstarExportedAt' in held, false);
+    if (existing.length) assert.equal(held.driverPhone, '555-1234');
+  }
   const plain = parseScreenshotTimes('2279568', times, customers[0], false);
   const second = policy.replaceImportedCustomerLoads(customers[0], [plain], [
     { ...first.loads[0], landstarExportedAt: '2026-10-27T12:00:00.000Z' }
@@ -228,7 +373,7 @@ test('Para red 2279568 is retained as ENT, then reopens when its next screenshot
   assert.equal('landstarExportedAt' in second.loads[0], false);
 });
 
-test('red screenshot status is Para-only and is not inherited by later non-screenshot imports', () => {
+test('red screenshot holds are Para-only and do not persist into a later spreadsheet import', () => {
   const times = ['10/28/2026 0800', '10/28/2026 1400', '10/29/2026 0800', '10/29/2026 1400'];
   for (const customer of customers.slice(1)) {
     const parsed = parseScreenshotTimes('2279568', times, customer, true);
@@ -290,7 +435,7 @@ test('Para short-hour rule does not change other customer screenshot times', () 
 });
 
 for (const customer of customers) {
-  test(`${customer}: full imports delete missing OPEN and ENT loads and deduplicate numbers across dates`, () => {
+  test(`${customer}: full imports remove missing unarchived loads but retain different pickup days`, () => {
     const existing = [
       { ...load, status: 'ENT', tag: 'ENT', rateInput: '2100', notes: 'Keep my note' },
       { ...load, id: `${load.id}-ALTA`, sourceLoadId: load.id },
@@ -305,14 +450,14 @@ for (const customer of customers) {
     ];
     const snapshot = JSON.stringify(existing);
     const result = policy.replaceImportedCustomerLoads(customer, imported, existing);
-    assert.equal(result.loads.length, 2);
-    assert.deepEqual(Array.from(result.loads, order => order.id), ['123456', '444444']);
+    assert.equal(result.loads.length, 3);
+    assert.deepEqual(Array.from(result.loads, order => order.id), ['123456', '123456-ALTA', '444444']);
     assert.equal(result.loads.every(order => order.status === 'OPEN' && order.tag === 'OPEN'), true);
     assert.equal(result.loads[0].pickupTime, imported[0].pickupTime);
     assert.equal(result.loads[0].rateInput, '2100');
     assert.equal(result.loads[0].notes, 'Keep my note');
-    assert.equal(result.duplicateCount, 2);
-    assert.equal(result.removedCount, 2);
+    assert.equal(result.duplicateCount, 1);
+    assert.equal(result.removedCount, 4);
     assert.equal(JSON.stringify(existing), snapshot);
   });
 
@@ -347,11 +492,11 @@ for (const customer of customers) {
   });
 }
 
-test('non-exported OPEN and ON HOLD statuses are preserved', () => {
+test('re-imported loads become OPEN even when previously ON HOLD', () => {
   for (const status of ['OPEN', 'ON HOLD']) {
     const result = policy.getReimportedLoadStatus({ status, tag: status }, false);
-    assert.equal(result.status, status);
-    assert.equal(result.tag, status);
+    assert.equal(result.status, 'OPEN');
+    assert.equal(result.tag, 'OPEN');
   }
 });
 
@@ -361,15 +506,15 @@ test('previously exported loads reopen regardless of their existing status', () 
   assert.equal(result.tag, 'OPEN');
 });
 
-test('other customers retain automatic schedule-based ENT behavior', () => {
+test('other customers also import OPEN instead of automatically marking schedule changes ENT', () => {
   const customer = 'R X O 2429200 - ATZ';
   assert.equal(policy.preservesImportedLoadStatus(customer), false);
   const [result] = policy.markDifferentScheduleLoadsEnt(
     [load], [{ ...load, pickupTime: '10/27/2026 1400 - 1600' }], customer
   );
-  assert.equal(result.status, 'ENT');
-  assert.equal(result.tag, 'ENT');
-  assert.equal(policy.replaceImportedCustomerLoads(customer, [], [load]), null);
+  assert.equal(result.status, 'OPEN');
+  assert.equal(result.tag, 'OPEN');
+  assert.throws(() => policy.replaceImportedCustomerLoads(customer, [], [load]), /empty/);
 });
 
 test('empty, missing-number and generated-number imports cannot delete existing loads', () => {
@@ -378,14 +523,15 @@ test('empty, missing-number and generated-number imports cannot delete existing 
   }
 });
 
-test('different load numbers on the same lane and day remain separate', () => {
-  const result = policy.replaceImportedCustomerLoads(customers[0], [
+test('different load numbers on the same lane and day collapse for Nolan too', () => {
+  const result = policy.replaceImportedCustomerLoads(customers[2], [
     load, { ...load, id: '999999' }
   ], []);
-  assert.equal(result.loads.length, 2);
+  assert.equal(result.loads.length, 1);
 });
 
-test('RXO ATZ P keeps one load per lane and pickup day regardless of numbers, ZIPs, or times', () => {
+for (const customer of [...customers, 'Other customer']) {
+test(`${customer} keeps one load per lane and pickup day regardless of numbers, ZIPs, or times`, () => {
   const imported = [
     { ...load, id: '100001', rateInput: '2500' },
     { ...load, id: '100002', pickupTime: '10/27/2026 1400 - 1600', deliveryTime: '10/29/2026 1000', origZip: '60602' },
@@ -396,22 +542,38 @@ test('RXO ATZ P keeps one load per lane and pickup day regardless of numbers, ZI
     { ...load, id: '100007', origCity: 'Dallas', origSt: 'TX', destCity: 'Chicago', destSt: 'IL' }
   ];
   const before = JSON.stringify(imported);
-  const result = policy.replaceImportedCustomerLoads(customers[1], imported, []);
+  const result = policy.replaceImportedCustomerLoads(customer, imported, []);
   assert.deepEqual(Array.from(result.loads, order => order.id), ['100001', '100004', '100005', '100006', '100007']);
   assert.equal(result.laneDayDuplicateCount, 2);
   assert.equal(result.loads[0].rateInput, '2500');
   assert.equal(JSON.stringify(imported), before);
-  for (const customer of [customers[0], customers[2]]) {
-    assert.equal(policy.replaceImportedCustomerLoads(customer, imported, []).loads.length, 7);
-  }
+  assert.equal(policy.replaceImportedCustomerLoads(customers[2], imported, []).loads.length, 5);
 });
 
-test('RXO ATZ P does not collapse loads with unreadable pickup dates', () => {
-  const result = policy.replaceImportedCustomerLoads(customers[1], [
+test(`${customer} does not collapse loads with unreadable pickup dates`, () => {
+  const result = policy.replaceImportedCustomerLoads(customer, [
     { ...load, id: '100001', pickupTime: '', puDate: '' },
     { ...load, id: '100002', pickupTime: '', puDate: '' }
   ], []);
   assert.equal(result.loads.length, 2);
+});
+}
+
+test('Para keeps one Richmond to Arion load per pickup day and applies red screenshot holds', () => {
+  const imported = ['2279675', '2279674', '2279673'].map(id => ({
+    ...load, id, origCity: 'RICHMOND', origSt: 'UT', destCity: 'ARION', destSt: 'IA',
+    pickupTime: '10/28/2026 0800', screenshotStatus: 'OPEN'
+  }));
+  const result = policy.replaceImportedCustomerLoads(customers[0], imported, []);
+  assert.deepEqual(Array.from(result.loads, order => order.id), ['2279675']);
+  assert.equal(result.laneDayDuplicateCount, 2);
+  assert.equal(result.loads[0].status, 'OPEN');
+  const red = policy.replaceImportedCustomerLoads(customers[0], imported.map(order => ({
+    ...order, screenshotStatus: 'ON HOLD'
+  })), result.loads);
+  assert.equal(red.loads.length, 1);
+  assert.equal(red.loads[0].status, 'ON HOLD');
+  assert.equal(red.loads[0].tag, 'HOLD');
 });
 
 test('repeating a full-list import is idempotent and reopens existing ON HOLD numbers', () => {
@@ -438,11 +600,12 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}) 
   const alerts = [];
   const errors = [];
   let pendingRead;
+  let stateCursor = 0;
   const react = {
     createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
     useState(initial) {
-      const index = states.length;
-      states.push(typeof initial === 'function' ? initial() : initial);
+      const index = stateCursor++;
+      if (index === states.length) states.push(typeof initial === 'function' ? initial() : initial);
       return [states[index], value => {
         states[index] = typeof value === 'function' ? value(states[index]) : value;
       }];
@@ -475,7 +638,16 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}) 
     }
   };
   vm.runInNewContext(code, appContext);
-  const tree = appContext.module.exports.default();
+  let tree = appContext.module.exports.default();
+  function find(node, predicate) {
+    if (!node || typeof node !== 'object') return null;
+    if (predicate(node)) return node;
+    for (const child of (node.props?.children || []).flat(Infinity)) {
+      const found = find(child, predicate);
+      if (found) return found;
+    }
+    return null;
+  }
   function findExcelInput(node) {
     if (!node || typeof node !== 'object') return null;
     if (node.type === 'input' && node.props.accept === '.xlsx, .xls, .csv') return node;
@@ -496,6 +668,12 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}) 
   }
   return {
     effects, states, alerts, errors, storage,
+    find: predicate => find(tree, predicate),
+    render() {
+      stateCursor = 0;
+      effects.length = 0;
+      tree = appContext.module.exports.default();
+    },
     enterRate(value) {
       const input = findRateInput(tree);
       assert.ok(input);
@@ -512,6 +690,215 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}) 
     }
   };
 }
+
+test('sort controls order loads independently by pickup/delivery city or state in both directions', () => {
+  const app = createAppHarness(customers[0], [
+    { ...load, id: '1', origCity: 'Atlanta', origSt: 'GA', destCity: 'Seattle', destSt: 'WA' },
+    { ...load, id: '2', origCity: 'Denver', origSt: 'CO', destCity: 'Austin', destSt: 'TX' },
+    { ...load, id: '3', origCity: 'Chicago', origSt: 'IL', destCity: 'Miami', destSt: 'FL' }
+  ]);
+  const expected = {
+    origin: ['1', '3', '2'],
+    destination: ['2', '3', '1'],
+    'origin-state': ['2', '1', '3'],
+    'destination-state': ['3', '2', '1']
+  };
+  for (const [field, ids] of Object.entries(expected)) {
+    for (const direction of ['asc', 'desc']) {
+      const value = `${field}-${direction}`;
+      const select = app.find(node => node.props?.['aria-label'] === 'Sort loads by city and state');
+      assert.ok(select.props.children.flat(Infinity).some(node => node?.props?.value === value));
+      select.props.onChange({ target: { value } });
+      app.render();
+      const list = app.find(node => node.props?.children.flat(Infinity)
+        .some(child => child?.props?.className?.includes('tms-load-card')));
+      const cards = list.props.children.flat(Infinity)
+        .filter(node => node?.props?.className?.includes('tms-load-card'));
+      const actual = cards.map(card => {
+        card.props.onClick();
+        return app.states[5].id;
+      });
+      assert.deepEqual(actual, direction === 'asc' ? ids : [...ids].reverse(), value);
+    }
+  }
+});
+
+test('Nolan spreadsheet re-import saves matching ENT loads as OPEN and retains assignments', async () => {
+  const ids = ['2279616', '2272252', '2220754', '2277742', '2279424'];
+  const app = createAppHarness(customers[2], ids.map(id => ({
+    ...load, id, status: 'ENT', tag: 'ENT', driver: 'Alex Driver', truck: 'T-102'
+  })));
+  await app.importExcel([
+    ['Load ID', 'Equipment', 'Origin City', 'Origin State', 'Origin Zip', 'Destination City', 'Destination State', 'Destination Zip'],
+    ...ids.map(id => [id, 'VE', 'Fairfield', 'OH', '45014', 'Lafayette', 'IN', '47905'])
+  ]);
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'));
+  assert.equal(saved[customers[2]].length, 1);
+  for (const order of saved[customers[2]]) {
+    assert.equal(order.status, 'OPEN', order.id);
+    assert.equal(order.tag, 'OPEN', order.id);
+    assert.equal(order.driver, 'Alex Driver');
+    assert.equal(order.truck, 'T-102');
+  }
+  assert.equal(saved['Unrelated customer'][0].status, 'ENT');
+  assert.equal(app.errors.length, 0);
+});
+
+test('Nolan customer screenshot reopens existing ENT numbers even when their cells are red', () => {
+  const times = ['10/28/2026 0800', '10/28/2026 1400', '10/29/2026 0800', '10/29/2026 1400'];
+  const ids = ['2279616', '2272252', '2220754', '2277742', '2279424'];
+  const imported = ids.map(id => parseScreenshotTimes(id, times, customers[2], true));
+  const existing = ids.map(id => ({ ...load, id, status: 'ENT', tag: 'ENT' }));
+  const result = policy.replaceImportedCustomerLoads(customers[2], imported, existing);
+  assert.equal(result.loads.length, 1);
+  for (const order of result.loads) {
+    assert.equal(order.status, 'OPEN', order.id);
+    assert.equal(order.tag, 'OPEN', order.id);
+  }
+  assert.equal(result.usesScreenshotStatus, false);
+});
+
+test('DAT re-import reopens unchanged and manually priced ENT lanes while retaining other archives', () => {
+  const now = Date.parse('2026-10-28T12:00:00Z');
+  const existing = [
+    { ...load, id: 'DAT-123-0', status: 'ENT', tag: 'ENT', rateInput: '2500',
+      rateSource: 'user-entered', driverPhone: '555-1234', landstarExportedAt: '2026-10-27T12:00:00Z' },
+    { ...load, id: 'archive', destCity: 'Austin', status: 'ENT', tag: 'ENT',
+      landstarExportedAt: '2026-10-27T12:00:00Z' }
+  ];
+  const rows = [
+    { ...load, id: 'DAT-456-0', rateInput: '3000', rateSource: 'dat-screenshot' },
+    { ...load, id: 'DAT-456-1' },
+    { ...load, id: 'DAT-456-2', pickupTime: '10/28/2026 0800' }
+  ];
+  const deduplicated = policy.deduplicateDatImports(rows, existing);
+  assert.equal(deduplicated.skippedDuplicateCount, 1);
+  const result = policy.replaceImportedCustomerLoads(customers[2], deduplicated.loads, existing,
+    { additive: true, allowGeneratedIds: true, now });
+  assert.equal(result.loads.length, 3);
+  assert.deepEqual(Array.from(result.loads, order => order.id), ['DAT-123-0', 'DAT-456-2', 'archive']);
+  const reopened = result.loads.find(order => order.id === 'DAT-123-0');
+  assert.equal(reopened.status, 'OPEN');
+  assert.equal(reopened.tag, 'OPEN');
+  assert.equal(reopened.rateInput, '2500');
+  assert.equal(reopened.driverPhone, '555-1234');
+  assert.equal(Object.hasOwn(reopened, 'landstarExportedAt'), false);
+  assert.equal(result.loads.find(order => order.id === 'DAT-456-2').status, 'OPEN');
+  assert.equal(result.loads.find(order => order.id === 'archive').status, 'ENT');
+});
+
+test('all customers retain missing exported ENT loads for exactly 30 days, but re-imports reopen', () => {
+  const now = Date.parse('2026-10-28T12:00:00Z');
+  const day = 24 * 60 * 60 * 1000;
+  for (const customer of [...customers, 'Other customer']) {
+    const recent = { ...load, id: 'recent', status: 'ENT', tag: 'ENT',
+      landstarExportedAt: new Date(now - 30 * day + 1).toISOString() };
+    const expired = { ...load, id: 'expired', destCity: 'Austin', status: 'ENT', tag: 'ENT',
+      landstarExportedAt: new Date(now - 30 * day).toISOString() };
+    const incoming = { ...load, id: 'new', destCity: 'Reno' };
+    const existing = [recent, expired];
+    const result = policy.replaceImportedCustomerLoads(customer, [incoming], existing, { now });
+    assert.equal(result.loads.find(order => order.id === 'recent').status, 'ENT', customer);
+    assert.equal(result.loads.some(order => order.id === 'expired'), false, customer);
+    const reopened = policy.replaceImportedCustomerLoads(customer, [load], [recent], { now }).loads[0];
+    assert.equal(reopened.status, 'OPEN');
+    assert.equal(Object.hasOwn(reopened, 'landstarExportedAt'), false);
+    const cleaned = policy.removeExpiredExportedLoads({ [customer]: [recent, expired] }, now);
+    assert.deepEqual(Array.from(cleaned[customer], order => order.id), ['recent']);
+    assert.equal(policy.removeExpiredExportedLoads(cleaned, now + 1)[customer].length, 0);
+    const open = { ...expired, status: 'OPEN', tag: 'OPEN' };
+    assert.equal(policy.removeExpiredExportedLoads({ [customer]: [open] }, now)[customer].length, 1);
+  }
+});
+
+test('same load number on different pickup days survives beside a retained exported ENT record', () => {
+  const now = Date.parse('2026-10-28T12:00:00Z');
+  const archive = { ...load, status: 'ENT', tag: 'ENT', landstarExportedAt: '2026-10-27T12:00:00Z' };
+  const rows = [
+    { ...load, pickupTime: '10/28/2026 0800' },
+    { ...load, pickupTime: '10/29/2026 0800' }
+  ];
+  const result = policy.replaceImportedCustomerLoads(customers[2], rows, [archive], { now });
+  assert.equal(result.loads.length, 3);
+  assert.equal(new Set(result.loads.map(order => order.id)).size, 3);
+  assert.equal(result.loads.filter(order => order.status === 'OPEN').length, 2);
+  assert.equal(result.loads.find(order => order.id === load.id).status, 'ENT');
+  assert.equal(new Set(result.loads.map(policy.createLaneDayKey)).size, 3);
+});
+
+test('export marks only the exported pickup-day variant ENT, starts retention and persists through reload', () => {
+  const exportedAt = '2026-10-28T12:00:00Z';
+  const orders = [
+    { ...load },
+    { ...load, id: `${load.id}-ALTA`, sourceLoadId: load.id, pickupTime: '10/28/2026 0800' }
+  ];
+  const exported = policy.markLoadsExported(orders, new Set([orders[1].id]), exportedAt);
+  assert.equal(exported[0].status, 'OPEN');
+  assert.equal(Object.hasOwn(exported[0], 'landstarExportedAt'), false);
+  assert.equal(exported[1].status, 'ENT');
+  assert.equal(exported[1].tag, 'ENT');
+  assert.equal(exported[1].landstarExportedAt, exportedAt);
+  assert.equal(orders[1].status, 'OPEN');
+  const reloaded = createAppHarness(customers[2], JSON.parse(JSON.stringify(exported)));
+  const saved = JSON.parse(reloaded.storage.get('landstar_customerOrdersMap'))[customers[2]];
+  assert.equal(saved[1].status, 'ENT');
+  assert.equal(saved[1].landstarExportedAt, exportedAt);
+  const reopened = policy.replaceImportedCustomerLoads(customers[2], [orders[1]], saved).processedLoads[0];
+  assert.equal(reopened.status, 'OPEN');
+  assert.equal(Object.hasOwn(reopened, 'landstarExportedAt'), false);
+});
+
+test('assignment fields save with the load and survive reload and re-import', () => {
+  const app = createAppHarness(customers[0], [load]);
+  assert.equal(app.find(node => node.props?.placeholder === 'Enter carrier name'), null);
+  const fields = {
+    driver: ['assignment-driver', 'Alex Driver'],
+    driverPhone: ['assignment-driver-phone', '+1 (555) 123-4567'],
+    truck: ['assignment-truck', 'T-102'],
+    trailer: ['assignment-trailer', 'TR-208'],
+    pickupEta: ['assignment-pickup-eta', '10/28/2026 09:30']
+  };
+  for (const [field, [id, value]] of Object.entries(fields)) {
+    const input = app.find(node => node.props?.id === id);
+    assert.ok(input);
+    input.props.onChange({ target: { value } });
+    app.render();
+    assert.equal(app.states[2][customers[0]][0][field], value);
+  }
+  app.effects[0]();
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[0]];
+  const reloaded = createAppHarness(customers[0], saved);
+  const replaced = policy.replaceImportedCustomerLoads(customers[0], [
+    { ...load, pickupEta: 'Imported ETA', driver: '', driverPhone: '', truck: '', trailer: '' }
+  ], saved).loads[0];
+  for (const [field, [id, value]] of Object.entries(fields)) {
+    assert.equal(reloaded.find(node => node.props?.id === id).props.value, value);
+    assert.equal(replaced[field], value);
+  }
+  assert.equal(replaced.pickupTime, load.pickupTime);
+});
+
+test('global search opens the owning customer and keeps bulk selection customer-scoped', () => {
+  const app = createAppHarness(customers[0], [load]);
+  const foreign = { ...load, id: load.id, origCity: 'Vernon', origSt: 'CA', route: '' };
+  app.states[2][customers[1]] = [foreign];
+  app.find(node => node.props?.['aria-label'] === 'Search loads across all customers')
+    .props.onChange({ target: { value: 'vernon' } });
+  app.render();
+  const card = app.find(node => node.props?.className?.includes('tms-load-card'));
+  assert.ok(card);
+  const checkbox = app.find(node => node.type === 'input' && node.props.title === 'Open this load to select its customer first');
+  assert.equal(checkbox.props.disabled, true);
+  app.find(node => node.type === 'button' && node.props.children.includes('Select First 25')).props.onClick();
+  assert.equal(app.states[14].length, 0);
+  card.props.onClick();
+  app.render();
+  assert.equal(app.states[1], customers[1]);
+  assert.equal(app.states[5], foreign);
+  assert.equal(app.find(node => node.type === 'input' && node.props.title === 'Select load').props.disabled, false);
+  app.find(node => node.type === 'button' && node.props.children.includes('Select First 25')).props.onClick();
+  assert.deepEqual(Array.from(app.states[14]), [foreign.id]);
+});
 
 test('manual rate persists and auto-fills a future Excel load with different ZIPs after reload', async () => {
   const original = { ...load, origZip: '60601', destZip: '75201', eCode: 'VZ' };
@@ -530,8 +917,9 @@ test('manual rate persists and auto-fills a future Excel load with different ZIP
   assert.equal(reloaded.errors.length, 0);
 });
 
-test('RXO ATZ P Excel import persists one OPEN load per lane/day and removes older duplicates', async () => {
-  const app = createAppHarness(customers[1], [
+for (const customer of [customers[0], customers[1]]) {
+test(`${customer} Excel import persists one OPEN load per lane/day and removes older duplicates`, async () => {
+  const app = createAppHarness(customer, [
     { ...load, id: '100001', status: 'ENT', tag: 'ENT' },
     { ...load, id: '100002', status: 'OPEN', tag: 'OPEN' }
   ]);
@@ -545,12 +933,13 @@ test('RXO ATZ P Excel import persists one OPEN load per lane/day and removes old
       '10/30/2026 0800 - 1600', '900'
     ])
   ]);
-  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[1]];
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customer];
   assert.deepEqual(saved.map(order => order.id), ['100001', '100003']);
   assert.equal(saved[0].status, 'OPEN');
   assert.ok(app.alerts.some(message => message.includes('Same-lane/pickup-day duplicates skipped: 1')));
   assert.equal(app.errors.length, 0);
 });
+}
 
 for (const customer of customers) {
   test(`${customer}: Excel import persists exactly the current unique load list`, async () => {
@@ -570,13 +959,13 @@ for (const customer of customers) {
       ])
     ]);
     const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'));
-    assert.deepEqual(saved[customer].map(order => order.id), ['123456', '444444']);
+    assert.deepEqual(saved[customer].map(order => order.id), ['123456', '123456-ALTA', '444444']);
     assert.equal(saved[customer][0].status, 'OPEN');
     assert.equal(saved[customer][0].tag, 'OPEN');
     assert.ok(saved[customer][0].pickupTime.includes('10/28/'));
     assert.equal(saved['Unrelated customer'][0].status, 'ENT');
-    assert.ok(app.alerts.some(message => message.includes('missing loads deleted (including ENT): 2')));
-    assert.ok(app.alerts.some(message => message.includes('Duplicate load numbers skipped: 1')));
+    assert.ok(app.alerts.some(message => message.includes('removed loads: 3')));
+    assert.ok(app.alerts.some(message => message.includes('Duplicate load/day rows skipped: 0')));
     assert.equal(app.errors.length, 0);
   });
 }
@@ -597,10 +986,11 @@ test('automated email imports replace per-customer lists only after loading ever
   const rows = Array.from({ length: 105 }, (_, index) => ({
     id: index + 1,
     customer: customers[0],
-    load: { ...load, id: String(100000 + index) }
+    load: { ...load, id: String(100000 + index), destCity: `Destination ${index}` }
   }));
   rows.push({ id: 106, customer: customers[1], load: { ...load, id: '555555' } });
   rows.push({ id: 107, customer: customers[0], load: { ...rows[0].load } });
+  rows.push({ id: 108, customer: customers[0], load: { ...rows[0].load, id: '888888' } });
   const pages = [];
   const acknowledged = [];
   const supabase = {
@@ -637,12 +1027,13 @@ test('automated email imports replace per-customer lists only after loading ever
   app.effects[1]();
   await new Promise(resolve => setImmediate(resolve));
   const saved = app.states[2];
-  assert.deepEqual(pages, [100, 7]);
+  assert.deepEqual(pages, [100, 8]);
   assert.equal(saved[customers[0]].length, 105);
   assert.equal(saved[customers[0]][0].status, 'OPEN');
   assert.equal(saved[customers[0]].some(order => order.id === '999999'), false);
+  assert.equal(saved[customers[0]].some(order => order.id === '888888'), false);
   assert.equal(saved[customers[1]].length, 1);
   assert.equal(saved['Unrelated customer'][0].id, '777777');
-  assert.equal(acknowledged.length, 107);
+  assert.equal(acknowledged.length, 108);
   assert.equal(app.errors.length, 0);
 });

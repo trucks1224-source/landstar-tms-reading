@@ -2453,6 +2453,8 @@ function getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery) {
 }
 
 let rateAdvanceTimer = null;
+let pendingAdvance = null;
+const loadAdvanceDelayMs = 5000;
 
 export default function App({ sharing = null } = {}) {
   const [brokers, setBrokers] = useState(() => {
@@ -4595,6 +4597,7 @@ export default function App({ sharing = null } = {}) {
       setExportErrorIds([]);
     }
     if (typeof clearTimeout === 'function') clearTimeout(rateAdvanceTimer);
+    pendingAdvance = null;
     setSelectedOrder(order);
   };
 
@@ -4602,6 +4605,7 @@ export default function App({ sharing = null } = {}) {
   const handleFieldChange = (field, value) => {
     handleInputChange(field, value);
     if (typeof clearTimeout === 'function') clearTimeout(rateAdvanceTimer);
+    pendingAdvance = null;
     const text = String(value ?? '').trim();
     const rate = Number(text.replace(/[$,]/g, ''));
     const hasValue = field === 'rateInput' ? rate > 0 && Number.isFinite(rate) : Boolean(text);
@@ -4609,19 +4613,31 @@ export default function App({ sharing = null } = {}) {
     const currentIndex = filteredOrders.findIndex(order => order.id === selectedOrder?.id);
     const nextOrder = currentIndex >= 0 ? filteredOrders[currentIndex + 1] : null;
     if (nextOrder && hasValue && typeof setTimeout === 'function') {
-      rateAdvanceTimer = setTimeout(() => {
+      pendingAdvance = () => {
+        pendingAdvance = null;
         setSelectedOrder(nextOrder);
         if (typeof document !== 'undefined') {
           document.getElementById(`load-card-${nextOrder.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
         }
-      }, 1500);
+      };
+      rateAdvanceTimer = setTimeout(pendingAdvance, loadAdvanceDelayMs);
+    } else {
+      pendingAdvance = null;
     }
+  };
+
+  // Clicking into another box on the same load restarts the wait so it doesn't jump mid-edit.
+  const handleDetailFocus = () => {
+    if (!pendingAdvance || typeof setTimeout !== 'function') return;
+    clearTimeout(rateAdvanceTimer);
+    rateAdvanceTimer = setTimeout(pendingAdvance, loadAdvanceDelayMs);
   };
 
   const handleRateKeyDown = event => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
     if (typeof clearTimeout === 'function') clearTimeout(rateAdvanceTimer);
+    pendingAdvance = null;
     const rate = Number(String(selectedOrder?.rateInput || '').replace(/[$,]/g, ''));
     if (!(rate > 0) || !Number.isFinite(rate)) return;
 
@@ -5251,7 +5267,7 @@ export default function App({ sharing = null } = {}) {
           );
         })()}
         {selectedOrder ? (
-          <>
+          <div onFocusCapture={handleDetailFocus}>
             <div className="tms-action-bar flex items-center justify-between bg-[#161f36] px-4 py-3 rounded-lg mb-6 border border-[#1c2541]">
               <div className="flex items-center space-x-3">
                 <span className="text-xs font-bold text-gray-400">MOVE TO:</span>
@@ -5445,7 +5461,7 @@ export default function App({ sharing = null } = {}) {
                         );
                       })()}
                     </div>
-                    <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. After you type a rate or any other load detail, it moves to the next load automatically (or press Enter).</p>
+                    <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. After you type a rate or any other load detail, it moves to the next load about 5 seconds after you stop editing (or press Enter).</p>
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-[1fr_8rem] gap-4">
@@ -5548,7 +5564,7 @@ export default function App({ sharing = null } = {}) {
                 <button onClick={handleSave} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded text-sm font-semibold w-full transition-colors shadow-lg cursor-pointer">Save Changes</button>
               </div>
             </div>
-          </>
+          </div>
         ) : (
           <div className="flex-1 flex items-center justify-center text-gray-400">
             <p>No loads available for this customer. Click "📂 Import Excel" at the top left to load your spreadsheet!</p>

@@ -2647,6 +2647,7 @@ export default function App({ sharing = null } = {}) {
   const [laneSort, setLaneSort] = useState('');
   const [showTools, setShowTools] = useState(true);
   const [showCustomers, setShowCustomers] = useState(true);
+  const [showHeader, setShowHeader] = useState(true);
  
   const [isAddingBroker, setIsAddingBroker] = useState(false);
   const [newBrokerInput, setNewBrokerInput] = useState('');
@@ -4839,10 +4840,20 @@ export default function App({ sharing = null } = {}) {
       <div className="tms-sidebar w-96 border-r border-[#1c2541] flex flex-col">
         <div className="tms-sidebar-header p-3 border-b border-[#1c2541]">
           <div className="tms-top-controls flex flex-col items-start gap-2 mb-2">
+            <button
+              type="button"
+              onClick={() => setShowHeader(open => !open)}
+              aria-expanded={showHeader}
+              className="text-[10px] font-bold text-gray-300 hover:text-white self-start"
+            >
+              {showHeader ? '▾ Hide header' : '▸ Show header'}
+            </button>
+            {showHeader && (
             <div className="tms-sidebar-logos">
               <img className="tms-logo" src="/landstar-wordmark.png" alt="Landstar" width="180" height="47" />
               <img className="tms-eagles-logo" src="/eagles-sidebar.png" alt="Eagles artwork" width="474" height="475" />
             </div>
+            )}
             <button
               type="button"
               onClick={() => setShowTools(open => !open)}
@@ -4896,6 +4907,7 @@ export default function App({ sharing = null } = {}) {
             )}
           </div>
 
+          {showHeader && (
           <div className="tms-top-controls flex items-center justify-end gap-1 mb-2">
             <button
               type="button"
@@ -4910,6 +4922,7 @@ export default function App({ sharing = null } = {}) {
               <input type="file" accept=".json,application/json" onChange={handleBackupImport} className="hidden" />
             </label>
           </div>
+          )}
 
           {isGmailImportOpen && (
             <div className="mb-3 rounded border border-red-700/60 bg-[#0b132b] p-2.5">

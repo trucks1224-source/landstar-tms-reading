@@ -169,6 +169,42 @@ test('headerless DAT rows do not mistake per-mile mi for Michigan and retain the
   assert.equal(loads[1].destCity, 'SANTA ANA');
 });
 
+test('DAT screenshots with two-line rate and pickup cells import all rows correctly', () => {
+  const W = 820;
+  const cols = { rate: 40, trip: 120, origin: 200, destination: 400, pickup: 580, eq: 640, length: 700, weight: 760 };
+  const word = (text, x, y) => ({ text, bbox: { x0: x, x1: x + text.length * 7, y0: y, y1: y + 12 } });
+  const header = ['Rate', 'Trip', 'Origin', 'Destination', 'Pick', 'Up', 'EQ', 'Length', 'Weight']
+    .map((text, i) => word(text, [cols.rate, cols.trip, cols.origin, cols.destination, cols.pickup, cols.pickup + 30, cols.eq, cols.length, cols.weight][i], 2));
+  const lines = [{ text: header.map(w => w.text).join(' '), words: header, bbox: { x0: 0, x1: W, y0: 2, y1: 14 } }];
+  [
+    ['$5,200', '$2.76*/mi', '1885', 'Three Forks, MT', 'Lesage, WV', '10/29 -', '10/30', 'V', '53 ft', '43,605 lbs'],
+    ['$4,500', '$2.20*/mi', '2043', 'Visalia, CA', 'Murray, KY', '10/30', '', 'FH', '40 ft', '14,000 lbs'],
+    ['$3,200', '$2.33*/mi', '1374', 'Rifle, CO', 'Cincinnati, OH', '10/29', '', 'V', '53 ft', '44,000 lbs'],
+    ['$3,000', '$3.25*/mi', '922', 'Ft Lauderdale, FL', 'Morgan City, LA', '10/30', '', 'RG', '24 ft', '25,000 lbs']
+  ].forEach((r, i) => {
+    const y = 40 + i * 40;
+    const words = [
+      word(r[0], cols.rate, y), word(r[1], cols.rate, y + 14),
+      word(r[2], cols.trip, y),
+      ...r[3].split(' ').map((t, j) => word(t, cols.origin + j * 45, y)),
+      ...r[4].split(' ').map((t, j) => word(t, cols.destination + j * 45, y)),
+      word(r[5], cols.pickup, y),
+      ...(r[6] ? [word(r[6], cols.pickup, y + 14)] : []),
+      word(r[7], cols.eq, y), word(r[8], cols.length, y), word(r[9], cols.weight, y)
+    ];
+    const ordered = [...words.filter(w => w.bbox.y0 === y), ...words.filter(w => w.bbox.y0 !== y)];
+    lines.push({ text: ordered.map(w => w.text).join(' '), words, bbox: { x0: 0, x1: W, y0: y, y1: y + 26 } });
+  });
+  const loads = policy.parseDatScreenshotLines(lines, W, 200, customers[2], {});
+  assert.equal(loads.length, 4);
+  assert.equal(loads[0].rateInput, '5200');
+  assert.equal(loads[0].pickupTime, '10/29/2026 0800 - 10/30/2026 1600');
+  assert.equal(loads[1].rateInput, '4500');
+  assert.equal(loads[3].origCity, 'FT LAUDERDALE');
+  assert.equal(loads[3].eCode, 'RG');
+  assert.equal(loads[3].rateInput, '3000');
+});
+
 test('Idaho to Florida lane always pays the fixed $11,000 rate', () => {
   const idFl = { ...load, origCity: 'Boise', origSt: 'ID', destCity: 'Miami', destSt: 'FL' };
   assert.equal(policy.getFixedLaneRate(customers[0], idFl), '11000');

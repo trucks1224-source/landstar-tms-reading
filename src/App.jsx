@@ -1018,12 +1018,12 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
   const rowsToRead = datRows.length ? datRows : lines;
   const rowEquipment = line => {
     const fromCell = getHeaderCell(line, 'equipment').toUpperCase().replace(/^VV$/, 'V')
-      .match(/\b(VT|VAN|V|R|F|SD|VR|RZ|VZ|VE|FH)\b/)?.[0];
+      .match(/\b(VT|VAN|V|R|F|SD|VR|RZ|VZ|VE|FH|RG|ST|LB|AC|HS|HR|LA|SR|SS|TT|VA|VF|VS|DD|DT|FA|FB|FD|FN|FR|FT|GN|LS|LT|NB|NF|NG|NR|NS|OT|PD|PO|RA|RE|RF|RN|RO|RS|RT|SB|SC|SK|SL|SN|SO|SQ|SW|TA|TB|TC|TD|TE|TF|TG|TH|TK|TL|TM|TN|TO|TP|TR|TS|TU|TV|TW|TX|TY|TZ)\b/)?.[0];
     if (fromCell) return fromCell;
     const date = line.text.match(/\b(?:1[0-2]|0?[1-9])\s*[/.-]\s*(?:3[01]|[12]\d|0?[1-9])\b/);
     return date
       ? line.text.slice(date.index + date[0].length).toUpperCase()
-        .match(/\b(VT|VAN|VV|V|R|F|SD|VR|RZ|VZ|VE|FH)\b/)?.[0]?.replace(/^VV$/, 'V') || ''
+        .match(/\b(VT|VAN|VV|V|R|F|SD|VR|RZ|VZ|VE|FH|RG|ST|LB|AC|HS|HR|LA|SR|SS|TT|VA|VF|VS|DD|DT|FA|FB|FD|FN|FR|FT|GN|LS|LT|NB|NF|NG|NR|NS|OT|PD|PO|RA|RE|RF|RN|RO|RS|RT|SB|SC|SK|SL|SN|SO|SQ|SW|TA|TB|TC|TD|TE|TF|TG|TH|TK|TL|TM|TN|TO|TP|TR|TS|TU|TV|TW|TX|TY|TZ)\b/)?.[0]?.replace(/^VV$/, 'V') || ''
       : '';
   };
   const equipmentCounts = rowsToRead
@@ -1116,7 +1116,7 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       .replace(/\s+/g, ' ')
       .trim();
     const tail = normalizedText.slice(dateMatch.index + dateMatch[0].length);
-    const equipment = tail.match(/\b(VT|VAN|VV|V|R|F|SD|VR|RZ|VZ|VE|FH)\b/i)?.[0]?.toUpperCase().replace(/^VV$/, 'V') || '';
+    const equipment = tail.match(/\b(VT|VAN|VV|V|R|F|SD|VR|RZ|VZ|VE|FH|RG|ST|LB|AC|HS|HR|LA|SR|SS|TT|VA|VF|VS|DD|DT|FA|FB|FD|FN|FR|FT|GN|LS|LT|NB|NF|NG|NR|NS|OT|PD|PO|RA|RE|RF|RN|RO|RS|RT|SB|SC|SK|SL|SN|SO|SQ|SW|TA|TB|TC|TD|TE|TF|TG|TH|TK|TL|TM|TN|TO|TP|TR|TS|TU|TV|TW|TX|TY|TZ)\b/i)?.[0]?.toUpperCase().replace(/^VV$/, 'V') || '';
     const weight = normalizedText.match(/([\d][\d,.]*)\s*lbs?\b/i)?.[1] || '';
     const origin = getLocation(`${originCity}, ${originStateMatch[1]}`);
     const destination = getLocation(`${destinationCity}, ${destinationStateMatch[1]}`);
@@ -1130,9 +1130,24 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
     const textRow = getTextRow(line.text);
     const origin = getLocation(getHeaderCell(line, 'origin')) || textRow?.origin;
     const destination = getLocation(getHeaderCell(line, 'destination')) || textRow?.destination;
-    const pickupDate = getDate(getHeaderCell(line, 'pickup')) || textRow?.pickupDate || '';
+    const pickupBounds = getCellBounds('pickup');
+    const rowCenterY = (line.bbox.y0 + line.bbox.y1) / 2;
+    const pickupWords = pickupBounds
+      ? allWords.filter(word => {
+        const centerX = (word.bbox.x0 + word.bbox.x1) / 2 / imageWidth;
+        const centerY = (word.bbox.y0 + word.bbox.y1) / 2;
+        return centerX >= pickupBounds.left && centerX < pickupBounds.right
+          && centerY > tripHeaderY
+          && Math.abs(centerY - rowCenterY) <= rowTolerance * 2;
+      })
+      : line.words;
+    const pickupCell = cleanCell(pickupWords) || getHeaderCell(line, 'pickup');
+    const pickupRange = pickupCell.match(/(\d{1,2}\s*\/\s*\d{1,2})\s*[-–—]\s*(\d{1,2}\s*\/\s*\d{1,2})/)
+      || line.text.match(/(\d{1,2}\s*\/\s*\d{1,2})\s*[-–—]\s*(\d{1,2}\s*\/\s*\d{1,2})/);
+    const pickupDate = getDate(pickupRange?.[1] || pickupCell) || textRow?.pickupDate || '';
+    const pickupEndDate = pickupRange ? getDate(pickupRange[2]) : '';
     const equipmentText = getHeaderCell(line, 'equipment').toUpperCase().replace(/^VV$/, 'V');
-    const equipment = equipmentText.match(/\b(VT|VAN|V|R|F|SD|VR|RZ|VZ|VE|FH)\b/)?.[0]
+    const equipment = equipmentText.match(/\b(VT|VAN|V|R|F|SD|VR|RZ|VZ|VE|FH|RG|ST|LB|AC|HS|HR|LA|SR|SS|TT|VA|VF|VS|DD|DT|FA|FB|FD|FN|FR|FT|GN|LS|LT|NB|NF|NG|NR|NS|OT|PD|PO|RA|RE|RF|RN|RO|RS|RT|SB|SC|SK|SL|SN|SO|SQ|SW|TA|TB|TC|TD|TE|TF|TG|TH|TK|TL|TM|TN|TO|TP|TR|TS|TU|TV|TW|TX|TY|TZ)\b/)?.[0]
       || textRow?.equipment
       || reliableDominantEquipment;
     const weightText = getHeaderCell(line, 'weight').replace(/[Oo]/g, '0').replace(/[IlM1|]bs\b/g, ' lbs');
@@ -1167,12 +1182,14 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       .map(rateLine => cleanCell(rateLine.words))
       .filter(rateLine => !/\/\s*mi\b/i.test(rateLine))
       .map(rateLine => Number(
-        rateLine.replace(/,/g, '').match(/(?:\$\s*)?(\d{3,})\b/)?.[1] || 0
+        rateLine.match(/(?:\$\s*)(\d[\d,]*(?:\.\d{1,2})?)/)?.[1]?.replace(/,/g, '')
+          || rateLine.replace(/,/g, '').match(/(?:\$\s*)?(\d{3,})\b/)?.[1]
+          || 0
       ))
       .find(rateValue => rateValue >= 100) || 0;
     const rateText = getHeaderCell(line, 'rate');
     const directRate = /\$/.test(rateText)
-      ? Number(rateText.replace(/,/g, '').match(/\d{3,}(?:\.\d{1,2})?/)?.[0] || 0)
+      ? Number(rateText.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/)?.[1]?.replace(/,/g, '') || 0)
       : 0;
     const rowCenter = (line.bbox.y0 + line.bbox.y1) / 2;
     const nearestRate = rateObservations
@@ -1192,7 +1209,9 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       route: `${origin.city}, ${origin.state} → ${destination.city}, ${destination.state}`,
       puDate: `PU: ${pickupDate}`,
       delDate: 'DFL: Upcoming',
-      pickupTime: `${pickupDate} 0800 - 1600`,
+      pickupTime: pickupEndDate
+        ? `${pickupDate} 0800 - ${pickupEndDate} 1600`
+        : `${pickupDate} 0800 - 1600`,
       origCity: origin.city,
       origSt: origin.state,
       origZip: '',

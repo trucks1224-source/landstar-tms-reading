@@ -1299,14 +1299,14 @@ test('global search opens the owning customer and keeps bulk selection customer-
   const checkbox = app.find(node => node.type === 'input' && node.props.title === 'Open this load to select its customer first');
   assert.equal(checkbox.props.disabled, true);
   app.find(node => node.type === 'button' && node.props.children.includes('Select First 25')).props.onClick();
-  assert.equal(app.states[14].length, 0);
+  assert.equal(app.states[16].length, 0);
   card.props.onClick();
   app.render();
   assert.equal(app.states[1], customers[1]);
   assert.equal(app.states[5], foreign);
   assert.equal(app.find(node => node.type === 'input' && node.props.title === 'Select load').props.disabled, false);
   app.find(node => node.type === 'button' && node.props.children.includes('Select First 25')).props.onClick();
-  assert.deepEqual(Array.from(app.states[14]), [foreign.id]);
+  assert.deepEqual(Array.from(app.states[16]), [foreign.id]);
 });
 
 test('manual rate persists and auto-fills a future Excel load with different ZIPs after reload', async () => {

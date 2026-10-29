@@ -2645,6 +2645,8 @@ export default function App({ sharing = null } = {}) {
   const [searchQuery, setSearchQuery] = useState('');
   const [loadFilters, setLoadFilters] = useState({ rate: '', minMiles: '', maxMiles: '' });
   const [laneSort, setLaneSort] = useState('');
+  const [showTools, setShowTools] = useState(true);
+  const [showCustomers, setShowCustomers] = useState(true);
  
   const [isAddingBroker, setIsAddingBroker] = useState(false);
   const [newBrokerInput, setNewBrokerInput] = useState('');
@@ -4841,6 +4843,15 @@ export default function App({ sharing = null } = {}) {
               <img className="tms-logo" src="/landstar-wordmark.png" alt="Landstar" width="180" height="47" />
               <img className="tms-eagles-logo" src="/eagles-sidebar.png" alt="Eagles artwork" width="474" height="475" />
             </div>
+            <button
+              type="button"
+              onClick={() => setShowTools(open => !open)}
+              aria-expanded={showTools}
+              className="text-[10px] font-bold text-gray-300 hover:text-white self-start"
+            >
+              {showTools ? '▾ Hide tools' : '▸ Show tools'}
+            </button>
+            {showTools && (
             <div className="flex flex-wrap items-center gap-1">
               <label className={`bg-emerald-600 hover:bg-emerald-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} title="AI Screenshot Import">
                 <span>{isImportingScreenshot && screenshotImportMode === 'ai' ? screenshotImportProgress : '✨ Customer Screenshot'}</span>
@@ -4882,6 +4893,7 @@ export default function App({ sharing = null } = {}) {
                 📥 Export
               </button>
             </div>
+            )}
           </div>
 
           <div className="tms-top-controls flex items-center justify-end gap-1 mb-2">
@@ -4957,8 +4969,15 @@ export default function App({ sharing = null } = {}) {
 
           {/* Customer / Broker Buttons */}
           <div className="flex flex-col gap-1.5 my-2">
-            <span className="text-[11px] text-gray-400 font-bold uppercase tracking-wider">Customers / Brokers:</span>
-            {brokers.map(broker => (
+            <button
+              type="button"
+              onClick={() => setShowCustomers(open => !open)}
+              aria-expanded={showCustomers}
+              className="text-[11px] text-gray-400 font-bold uppercase tracking-wider hover:text-white text-left"
+            >
+              {showCustomers ? '▾' : '▸'} Customers / Brokers ({brokers.length})
+            </button>
+            {showCustomers && brokers.map(broker => (
               editingBroker === broker ? (
                 <form key={broker} onSubmit={(e) => handleSaveEditBroker(broker, e)} className="flex items-center space-x-1 w-full">
                   <input
@@ -5013,7 +5032,7 @@ export default function App({ sharing = null } = {}) {
               )
             ))}
 
-            {isAddingBroker ? (
+            {showCustomers && (isAddingBroker ? (
               <form onSubmit={handleAddBroker} className="flex items-center space-x-1 mt-1 w-full">
                 <input
                   type="text"
@@ -5033,7 +5052,7 @@ export default function App({ sharing = null } = {}) {
               >
                 + Add Customer
               </button>
-            )}
+            ))}
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-gray-400 mb-2">

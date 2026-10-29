@@ -18,7 +18,7 @@ export {
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
-  toExcelDateTime, splitScheduleRange,
+  toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
   getPastedImage, readClipboardImage, getImportedLoadSelection
@@ -227,6 +227,20 @@ test('DAT city correction fixes Long Island region OCR misreads', () => {
   const other = [{ origCity: 'VISALIA', origSt: 'CA', destCity: 'MURRAY', destSt: 'KY', route: '' }];
   policy.correctDatCities(other, zipcodes);
   assert.equal(other[0].destCity, 'MURRAY');
+});
+
+test('schedule picker parts round-trip pickup and delivery ranges', () => {
+  const parts = policy.parseSchedulePickerParts('10/29/2026 0900 - 10/30/2026 1600');
+  assert.deepEqual({ ...parts.from }, { date: '2026-10-29', time: '09:00' });
+  assert.deepEqual({ ...parts.to }, { date: '2026-10-30', time: '16:00' });
+  assert.equal(policy.formatSchedulePickerParts(parts.from, parts.to), '10/29/2026 0900 - 10/30/2026 1600');
+  assert.equal(policy.formatSchedulePickerParts({ date: '2026-11-01' }, null), '11/1/2026 0800');
+  const sameDay = policy.parseSchedulePickerParts('10/29/2026 0800 - 1600');
+  assert.deepEqual({ ...sameDay.from }, { date: '2026-10-29', time: '08:00' });
+  assert.equal(sameDay.to, null);
+  const empty = policy.parseSchedulePickerParts('');
+  assert.equal(empty.from, null);
+  assert.equal(empty.to, null);
 });
 
 test('Idaho to Florida lane always pays the fixed $11,000 rate', () => {

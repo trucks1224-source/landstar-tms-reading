@@ -1893,6 +1893,32 @@ function splitScheduleRange(value) {
   return timeRange ? [timeRange[1].trim(), timeRange[2].trim()] : parts;
 }
 
+function parseSchedulePickerParts(value) {
+  const parts = splitScheduleRange(value);
+  const parse = text => {
+    const match = String(text || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):?(\d{2})/);
+    if (!match) return null;
+    const year = match[3].length === 2 ? 2000 + Number(match[3]) : Number(match[3]);
+    return {
+      date: `${year}-${String(Number(match[1])).padStart(2, '0')}-${String(Number(match[2])).padStart(2, '0')}`,
+      time: `${String(Number(match[4])).padStart(2, '0')}:${match[5]}`
+    };
+  };
+  return { from: parse(parts[0]), to: parse(parts[1]) };
+}
+
+function formatSchedulePickerParts(from, to) {
+  const format = (part, fallbackTime) => {
+    if (!part?.date) return '';
+    const [year, month, day] = part.date.split('-');
+    const time = (part.time || fallbackTime).replace(':', '');
+    return `${Number(month)}/${Number(day)}/${year} ${time}`;
+  };
+  const fromText = format(from, '08:00');
+  const toText = format(to, '16:00');
+  return fromText && toText ? `${fromText} - ${toText}` : fromText || toText;
+}
+
 function normalizeMilesValue(value) {
   const compact = String(value ?? '').replace(/[\s,]/g, '');
   if (/^\d{1,4}(\.\d+)?$/.test(compact)) return compact;
@@ -3160,6 +3186,32 @@ export default function App({ sharing = null } = {}) {
     setShareSelection(current => current.includes(userId)
       ? current.filter(id => id !== userId)
       : [...current, userId]);
+  };
+
+  const renderSchedulePicker = field => {
+    const parts = parseSchedulePickerParts(selectedOrder?.[field]);
+    const update = (side, key, inputValue) => {
+      const current = parseSchedulePickerParts(selectedOrder?.[field]);
+      const next = { from: current.from || {}, to: current.to || {} };
+      next[side] = { ...next[side], [key]: inputValue };
+      if (key === 'time' && inputValue && !next[side].date) {
+        const other = side === 'from' ? next.to : next.from;
+        next[side].date = other.date || new Date().toISOString().slice(0, 10);
+      }
+      if (!next[side].date && !next[side].time) next[side] = null;
+      handleFieldChange(field, formatSchedulePickerParts(next.from, next.to));
+    };
+    const pickerClass = 'bg-[#0b132b] border border-[#1c2541] rounded px-1 py-0.5 text-[11px] text-white [color-scheme:dark]';
+    return (
+      <div className="flex flex-wrap items-center gap-1 mt-1">
+        <span className="text-[10px] text-gray-500">From</span>
+        <input type="date" value={parts.from?.date || ''} onChange={e => update('from', 'date', e.target.value)} className={pickerClass} />
+        <input type="time" value={parts.from?.time || ''} onChange={e => update('from', 'time', e.target.value)} className={pickerClass} />
+        <span className="text-[10px] text-gray-500 ml-1">To</span>
+        <input type="date" value={parts.to?.date || ''} onChange={e => update('to', 'date', e.target.value)} className={pickerClass} />
+        <input type="time" value={parts.to?.time || ''} onChange={e => update('to', 'time', e.target.value)} className={pickerClass} />
+      </div>
+    );
   };
 
   const renderCopyableField = (label, field) => (
@@ -5636,6 +5688,7 @@ export default function App({ sharing = null } = {}) {
                     onChange={(e) => handleFieldChange('pickupTime', e.target.value)}
                     className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
                   />
+                  {renderSchedulePicker('pickupTime')}
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 mb-3">
@@ -5671,6 +5724,7 @@ export default function App({ sharing = null } = {}) {
                     onChange={(e) => handleFieldChange('deliveryTime', e.target.value)}
                     className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
                   />
+                  {renderSchedulePicker('deliveryTime')}
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 mb-3">

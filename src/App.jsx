@@ -4256,7 +4256,8 @@ export default function App({ sharing = null } = {}) {
     const lookupCityState = (city, state) => {
       const extraCities = {
         'HAMBERG|ND': { zip: '58145', city: 'Hamberg', state: 'ND' },
-        'ROSEMONT|IL': { zip: '60018', city: 'Rosemont', state: 'IL' }
+        'ROSEMONT|IL': { zip: '60018', city: 'Rosemont', state: 'IL' },
+        'MALTA|NY': { zip: '12020', city: 'Malta', state: 'NY' }
       };
       const extraKey = `${String(city || '').trim().toUpperCase()}|${String(state || '').trim().toUpperCase()}`;
       if (extraCities[extraKey]) return extraCities[extraKey];

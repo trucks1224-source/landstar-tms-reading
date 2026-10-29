@@ -493,7 +493,7 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight, options = {}) {
     const rateWord = card.find(word => /^\$\s*[\d,]+(\.\d+)?$/.test(word.text));
     const rate = rateWord ? rateWord.text.replace(/[^0-9.]/g, '') : '';
     const weightWord = card
-      .filter(word => word.cx >= statsLeft && word !== rateWord && /^(\d{1,3}([,.]\d{3})+|\d{4,6})(\.\d+)?$/.test(word.text))
+      .filter(word => word.cx >= statsLeft && word !== rateWord && /^(\d{1,3}([,.]\d{3})+|\d{2,6})(\.\d+)?$/.test(word.text))
       .sort((a, b) => a.x0 - b.x0)[0];
     // "2.293" is a misread "2,293"; a decimal weight like "39,974.4" keeps its decimal.
     const weightText = weightWord ? weightWord.text.replace(/^(\d{1,3})\.(\d{3})(?=$|\.)/, '$1,$2') : '';
@@ -635,10 +635,10 @@ async function fillMissingNtgCardDetails(worker, canvas, lines) {
     const rateText = await readCanvasStrip(worker, canvas, rateLeft, valueTop, rateLeft + W * 0.075, valueBottom, /\d[\d,]*\.\d{2}/);
     if (rateText) add(`$${rateText}`, rateLeft + W * 0.01, (valueTop + valueBottom) / 2 - 4, rateLeft + W * 0.06, (valueTop + valueBottom) / 2 + 4);
   }
-  if (!words.some(word => word.x0 > statsLeft && /^(\d{1,3}(,\d{3})+|\d{4,6})(\.\d+)?$/.test(word.text))) {
+  if (!words.some(word => word.x0 > statsLeft && /^(\d{1,3}(,\d{3})+|\d{2,6})(\.\d+)?$/.test(word.text))) {
     const weightLeft = weightLabel ? weightLabel.x0 - W * 0.02 : W * 0.69;
     const weightRight = totalLabel ? totalLabel.x0 - W * 0.01 : W * 0.765;
-    const weightText = await readCanvasStrip(worker, canvas, weightLeft, valueTop, weightRight, valueBottom, /\d{1,3}(,\d{3})+(\.\d+)?|\d{4,6}(\.\d+)?/);
+    const weightText = await readCanvasStrip(worker, canvas, weightLeft, valueTop, weightRight, valueBottom, /\d{1,3}(,\d{3})+(\.\d+)?|\d{2,6}(\.\d+)?/);
     if (weightText) add(weightText, weightLeft + W * 0.01, (valueTop + valueBottom) / 2 - 4, weightRight - W * 0.01, (valueTop + valueBottom) / 2 + 4);
   }
 

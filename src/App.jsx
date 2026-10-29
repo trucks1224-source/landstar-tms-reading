@@ -919,6 +919,9 @@ function parseDatRateText(text) {
 }
 
 function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker, laneRates) {
+  const allBbox = lines.flatMap(line => [line.bbox, ...(line.words || []).map(word => word.bbox)].filter(Boolean));
+  if (!(imageWidth > 0) && allBbox.length) imageWidth = Math.max(...allBbox.map(b => b.x1 || 0));
+  if (!(imageHeight > 0) && allBbox.length) imageHeight = Math.max(...allBbox.map(b => b.y1 || 0));
   const cleanCell = words => words
     .sort((a, b) => a.bbox.x0 - b.bbox.x0)
     .map(word => word.text)
@@ -931,8 +934,8 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
     trip: /^trip$/i,
     origin: /^origin$/i,
     destination: /^destination$/i,
-    pickup: /^pick(?:up)?$/i,
-    equipment: /^eq$/i,
+    pickup: /^pick(?:\s*up)?$/i,
+    equipment: /^e[sq5)\]]+$/i,
     weight: /^weight$/i
   };
   const allWords = lines.flatMap(line => line.words || []);
@@ -1149,7 +1152,8 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
     const equipmentText = getHeaderCell(line, 'equipment').toUpperCase().replace(/^VV$/, 'V');
     const equipment = equipmentText.match(/\b(VT|VAN|V|R|F|SD|VR|RZ|VZ|VE|FH|RG|ST|LB|AC|HS|HR|LA|SR|SS|TT|VA|VF|VS|DD|DT|FA|FB|FD|FN|FR|FT|GN|LS|LT|NB|NF|NG|NR|NS|OT|PD|PO|RA|RE|RF|RN|RO|RS|RT|SB|SC|SK|SL|SN|SO|SQ|SW|TA|TB|TC|TD|TE|TF|TG|TH|TK|TL|TM|TN|TO|TP|TR|TS|TU|TV|TW|TX|TY|TZ)\b/)?.[0]
       || textRow?.equipment
-      || reliableDominantEquipment;
+      || reliableDominantEquipment
+      || 'V';
     const weightText = getHeaderCell(line, 'weight').replace(/[Oo]/g, '0').replace(/[IlM1|]bs\b/g, ' lbs');
     const rawWeight = weightText.match(/(\d[\d,.]*)\s*lbs?\b/i)?.[1]
       || weightText.match(/\d[\d,.]*/)?.[0]
@@ -1197,7 +1201,9 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       .filter(observation => observation.distance <= imageHeight * 0.045)
       .sort((a, b) => a.distance - b.distance)[0];
     const rate = positionedRate || directRate || nearestRate?.rate || 0;
-    if (!origin || !destination || !pickupDate || !equipment || !(Number(weight?.replace(/,/g, '')) > 0)) return;
+    const hasWeight = Number(weight?.replace(/,/g, '')) > 0;
+    const equipmentWasGuessed = !equipmentText.match(/\b(VT|VAN|V|R|F|SD|VR|RZ|VZ|VE|FH|RG)\b/) && !textRow?.equipment;
+    if (!origin || !destination || !pickupDate || !equipment) return;
     if (!line.text.trim()) return;
 
     const order = {
@@ -1215,13 +1221,17 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       origCity: origin.city,
       origSt: origin.state,
       origZip: '',
-      weight: `${weight} lbs`,
+      weight: hasWeight ? `${weight} lbs` : '40000 lbs',
       deliveryTime: String(selectedBroker || '').includes('965974') ? '' : '0800 - 1600',
       destCity: destination.city,
       destSt: destination.state,
       destZip: '',
       miles: trip,
-      planningComment: 'Imported from DAT screenshot',
+      planningComment: [
+        'Imported from DAT screenshot',
+        !hasWeight && 'weight not visible — enter weight',
+        equipmentWasGuessed && 'equipment not read — confirm equipment'
+      ].filter(Boolean).join('; '),
       carrier: '',
       driver: '',
       truck: '',

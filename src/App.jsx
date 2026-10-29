@@ -1166,8 +1166,6 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       || textRow?.equipment
       || reliableDominantEquipment
       || 'V';
-    // DAT "FH" means flatbed hotshot; this app reserves FH for flatbed hazmat.
-    const datEquipment = equipment === 'FH' ? 'F' : equipment;
     const weightText = getHeaderCell(line, 'weight').replace(/[Oo]/g, '0').replace(/[IlM1|]bs\b/g, ' lbs');
     const rawWeight = weightText.match(/(\d[\d,.]*)\s*lbs?\b/i)?.[1]
       || weightText.match(/\d[\d,.]*/)?.[0]
@@ -1222,8 +1220,8 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
 
     const order = {
       id: `DAT-${Date.now()}-${index}`,
-      eCode: datEquipment,
-      team: datEquipment === 'VT' ? 'true' : 'false',
+      eCode: equipment,
+      team: equipment === 'VT' ? 'true' : 'false',
       status: 'OPEN',
       tag: 'OPEN',
       route: `${origin.city}, ${origin.state} → ${destination.city}, ${destination.state}`,
@@ -1953,7 +1951,7 @@ function getLandstarEquipmentCode(value) {
     RZ: 'REFR',
     F: 'FLAT',
     'F,SD': 'FLAT',
-    FH: 'FLAT',
+    FH: 'FH',
     FLCS: 'FLCS',
     SD: 'STEP'
   };
@@ -1969,7 +1967,8 @@ function getLandstarEquipmentCode(value) {
 
 function getLandstarCommodity(value) {
   const equipmentCode = String(value || '').trim().toUpperCase().split(':')[0];
-  if (['VZ', 'RZ', 'FH'].includes(equipmentCode)) {
+  // FH (flatbed hotshot) is not hazmat by itself; hazmat loads carry hazmat: 'true'.
+  if (['VZ', 'RZ'].includes(equipmentCode)) {
     return 'HAZMAT';
   }
   if (equipmentCode === 'VE') {

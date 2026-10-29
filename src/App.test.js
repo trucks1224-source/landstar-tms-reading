@@ -200,7 +200,7 @@ test('DAT screenshots with two-line rate and pickup cells import all rows correc
   assert.equal(loads[0].rateInput, '5200');
   assert.equal(loads[0].pickupTime, '10/29/2026 0800 - 10/30/2026 1600');
   assert.equal(loads[1].rateInput, '4500');
-  assert.equal(loads[1].eCode, 'F');
+  assert.equal(loads[1].eCode, 'FH');
   assert.equal(policy.isHazmatLoad(loads[1]), false);
   assert.equal(policy.getLoadCommodity(loads[1]), 'CGAPP');
   assert.equal(loads[3].origCity, 'FT LAUDERDALE');
@@ -208,8 +208,11 @@ test('DAT screenshots with two-line rate and pickup cells import all rows correc
   assert.equal(loads[3].rateInput, '3000');
 });
 
-test('DAT flatbed hotshot FH imports as flatbed, while FH stays hazmat elsewhere', () => {
-  assert.equal(policy.getLandstarCommodity('FH'), 'HAZMAT');
+test('FH imports and exports as FH and is not hazmat unless flagged', () => {
+  assert.equal(policy.getLandstarCommodity('FH'), 'CGAPP');
+  assert.equal(policy.getLandstarEquipmentCode('FH'), 'FH');
+  assert.equal(policy.isHazmatLoad({ eCode: 'FH' }), false);
+  assert.equal(policy.getLoadCommodity({ eCode: 'FH' }), 'CGAPP');
   assert.equal(policy.getLoadCommodity({ eCode: 'FH', hazmat: 'true' }), 'HAZMAT');
   assert.equal(policy.getLoadCommodity({ eCode: 'F' }), 'CGAPP');
 });
@@ -1067,12 +1070,12 @@ test('hazmat and tanker tags carry through to commodity and flags', () => {
 
 test('flatbed loads map to F,SD and export as FLAT', () => {
   assert.equal(policy.getLandstarEquipmentCode('F,SD'), 'FLAT');
-  assert.equal(policy.getLandstarEquipmentCode('FH'), 'FLAT');
+  assert.equal(policy.getLandstarEquipmentCode('FH'), 'FH');
   assert.equal(policy.getLandstarEquipmentCode('D-LG'), 'D-LG');
   assert.equal(policy.getLandstarEquipmentCode('FLCS'), 'FLCS');
   assert.equal(policy.getEquipmentDescription('FLCS'), 'FLCS');
-  assert.equal(policy.isHazmatLoad({ eCode: 'FH' }), true);
-  assert.equal(policy.getLoadCommodity({ eCode: 'FH' }), 'HAZMAT');
+  assert.equal(policy.isHazmatLoad({ eCode: 'FH' }), false);
+  assert.equal(policy.getLoadCommodity({ eCode: 'FH' }), 'CGAPP');
   assert.match(policy.getEquipmentDescription('F,SD'), /STEP/);
 });
 

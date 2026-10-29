@@ -16,7 +16,7 @@ export {
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
-  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
+  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription, normalizeEquipmentCode,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
@@ -1091,6 +1091,19 @@ test('flatbed loads map to F,SD and export as FLAT', () => {
   assert.equal(policy.isHazmatLoad({ eCode: 'FH' }), false);
   assert.equal(policy.getLoadCommodity({ eCode: 'FH' }), 'CGAPP');
   assert.match(policy.getEquipmentDescription('F,SD'), /STEP/);
+});
+
+test('Excel equipment text normalizes to TMS equipment codes', () => {
+  assert.equal(policy.normalizeEquipmentCode('Reefer - 53'), 'R');
+  assert.equal(policy.normalizeEquipmentCode('Reefer'), 'R');
+  assert.equal(policy.normalizeEquipmentCode('Van - 53'), 'V');
+  assert.equal(policy.normalizeEquipmentCode('Flatbed - 48'), 'F,SD');
+  assert.equal(policy.normalizeEquipmentCode('Straight Truck - Large'), 'D-LG,D-ST');
+  assert.equal(policy.normalizeEquipmentCode('Conestoga'), 'FLCS');
+  assert.equal(policy.normalizeEquipmentCode('Step Deck'), 'SD');
+  assert.equal(policy.normalizeEquipmentCode('FH'), 'FH');
+  assert.equal(policy.normalizeEquipmentCode(''), '');
+  assert.equal(policy.getLandstarEquipmentCode(policy.normalizeEquipmentCode('Reefer - 53')), 'REFR');
 });
 
 test('straight trucks import as D-LG,D-ST and export to Landstar as D-LG with D-ST alternate', () => {

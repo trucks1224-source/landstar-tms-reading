@@ -1948,6 +1948,19 @@ function isTeamLoad(load) {
 }
 
 // Team vans (VM/VT) are shown as a plain V; the Team flag carries the team part.
+function normalizeEquipmentCode(value) {
+  const code = String(value || '').trim().toUpperCase();
+  if (!code) return '';
+  if (/^D-LG/.test(code)) return code.includes('D-ST') ? 'D-LG,D-ST' : 'D-LG';
+  if (/STRAIGHT\s*TRUCK|SPRINTER|BOX\s*TRUCK|HOT\s*SHOT/.test(code)) return 'D-LG,D-ST';
+  if (/CONESTOGA/.test(code)) return 'FLCS';
+  if (/FLAT\s*BED|\bFLAT\b/.test(code)) return 'F,SD';
+  if (/STEP\s*DECK|\bSTEP\b/.test(code)) return 'SD';
+  if (/REEFER|\bREFR/.test(code)) return 'R';
+  if (/\bVAN\b/.test(code)) return 'V';
+  return code;
+}
+
 function getDisplayEquipmentCode(value) {
   const code = String(value || '').trim().toUpperCase();
   if (code === 'VE') return 'VAN';
@@ -3565,7 +3578,9 @@ export default function App({ sharing = null } = {}) {
           const laneKey = `${origC}${origS ? ', ' + origS : ''} → ${destC}${destS ? ', ' + destS : ''}`;
           
           const rawEquip = row[colB];
-          const eCodeVal = isRxoCustomer(selectedBroker) ? 'VAN:VAN' : String(rawEquip || 'VZ').toUpperCase().trim();
+          const eCodeVal = isRxoCustomer(selectedBroker)
+            ? 'VAN:VAN'
+            : normalizeEquipmentCode(rawEquip) || 'VZ';
           
           const tempOrder = {
             origCity: origC, origSt: origS, origZip: origZ,

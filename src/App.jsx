@@ -523,7 +523,7 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight, options = {}) {
     const shortDate = value => value.replace(/^(\d{2})\/(\d{2})\/\d{4}\s+(\d{4}).*$/, '$1/$2 $3');
     return {
       id: idWord ? idWord.text : `NTG-${Date.now()}-${index}`,
-      eCode: /str\w{0,3}ght\s*tr\w*/i.test(equipmentText) ? 'D-LG' : /sprinter|box\s*truck/i.test(equipmentText) ? 'D-LG,D-ST' : /c\w{1,3}est\w{0,2}ga/i.test(equipmentText) ? 'FLCS' : isFlatbed ? (isHazmat ? 'FH' : 'F,SD') : isHazmat ? (isReefer && !/\bvan\b/i.test(equipmentText) ? 'RZ' : 'VZ') : isReefer ? (/\bvan\b/i.test(equipmentText) ? 'VR' : 'R') : 'V',
+      eCode: /str\w{0,3}ght\s*tr\w*/i.test(equipmentText) ? 'D-LG,D-ST' : /sprinter|box\s*truck/i.test(equipmentText) ? 'D-LG,D-ST' : /c\w{1,3}est\w{0,2}ga/i.test(equipmentText) ? 'FLCS' : isFlatbed ? (isHazmat ? 'FH' : 'F,SD') : isHazmat ? (isReefer && !/\bvan\b/i.test(equipmentText) ? 'RZ' : 'VZ') : isReefer ? (/\bvan\b/i.test(equipmentText) ? 'VR' : 'R') : 'V',
       ...(isHazmat ? { hazmat: 'true' } : {}),
       ...(tags.some(tag => /tanker/i.test(tag)) ? { tanker: 'true' } : {}),
       status: 'OPEN',
@@ -1772,6 +1772,15 @@ function getDisplayEquipmentCode(value) {
   const code = String(value || '').trim().toUpperCase();
   if (code === 'VE') return 'VAN';
   return isTeamEquipment(code) ? 'V' : value;
+}
+
+// Straight trucks post to Landstar as D-LG with D-ST as the alternate equipment.
+function getLandstarEquipment2(ord) {
+  if (isTeamLoad(ord)) return '53VN';
+  if (isFlatbedEquipment(ord?.eCode)) return 'STEP';
+  const code = String(ord?.eCode || '').trim().toUpperCase();
+  if (code === 'D-LG' || code === 'D-LG,D-ST') return 'D-ST';
+  return '';
 }
 
 function getLandstarEquipmentCode(value) {
@@ -4294,7 +4303,7 @@ export default function App({ sharing = null } = {}) {
         "Visibility Code": visibilityCode,
         "Bill as Miles": allowMissingMiles && !(miles > 0) ? '' : miles,
         "Equipment 1(Required)": equipment,
-        "Equipment 2": isTeamLoad(ord) ? '53VN' : isFlatbedEquipment(ord.eCode) ? 'STEP' : String(ord.eCode || '').trim().toUpperCase() === 'D-LG,D-ST' ? 'D-ST' : '',
+        "Equipment 2": getLandstarEquipment2(ord),
         "Equipment 3": "",
         "Weight(Required)": weight ?? '',
         "Rate Type(Required)": "Flat Rate",

@@ -17,7 +17,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
-  getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
+  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported,
   getPastedImage, readClipboardImage, getImportedLoadSelection
@@ -982,6 +982,16 @@ test('flatbed loads map to F,SD and export as FLAT', () => {
   assert.equal(policy.isHazmatLoad({ eCode: 'FH' }), true);
   assert.equal(policy.getLoadCommodity({ eCode: 'FH' }), 'HAZMAT');
   assert.match(policy.getEquipmentDescription('F,SD'), /STEP/);
+});
+
+test('straight trucks import as D-LG,D-ST and export to Landstar as D-LG with D-ST alternate', () => {
+  for (const code of ['D-LG', 'D-LG,D-ST']) {
+    assert.equal(policy.getLandstarEquipmentCode(code), 'D-LG', code);
+    assert.equal(policy.getLandstarEquipment2({ eCode: code }), 'D-ST', code);
+  }
+  assert.equal(policy.getLandstarEquipment2({ eCode: 'V' }), '');
+  assert.equal(policy.getLandstarEquipment2({ eCode: 'F,SD' }), 'STEP');
+  assert.equal(policy.getLandstarEquipment2({ eCode: 'VM' }), '53VN');
 });
 
 test('NTG load number readings are majority voted digit by digit', () => {

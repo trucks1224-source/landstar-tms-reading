@@ -2643,7 +2643,7 @@ export default function App({ sharing = null } = {}) {
 
   const [filter, setFilter] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [loadFilters, setLoadFilters] = useState({ rate: '' });
+  const [loadFilters, setLoadFilters] = useState({ rate: '', minMiles: '', maxMiles: '' });
   const [laneSort, setLaneSort] = useState('');
  
   const [isAddingBroker, setIsAddingBroker] = useState(false);
@@ -4727,9 +4727,18 @@ export default function App({ sharing = null } = {}) {
   const rateCountOrders = statusOrderEntries.filter(({ customer }) => customer === selectedBroker).map(({ order }) => order);
   const withRateCount = rateCountOrders.filter(hasLoadRate).length;
   const noRateCount = rateCountOrders.length - withRateCount;
+  const minMilesFilter = Number(loadFilters.minMiles);
+  const maxMilesFilter = Number(loadFilters.maxMiles);
+  const hasMinMiles = loadFilters.minMiles !== '' && Number.isFinite(minMilesFilter);
+  const hasMaxMiles = loadFilters.maxMiles !== '' && Number.isFinite(maxMilesFilter);
   const visibleOrderEntries = statusOrderEntries.filter(({ order: ord }) => {
-    if (loadFilters.rate === 'with') return hasLoadRate(ord);
-    if (loadFilters.rate === 'without') return !hasLoadRate(ord);
+    if (loadFilters.rate === 'with' && !hasLoadRate(ord)) return false;
+    if (loadFilters.rate === 'without' && hasLoadRate(ord)) return false;
+    if (hasMinMiles || hasMaxMiles) {
+      const miles = Number(normalizeMilesValue(ord.miles));
+      if (hasMinMiles && !(miles >= minMilesFilter)) return false;
+      if (hasMaxMiles && !(miles <= maxMilesFilter)) return false;
+    }
     return true;
   }).sort(({ order: left }, { order: right }) => {
     if (laneSort === 'pickup-asc' || laneSort === 'pickup-desc') {
@@ -5149,11 +5158,33 @@ export default function App({ sharing = null } = {}) {
               <option value="destination-state-desc">Delivery state: Z to A</option>
             </select>
           </div>
-          {(loadFilters.rate || laneSort) && (
+          <div className="flex items-center gap-1.5 mt-1.5 px-1">
+            <span className="text-[11px] text-gray-400">Miles:</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder="Min"
+              aria-label="Minimum miles"
+              value={loadFilters.minMiles}
+              onChange={e => { setLoadFilters(prev => ({ ...prev, minMiles: e.target.value.replace(/[^\d]/g, '') })); setSelectedIds([]); }}
+              className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1 text-xs text-white placeholder-gray-500 outline-none focus:border-blue-500"
+            />
+            <span className="text-[11px] text-gray-500">–</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder="Max"
+              aria-label="Maximum miles"
+              value={loadFilters.maxMiles}
+              onChange={e => { setLoadFilters(prev => ({ ...prev, maxMiles: e.target.value.replace(/[^\d]/g, '') })); setSelectedIds([]); }}
+              className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1 text-xs text-white placeholder-gray-500 outline-none focus:border-blue-500"
+            />
+          </div>
+          {(loadFilters.rate || loadFilters.minMiles || loadFilters.maxMiles || laneSort) && (
             <button
               type="button"
               onClick={() => {
-                setLoadFilters({ rate: '' });
+                setLoadFilters({ rate: '', minMiles: '', maxMiles: '' });
                 setLaneSort('');
               }}
               className="mt-1 text-[10px] text-blue-300 hover:text-white"

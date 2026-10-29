@@ -961,6 +961,30 @@ test('With rate and No rate buttons show only those loads', () => {
   assert.deepEqual(shownIds(), ['1', '2', '3']);
 });
 
+test('min and max miles filter the load list', () => {
+  const app = createAppHarness(customers[0], [
+    { ...load, id: '1', miles: '150' },
+    { ...load, id: '2', miles: '450' },
+    { ...load, id: '3', miles: '900' }
+  ]);
+  const shownIds = () => ['1', '2', '3'].filter(id => app.find(node => node.props?.id === `load-card-${id}`));
+  const setMiles = (label, value) => app.find(node => node.props?.['aria-label'] === label)
+    .props.onChange({ target: { value } });
+  assert.deepEqual(shownIds(), ['1', '2', '3']);
+  setMiles('Minimum miles', '200');
+  app.render();
+  assert.deepEqual(shownIds(), ['2', '3']);
+  setMiles('Maximum miles', '500');
+  app.render();
+  assert.deepEqual(shownIds(), ['2']);
+  setMiles('Minimum miles', '');
+  app.render();
+  assert.deepEqual(shownIds(), ['1', '2']);
+  setMiles('Maximum miles', '');
+  app.render();
+  assert.deepEqual(shownIds(), ['1', '2', '3']);
+});
+
 test('loads with and without rates are told apart for bulk selection', () => {
   assert.equal(policy.hasLoadRate({ rateInput: '$1,500' }), true);
   for (const rateInput of [undefined, '', '0', 0, '$0']) {

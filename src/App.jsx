@@ -1841,11 +1841,15 @@ function toExcelDateTime(value, fallbackDateValue = '') {
 // Splits a schedule into start/end parts, handling ranges with a full date on both
 // sides even when the dash has no spaces (10/29/2026 09:00-10/30/2026 16:00).
 function splitScheduleRange(value) {
-  const text = String(value || '');
+  const text = String(value || '').replace(/[–—]/g, '-');
   const spaced = Array.from(
     text.matchAll(/(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):?(\d{2})/g)
   ).map(match => `${match[1]}/${match[2]}/${match[3].length === 2 ? `20${match[3]}` : match[3]} ${match[4]}${match[5]}`);
-  return spaced.length >= 2 ? spaced : text.split(' - ');
+  if (spaced.length >= 2) return spaced;
+  const parts = text.split(' - ');
+  if (parts.length >= 2) return parts;
+  const timeRange = text.match(/^(.*?)-(\d{1,2}:?\d{2}\s*(?:AM|PM)?)$/i);
+  return timeRange ? [timeRange[1].trim(), timeRange[2].trim()] : parts;
 }
 
 function normalizeMilesValue(value) {
@@ -4370,7 +4374,7 @@ export default function App({ sharing = null } = {}) {
       if (destinationCountry === 'CA' && !destinationZip) rowErrors.push('valid Canadian destination postal code');
       if (!destinationStateMatchesZip) rowErrors.push(`destination state must match ZIP ${destinationZip} (${destinationLocation.state})`);
       if (pickupFrom === null || pickupThru === null) {
-        rowErrors.push('pickup date/time (enter valid dates as MM/DD/YYYY HHMM - HHMM)');
+        rowErrors.push(`pickup date/time (current value "${ord.pickupTime || ''}" — use MM/DD/YYYY HHMM - HHMM)`);
       }
       else if (pickupThru < todaySerial) rowErrors.push('pickup end date cannot be in the past');
       else if (pickupThru < pickupFrom) rowErrors.push('pickup end must be after pickup start');

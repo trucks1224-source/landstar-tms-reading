@@ -1045,6 +1045,12 @@ test('pickup windows spanning two days parse for Landstar export', () => {
   assert.deepEqual(sameDay, ['10/27/2026 0800', '1200']);
   assert.notEqual(policy.toExcelDateTime(sameDay[1], sameDay[0]), null);
 
+  const tightSameDay = [...policy.splitScheduleRange('10/27/2026 0800-1200')];
+  assert.deepEqual(tightSameDay, ['10/27/2026 0800', '1200']);
+
+  const enDash = [...policy.splitScheduleRange('10/29/2026 0700 – 10/30/2026 16:00')];
+  assert.deepEqual(enDash, ['10/29/2026 0700', '10/30/2026 1600']);
+
   assert.notEqual(policy.toExcelDateTime('11/2/26 8:00'), null);
 });
 

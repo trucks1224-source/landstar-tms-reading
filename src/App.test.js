@@ -19,7 +19,8 @@ export {
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
   getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
-  parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported
+  parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported,
+  getPastedImage, readClipboardImage
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -48,6 +49,71 @@ const load = {
   pickupTime: '10/27/2026 0800 - 1200',
   deliveryTime: '10/28/2026 0800 - 1600'
 };
+
+test('pasted screenshots are accepted outside editable fields without intercepting text', () => {
+  const image = { type: 'image/png' };
+  const clipboardData = { items: [
+    { type: 'text/plain', getAsFile: () => null },
+    { type: 'image/png', getAsFile: () => image }
+  ] };
+  assert.equal(policy.getPastedImage({ clipboardData }), image);
+  for (const tag of ['input', 'textarea', 'select']) {
+    assert.equal(policy.getPastedImage({
+      clipboardData, target: { closest: selector => selector.includes(tag) }
+    }), null);
+  }
+  assert.equal(policy.getPastedImage({ clipboardData, target: { isContentEditable: true } }), null);
+  assert.equal(policy.getPastedImage({ clipboardData: { items: [{ type: 'text/plain' }] } }), null);
+  assert.equal(policy.getPastedImage({}), null);
+});
+
+test('clipboard screenshot reading accepts image data and prefers PNG', async () => {
+  const image = { type: 'image/png' };
+  const clipboard = { read: async () => [
+    { types: ['text/plain'] },
+    {
+      types: ['image/jpeg', 'image/png'],
+      getType: async type => {
+        assert.equal(type, 'image/png');
+        return image;
+      }
+    }
+  ] };
+  assert.equal(await policy.readClipboardImage(clipboard), image);
+});
+
+test('clipboard import explains missing images, unsupported access, and permission errors', async () => {
+  await assert.rejects(policy.readClipboardImage(undefined), /Ctrl\+V/);
+  await assert.rejects(policy.readClipboardImage({ read: async () => [] }), /Win\+Shift\+S/);
+  await assert.rejects(policy.readClipboardImage({
+    read: async () => { throw new Error('Permission denied'); }
+  }), /Permission denied/);
+});
+
+test('Paste NTG Screenshot reports clipboard problems and re-enables imports', async () => {
+  let finishRead;
+  let readCount = 0;
+  const app = createAppHarness(customers[2], [load], null, {}, {
+    navigator: { clipboard: { read: () => {
+      readCount += 1;
+      return new Promise(resolve => { finishRead = resolve; });
+    } } }
+  });
+  const pasteButton = () => app.find(node => node.type === 'button'
+    && node.props.children.includes('Paste NTG Screenshot'));
+  const pendingImport = pasteButton().props.onClick();
+  app.render();
+  assert.equal(pasteButton().props.disabled, true);
+  await pasteButton().props.onClick();
+  assert.equal(readCount, 1);
+  finishRead([]);
+  await pendingImport;
+  app.render();
+  assert.equal(pasteButton().props.disabled, false);
+  assert.match(app.alerts[0], /No screenshot is on the clipboard/);
+  assert.equal(app.errors.length, 1);
+  assert.equal(JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[2]][0].id, load.id);
+});
 
 test('search finds load numbers, origin/destination cities and states across every customer', () => {
   const first = { ...load, route: '', planningComment: 'Call dispatcher' };

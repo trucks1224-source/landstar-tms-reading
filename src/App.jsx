@@ -2454,6 +2454,25 @@ function getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery) {
     .map(order => ({ customer, order })));
 }
 
+function getPastedImage(event) {
+  if (event.target?.isContentEditable || event.target?.closest?.('input, textarea, select')) return null;
+  const item = Array.from(event.clipboardData?.items || [])
+    .find(item => item.type.startsWith('image/'));
+  return item?.getAsFile() || null;
+}
+
+async function readClipboardImage(clipboard) {
+  if (typeof clipboard?.read !== 'function') {
+    throw new Error('Clipboard access is unavailable. Click the app background and press Ctrl+V, or use Import NTG Loads to choose a saved screenshot.');
+  }
+  const items = await clipboard.read();
+  for (const item of items) {
+    const type = item.types.find(type => type === 'image/png') || item.types.find(type => type.startsWith('image/'));
+    if (type) return item.getType(type);
+  }
+  throw new Error('No screenshot is on the clipboard. Take a snip with Win+Shift+S, then return here and paste it.');
+}
+
 let rateAdvanceTimer = null;
 let pendingAdvance = null;
 const loadAdvanceDelayMs = 5000;
@@ -3469,7 +3488,13 @@ export default function App({ sharing = null } = {}) {
   };
 
   const handleScreenshotImport = async (event, importMode = 'ai') => {
-    const file = event.target.files[0];
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (isImportingScreenshot) return;
+    await importScreenshotFile(file, importMode);
+  };
+
+  const importScreenshotFile = async (file, importMode) => {
     if (!file) return;
     const brokerName = selectedBroker;
     let worker;
@@ -4038,17 +4063,47 @@ export default function App({ sharing = null } = {}) {
       const importWarnings = `${saved ? '' : ' Saving failed; keep this page open and check browser storage.'}${unreadableIds ? ` ${unreadableIds} order number${unreadableIds === 1 ? ' was' : 's were'} unreadable.` : ''}${unreadablePickups ? ` ${unreadablePickups} pickup date/time${unreadablePickups === 1 ? ' was' : 's were'} not recognized; please check those loads.` : ''}${unreadableWeights ? ` ${unreadableWeights} weight${unreadableWeights === 1 ? ' was' : 's were'} not recognized; please check those loads.` : ''}${unreadableRates ? ` ${unreadableRates} DAT rate${unreadableRates === 1 ? ' was' : 's were'} not recognized; enter them manually.` : ''}`.trim();
       if (importWarnings && !saved) alert(importWarnings);
     } catch (error) {
-      console.error(`${importMode === 'dat' ? 'DAT screenshot' : 'Customer screenshot'} import failed:`, error);
-      alert(`${importMode === 'dat' ? 'DAT screenshot' : 'Customer screenshot'} import failed: ${error.message || 'Could not read the image.'}`);
+      const source = importMode === 'ntg' ? 'NTG screenshot' : importMode === 'dat' ? 'DAT screenshot' : 'Customer screenshot';
+      console.error(`${source} import failed:`, error);
+      alert(`${source} import failed: ${error.message || 'Could not read the image.'}`);
     } finally {
       if (worker) await worker.terminate();
       if (imageUrl) URL.revokeObjectURL(imageUrl);
       setIsImportingScreenshot(false);
       setScreenshotImportMode('');
       setScreenshotImportProgress('');
-      event.target.value = '';
     }
   };
+
+  const handlePasteNtgScreenshot = async () => {
+    if (isImportingScreenshot) return;
+    setIsImportingScreenshot(true);
+    setScreenshotImportMode('ntg');
+    setScreenshotImportProgress('Reading clipboard...');
+    try {
+      const image = await readClipboardImage(navigator.clipboard);
+      await importScreenshotFile(image, 'ntg');
+    } catch (error) {
+      console.error('Could not read the NTG screenshot from the clipboard:', error);
+      alert(`Could not paste the NTG screenshot: ${error.message}\n\nIf clipboard access was blocked, click the app background and press Ctrl+V instead.`);
+    } finally {
+      setIsImportingScreenshot(false);
+      setScreenshotImportMode('');
+      setScreenshotImportProgress('');
+    }
+  };
+
+  useEffect(() => {
+    const handlePaste = event => {
+      const image = getPastedImage(event);
+      if (!image) return;
+      event.preventDefault();
+      if (isImportingScreenshot) return;
+      void importScreenshotFile(image, 'ntg');
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [isImportingScreenshot, importScreenshotFile]);
 
   const handleExportToLandstar = async () => {
     setExportErrorIds([]);
@@ -4711,6 +4766,15 @@ export default function App({ sharing = null } = {}) {
                 <span>{isImportingScreenshot && screenshotImportMode === 'ntg' ? screenshotImportProgress : '🚚 Import NTG Loads'}</span>
                 <input type="file" accept="image/*" onChange={event => handleScreenshotImport(event, 'ntg')} className="hidden" disabled={isImportingScreenshot} />
               </label>
+              <button
+                type="button"
+                onClick={handlePasteNtgScreenshot}
+                disabled={isImportingScreenshot}
+                className="bg-amber-600 hover:bg-amber-500 px-2 py-0.5 text-[10px] font-bold rounded text-white cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+                title="Take a snip with Win+Shift+S, then paste it here without saving a file. You can also click the app background and press Ctrl+V. Imports into the selected customer."
+              >
+                Paste NTG Screenshot
+              </button>
               <label className="bg-blue-600 hover:bg-blue-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center" title="Import Excel Spreadsheet">
                 <span>📂 Import Excel</span>
                 <input type="file" accept=".xlsx, .xls, .csv" onChange={handleExcelImport} className="hidden" />

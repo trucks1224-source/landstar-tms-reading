@@ -819,6 +819,11 @@ function editDistance(a, b) {
   return row[b.length];
 }
 
+// DAT region names that are not postal cities, so ZIP data cannot correct OCR misreads.
+const datRegionCityAliases = {
+  NY: { LONGLISLAND: 'LONG ISLAND' }
+};
+
 function correctDatCities(loads, zipData) {
   const normalize = value => String(value || '').toUpperCase().replace(/[^A-Z]/g, '');
   const cache = {};
@@ -852,6 +857,13 @@ function correctDatCities(loads, zipData) {
         if (distance < bestDistance) {
           bestDistance = distance;
           best = { name: city.name };
+        }
+      });
+      Object.entries(datRegionCityAliases[state] || {}).forEach(([key, name]) => {
+        const distance = editDistance(key, joined);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = { name };
         }
       });
     }
@@ -1154,6 +1166,8 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       || textRow?.equipment
       || reliableDominantEquipment
       || 'V';
+    // DAT "FH" means flatbed hotshot; this app reserves FH for flatbed hazmat.
+    const datEquipment = equipment === 'FH' ? 'F' : equipment;
     const weightText = getHeaderCell(line, 'weight').replace(/[Oo]/g, '0').replace(/[IlM1|]bs\b/g, ' lbs');
     const rawWeight = weightText.match(/(\d[\d,.]*)\s*lbs?\b/i)?.[1]
       || weightText.match(/\d[\d,.]*/)?.[0]
@@ -1208,8 +1222,8 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
 
     const order = {
       id: `DAT-${Date.now()}-${index}`,
-      eCode: equipment,
-      team: equipment === 'VT' ? 'true' : 'false',
+      eCode: datEquipment,
+      team: datEquipment === 'VT' ? 'true' : 'false',
       status: 'OPEN',
       tag: 'OPEN',
       route: `${origin.city}, ${origin.state} → ${destination.city}, ${destination.state}`,

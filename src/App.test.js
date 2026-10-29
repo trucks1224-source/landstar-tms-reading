@@ -20,7 +20,7 @@ export {
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
   toExcelDateTime, splitScheduleRange,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
-  parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported,
+  parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
   getPastedImage, readClipboardImage, getImportedLoadSelection
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
@@ -200,9 +200,30 @@ test('DAT screenshots with two-line rate and pickup cells import all rows correc
   assert.equal(loads[0].rateInput, '5200');
   assert.equal(loads[0].pickupTime, '10/29/2026 0800 - 10/30/2026 1600');
   assert.equal(loads[1].rateInput, '4500');
+  assert.equal(loads[1].eCode, 'F');
+  assert.equal(policy.isHazmatLoad(loads[1]), false);
+  assert.equal(policy.getLoadCommodity(loads[1]), 'CGAPP');
   assert.equal(loads[3].origCity, 'FT LAUDERDALE');
   assert.equal(loads[3].eCode, 'RG');
   assert.equal(loads[3].rateInput, '3000');
+});
+
+test('DAT flatbed hotshot FH imports as flatbed, while FH stays hazmat elsewhere', () => {
+  assert.equal(policy.getLandstarCommodity('FH'), 'HAZMAT');
+  assert.equal(policy.getLoadCommodity({ eCode: 'FH', hazmat: 'true' }), 'HAZMAT');
+  assert.equal(policy.getLoadCommodity({ eCode: 'F' }), 'CGAPP');
+});
+
+test('DAT city correction fixes Long Island region OCR misreads', () => {
+  for (const misread of ['LONGLISLAND', 'LONGISLAND', 'LONG SLAND', 'LONG ISLAND']) {
+    const loads = [{ origCity: 'AMELIA', origSt: 'OH', destCity: misread, destSt: 'NY', route: '' }];
+    policy.correctDatCities(loads, zipcodes);
+    assert.equal(loads[0].destCity, 'LONG ISLAND');
+    assert.equal(loads[0].route, 'AMELIA, OH → LONG ISLAND, NY');
+  }
+  const other = [{ origCity: 'VISALIA', origSt: 'CA', destCity: 'MURRAY', destSt: 'KY', route: '' }];
+  policy.correctDatCities(other, zipcodes);
+  assert.equal(other[0].destCity, 'MURRAY');
 });
 
 test('Idaho to Florida lane always pays the fixed $11,000 rate', () => {

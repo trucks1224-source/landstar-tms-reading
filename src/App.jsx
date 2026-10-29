@@ -1780,12 +1780,12 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
 
 function toExcelDateTime(value, fallbackDateValue = '') {
   const dateTime = String(value || '').replace(/[•·]/g, ' ').replace(/\s+/g, ' ').trim();
-  const fullMatch = dateTime.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,4})(?::(\d{2}))?\s*(AM|PM)?$/i);
+  const fullMatch = dateTime.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,4})(?::(\d{2}))?\s*(AM|PM)?$/i);
   if (fullMatch) {
     const [, monthText, dayText, yearText, hourText, minuteText, meridiem] = fullMatch;
     const month = Number(monthText);
     const day = Number(dayText);
-    const year = Number(yearText);
+    const year = yearText.length === 2 ? 2000 + Number(yearText) : Number(yearText);
     let hour;
     let minute;
     if (minuteText !== undefined) {
@@ -1809,7 +1809,7 @@ function toExcelDateTime(value, fallbackDateValue = '') {
   }
 
   const timeMatch = dateTime.match(/^(\d{1,4})(?::(\d{2}))?\s*(AM|PM)?$/i);
-  const fallbackMatch = String(fallbackDateValue || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\b/);
+  const fallbackMatch = String(fallbackDateValue || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/);
   if (!timeMatch || !fallbackMatch) return null;
   const [, timeText, minuteText, meridiem] = timeMatch;
   let hour;
@@ -1832,10 +1832,20 @@ function toExcelDateTime(value, fallbackDateValue = '') {
   const [, monthText, dayText, yearText] = fallbackMatch;
   const month = Number(monthText);
   const day = Number(dayText);
-  const year = Number(yearText);
+  const year = yearText.length === 2 ? 2000 + Number(yearText) : Number(yearText);
   const date = new Date(Date.UTC(year, month - 1, day, hour, minute));
   if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
   return (date.getTime() - Date.UTC(1899, 11, 30)) / 86400000;
+}
+
+// Splits a schedule into start/end parts, handling ranges with a full date on both
+// sides even when the dash has no spaces (10/29/2026 09:00-10/30/2026 16:00).
+function splitScheduleRange(value) {
+  const text = String(value || '');
+  const spaced = Array.from(
+    text.matchAll(/(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):?(\d{2})/g)
+  ).map(match => `${match[1]}/${match[2]}/${match[3].length === 2 ? `20${match[3]}` : match[3]} ${match[4]}${match[5]}`);
+  return spaced.length >= 2 ? spaced : text.split(' - ');
 }
 
 function normalizeMilesValue(value) {
@@ -4334,13 +4344,8 @@ export default function App({ sharing = null } = {}) {
           `${ord.id}: ${originZipWasResolved ? `${originCity}, ${originState} ${originZip}` : ''}${originZipWasResolved && destinationZipWasResolved ? ' → ' : ''}${destinationZipWasResolved ? `${destinationCity}, ${destinationState} ${destinationZip}` : ''}`
         );
       }
-      const puParts = (ord.pickupTime || '').split(' - ');
-      const spacedDelivery = Array.from(
-        String(ord.deliveryTime || '').matchAll(/(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):?(\d{2})/g)
-      ).map(match => `${match[1]}/${match[2]}/${match[3].length === 2 ? `20${match[3]}` : match[3]} ${match[4]}${match[5]}`);
-      const delParts = spacedDelivery.length >= 2
-        ? spacedDelivery
-        : (ord.deliveryTime || '').split(' - ');
+      const puParts = splitScheduleRange(ord.pickupTime);
+      const delParts = splitScheduleRange(ord.deliveryTime);
       const pickupFrom = toExcelDateTime(puParts[0]);
       const pickupThru = toExcelDateTime(puParts[1] || puParts[0], puParts[0]);
       const deliveryFrom = toExcelDateTime(delParts[0]);

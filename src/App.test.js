@@ -18,6 +18,7 @@ export {
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
+  toExcelDateTime, splitScheduleRange,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported,
   getPastedImage, readClipboardImage, getImportedLoadSelection
@@ -1026,6 +1027,25 @@ test('straight trucks import as D-LG,D-ST and export to Landstar as D-LG with D-
   assert.equal(policy.getLandstarEquipment2({ eCode: 'V' }), '');
   assert.equal(policy.getLandstarEquipment2({ eCode: 'F,SD' }), 'STEP');
   assert.equal(policy.getLandstarEquipment2({ eCode: 'VM' }), '53VN');
+});
+
+test('pickup windows spanning two days parse for Landstar export', () => {
+  const twoDay = [...policy.splitScheduleRange('10/29/2026 09:00-10/30/2026 16:00')];
+  assert.deepEqual(twoDay, ['10/29/2026 0900', '10/30/2026 1600']);
+  const pickupFrom = policy.toExcelDateTime(twoDay[0]);
+  const pickupThru = policy.toExcelDateTime(twoDay[1], twoDay[0]);
+  assert.notEqual(pickupFrom, null);
+  assert.notEqual(pickupThru, null);
+  assert.ok(pickupThru > pickupFrom);
+
+  const spaced = [...policy.splitScheduleRange('10/29/2026 0700 - 10/30/2026 16:00')];
+  assert.deepEqual(spaced, ['10/29/2026 0700', '10/30/2026 1600']);
+
+  const sameDay = [...policy.splitScheduleRange('10/27/2026 0800 - 1200')];
+  assert.deepEqual(sameDay, ['10/27/2026 0800', '1200']);
+  assert.notEqual(policy.toExcelDateTime(sameDay[1], sameDay[0]), null);
+
+  assert.notEqual(policy.toExcelDateTime('11/2/26 8:00'), null);
 });
 
 test('NTG load number readings are majority voted digit by digit', () => {

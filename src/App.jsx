@@ -4084,10 +4084,13 @@ export default function App({ sharing = null } = {}) {
       const extraCities = { 'HAMBERG|ND': { zip: '58145', city: 'Hamberg', state: 'ND' } };
       const extraKey = `${String(city || '').trim().toUpperCase()}|${String(state || '').trim().toUpperCase()}`;
       if (extraCities[extraKey]) return extraCities[extraKey];
-      const cityName = String(city || '').trim()
-        .replace(/^MT\.?\s+/i, 'Mount ').replace(/^ST\.?\s+/i, 'Saint ').replace(/^FT\.?\s+/i, 'Fort ');
+      const rawCity = String(city || '').trim();
+      const cityName = rawCity
+        .replace(/\bMT\.?\s+/gi, 'Mount ').replace(/\bST\.?\s+/gi, 'Saint ').replace(/\bFT\.?\s+/gi, 'Fort ');
       const stateCode = String(state || '').trim();
-      const exactMatches = zipData.lookupByName?.(cityName, stateCode) || [];
+      const exactMatches = [cityName, rawCity, rawCity.replace(/\./g, '')]
+        .map(name => zipData.lookupByName?.(name, stateCode) || [])
+        .find(matches => matches.length) || [];
       const prefixCounts = exactMatches.reduce((counts, location) => {
         const prefix = location.zip.slice(0, 3);
         counts[prefix] = (counts[prefix] || 0) + 1;

@@ -4883,10 +4883,6 @@ export default function App({ sharing = null } = {}) {
                 <span>{isImportingScreenshot && screenshotImportMode === 'dat' ? screenshotImportProgress : '📷 Import DAT Loads'}</span>
                 <input type="file" accept="image/*" onChange={event => handleScreenshotImport(event, 'dat')} className="hidden" disabled={isImportingScreenshot} />
               </label>
-              <label className={`bg-amber-600 hover:bg-amber-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} title="Import loads from an NTG load-board screenshot">
-                <span>{isImportingScreenshot && screenshotImportMode === 'ntg' ? screenshotImportProgress : '🚚 Import NTG Loads'}</span>
-                <input type="file" accept="image/*" onChange={event => handleScreenshotImport(event, 'ntg')} className="hidden" disabled={isImportingScreenshot} />
-              </label>
               <button
                 type="button"
                 onClick={handlePasteNtgScreenshot}

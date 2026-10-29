@@ -2452,6 +2452,8 @@ function getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery) {
     .map(order => ({ customer, order })));
 }
 
+let rateAdvanceTimer = null;
+
 export default function App({ sharing = null } = {}) {
   const [brokers, setBrokers] = useState(() => {
     try {
@@ -4595,9 +4597,27 @@ export default function App({ sharing = null } = {}) {
     setSelectedOrder(order);
   };
 
+  const handleRateChange = value => {
+    handleInputChange('rateInput', value);
+    if (typeof clearTimeout === 'function') clearTimeout(rateAdvanceTimer);
+    const rate = Number(String(value || '').replace(/[$,]/g, ''));
+    // Look up the next load now, before the rate filter can hide this one.
+    const currentIndex = filteredOrders.findIndex(order => order.id === selectedOrder?.id);
+    const nextOrder = currentIndex >= 0 ? filteredOrders[currentIndex + 1] : null;
+    if (nextOrder && rate > 0 && Number.isFinite(rate) && typeof setTimeout === 'function') {
+      rateAdvanceTimer = setTimeout(() => {
+        setSelectedOrder(nextOrder);
+        if (typeof document !== 'undefined') {
+          document.getElementById(`load-card-${nextOrder.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }, 1500);
+    }
+  };
+
   const handleRateKeyDown = event => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
+    if (typeof clearTimeout === 'function') clearTimeout(rateAdvanceTimer);
     const rate = Number(String(selectedOrder?.rateInput || '').replace(/[$,]/g, ''));
     if (!(rate > 0) || !Number.isFinite(rate)) return;
 
@@ -4982,12 +5002,15 @@ export default function App({ sharing = null } = {}) {
             visibleOrderEntries.map(({ customer, order: ord }) => (
               <div
                 key={JSON.stringify([customer, ord.id])}
+                id={`load-card-${ord.id}`}
                 onClick={() => handleSelectSearchResult(customer, ord)}
-                className={`tms-load-card p-3 rounded-lg cursor-pointer border transition-all flex items-start space-x-2.5 ${
+                onDoubleClick={(e) => { if (customer === selectedBroker) handleToggleSelect(ord.id, e); }}
+                title="Double-click to select or unselect"
+                className={`tms-load-card p-3 rounded-lg cursor-pointer select-none border transition-all flex items-start space-x-2.5 ${
                   customer === selectedBroker && exportErrorIds.includes(String(ord.id))
                     ? 'bg-red-950/50 border-red-500 shadow-md'
                     : customer === selectedBroker && selectedOrder?.id === ord.id
-                      ? `bg-[#1c2541] ${isHazmatLoad(ord) ? 'border-orange-400 border-l-4' : 'border-blue-500'} shadow-md`
+                      ? `bg-[#2b3d73] border-yellow-300 border-2 ${isHazmatLoad(ord) ? 'border-l-8 border-l-orange-400' : ''} ring-4 ring-yellow-300/70 shadow-lg shadow-yellow-400/30`
                       : isHazmatLoad(ord)
                         ? 'bg-orange-950/40 border-orange-500/70 border-l-4 hover:bg-orange-900/40'
                         : 'bg-[#161f36]/60 border-transparent hover:bg-[#1c2541]/50'
@@ -4999,6 +5022,7 @@ export default function App({ sharing = null } = {}) {
                   disabled={customer !== selectedBroker}
                   title={customer !== selectedBroker ? 'Open this load to select its customer first' : 'Select load'}
                   onChange={(e) => handleToggleSelect(ord.id, e)}
+                  onDoubleClick={(e) => e.stopPropagation()}
                   className="mt-1 cursor-pointer accent-blue-600"
                 />
                 <div className="flex-1 min-w-0">
@@ -5394,7 +5418,7 @@ export default function App({ sharing = null } = {}) {
                       <input
                         type="text"
                         value={['user-entered', 'dat-screenshot', 'dat-api'].includes(selectedOrder.rateSource) ? selectedOrder.rateInput || '' : ''}
-                        onChange={(e) => handleInputChange('rateInput', e.target.value)}
+                        onChange={(e) => handleRateChange(e.target.value)}
                         onKeyDown={handleRateKeyDown}
                         placeholder="Enter DAT quote"
                         className="flex-1 basis-0 min-w-0 h-12 bg-[#0b132b] border-2 border-emerald-500 rounded px-3 text-xl text-white font-mono font-extrabold"
@@ -5417,7 +5441,7 @@ export default function App({ sharing = null } = {}) {
                         );
                       })()}
                     </div>
-                    <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. Press Enter to go to the next load.</p>
+                    <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. After you type a rate, it moves to the next load automatically (or press Enter).</p>
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-[1fr_8rem] gap-4">

@@ -825,6 +825,21 @@ test('Copy Selected button counts checked loads', () => {
   assert.match([copyButton().props.children].flat(Infinity).join(''), /\(2\)/);
 });
 
+test('double-clicking a load card selects and unselects it', () => {
+  const app = createAppHarness(customers[0], [{ ...load, id: '1' }, { ...load, id: '2' }]);
+  const card = () => app.find(node => node.props?.id === 'load-card-2');
+  const checkbox = () => app.find(node => node.type === 'input' && node.props.type === 'checkbox'
+    && node.props.title === 'Select load' && node.props.checked !== undefined
+    && card().props.children.flat(Infinity).includes(node));
+  const event = { stopPropagation() {} };
+  card().props.onDoubleClick(event);
+  app.render();
+  assert.equal(checkbox().props.checked, true);
+  card().props.onDoubleClick(event);
+  app.render();
+  assert.equal(checkbox().props.checked, false);
+});
+
 test('Para screenshot import keeps loads moved to ENT by hand', () => {
   const existing = [
     { ...load, id: '2270001', status: 'ENT', tag: 'ENT' },

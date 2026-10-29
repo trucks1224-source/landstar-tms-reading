@@ -4142,8 +4142,9 @@ export default function App({ sharing = null } = {}) {
       const destinationZip = destinationCountry === 'CA'
         ? enteredDestinationZip
         : destinationLocation?.zip || (enteredDestinationLocation ? enteredDestinationZip : '');
-      const originCity = getLandstarCity(ord.origCity, originLocation);
-      const destinationCity = getLandstarCity(ord.destCity, destinationLocation);
+      // A ZIP found from the city name means the postal spelling matched, so send that spelling to Landstar.
+      const originCity = !enteredOriginLocation && originLocation?.city ? originLocation.city : getLandstarCity(ord.origCity, originLocation);
+      const destinationCity = !enteredDestinationLocation && destinationLocation?.city ? destinationLocation.city : getLandstarCity(ord.destCity, destinationLocation);
       const originStateMatchesZip = !ord.origSt || !originLocation || originState === originLocation.state;
       const destinationStateMatchesZip = !ord.destSt || !destinationLocation || destinationState === destinationLocation.state;
       const originZipWasResolved = !enteredOriginLocation && Boolean(originLocation);

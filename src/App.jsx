@@ -4087,7 +4087,10 @@ export default function App({ sharing = null } = {}) {
     const zipData = zipModule.default || zipModule;
     const lookupZip = zip => zipData.codes?.[zip] || null;
     const lookupCityState = (city, state) => {
-      const extraCities = { 'HAMBERG|ND': { zip: '58145', city: 'Hamberg', state: 'ND' } };
+      const extraCities = {
+        'HAMBERG|ND': { zip: '58145', city: 'Hamberg', state: 'ND' },
+        'ROSEMONT|IL': { zip: '60018', city: 'Rosemont', state: 'IL' }
+      };
       const extraKey = `${String(city || '').trim().toUpperCase()}|${String(state || '').trim().toUpperCase()}`;
       if (extraCities[extraKey]) return extraCities[extraKey];
       const rawCity = String(city || '').trim();

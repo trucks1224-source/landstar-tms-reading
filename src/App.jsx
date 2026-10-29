@@ -1895,6 +1895,12 @@ function normalizeCustomerName(name) {
   return String(name || '').trim();
 }
 
+function getImportedLoadSelection(customer, importedLoads) {
+  return normalizeCustomerName(customer) === ntgCustomerName
+    ? Array.from(new Set(importedLoads.map(load => load.id)))
+    : [];
+}
+
 function isRxoCustomer(name) {
   const normalized = normalizeCustomerName(name);
   return normalized === rxoCustomerName || normalized === rxoPayerCustomerName;
@@ -3239,7 +3245,7 @@ export default function App({ sharing = null } = {}) {
       const saved = persistAppData(brokers, nextOrders);
       setCustomerOrdersMap(nextOrders);
       setSelectedOrder(finalLoads.find(load => load.id === resolvedLoads[0].id) || finalLoads[0]);
-      setSelectedIds([]);
+      setSelectedIds(getImportedLoadSelection(selectedBroker, replacement?.processedLoads || resolvedLoads));
       setFilter('OPEN');
       
       alert(
@@ -3459,7 +3465,7 @@ export default function App({ sharing = null } = {}) {
         const saved = persistAppData(brokers, nextOrders);
         setCustomerOrdersMap(nextOrders);
         setSelectedOrder(finalLoads.find(load => load.id === resolvedImportedLoads[0].id) || finalLoads[0]);
-        setSelectedIds([]);
+        setSelectedIds(getImportedLoadSelection(selectedBroker, replacement?.processedLoads || resolvedImportedLoads));
         setFilter('OPEN');
 
         const duplicatesRemoved = replacement ? 0 : duplicateImportCount + duplicateExistingCount;
@@ -4023,7 +4029,7 @@ export default function App({ sharing = null } = {}) {
       const saved = persistAppData(brokers, nextOrders);
       setCustomerOrdersMap(nextOrders);
       setSelectedOrder(replacement.processedLoads[0]);
-      setSelectedIds([]);
+      setSelectedIds(getImportedLoadSelection(brokerName, replacement.processedLoads));
       setFilter(replacement.usesScreenshotStatus ? 'ALL' : 'OPEN');
 
       const unreadableIds = isChImport ? 0 : importedLoads.filter(order => order.notes).length;

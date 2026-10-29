@@ -20,7 +20,7 @@ export {
   getLandstarEquipmentCode, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, removeExpiredExportedLoads, markLoadsExported,
-  getPastedImage, readClipboardImage
+  getPastedImage, readClipboardImage, getImportedLoadSelection
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -1077,6 +1077,43 @@ test('Nolan spreadsheet re-import saves matching ENT loads as OPEN and retains a
   }
   assert.equal(saved['Unrelated customer'][0].status, 'ENT');
   assert.equal(app.errors.length, 0);
+});
+
+test('Nolan import selection uses processed load IDs and supports the NTG alias', () => {
+  const processed = [{ id: 'imported' }, { id: 'imported-ALTA' }, { id: 'imported' }];
+  for (const customer of [customers[2], 'NTG 965974 - ATZ H']) {
+    assert.deepEqual(Array.from(policy.getImportedLoadSelection(customer, processed)), ['imported', 'imported-ALTA']);
+  }
+  assert.deepEqual(Array.from(policy.getImportedLoadSelection(customers[0], processed)), []);
+  assert.deepEqual(Array.from(policy.getImportedLoadSelection(customers[2], [])), []);
+});
+
+test('Nolan Excel imports check only imported loads while other customers keep manual selection', async () => {
+  for (const customer of [customers[2], customers[0]]) {
+    const app = createAppHarness(customer, [
+      load,
+      { ...load, id: '999999', destCity: 'Boston', status: 'ENT', tag: 'ENT',
+        landstarExportedAt: new Date().toISOString() }
+    ]);
+    await app.importExcel([
+      ['Load ID', 'Equipment', 'Origin City', 'Origin State', 'Origin Zip', 'Destination City', 'Destination State', 'Destination Zip'],
+      [load.id, 'V', 'Chicago', 'IL', '60601', 'Dallas', 'TX', '75201'],
+      ['222222', 'V', 'Chicago', 'IL', '60601', 'Austin', 'TX', '78701']
+    ]);
+    app.render();
+    assert.equal(JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customer].length, 3);
+    for (const id of [load.id, '222222']) {
+      const card = app.find(node => node.props?.id === `load-card-${id}`);
+      const checkbox = card.props.children.flat(Infinity).find(node => node?.type === 'input'
+        && node.props.type === 'checkbox');
+      assert.equal(checkbox.props.checked, customer === customers[2], `${customer}: ${id}`);
+    }
+    const copyButton = app.find(node => node.type === 'button'
+      && String(node.props.children.flat(Infinity).join('')).startsWith('📋 Copy Selected'));
+    assert.equal(copyButton.props.disabled, customer !== customers[2]);
+    if (customer === customers[2]) assert.match(copyButton.props.children.flat(Infinity).join(''), /\(2\)/);
+    assert.equal(app.errors.length, 0);
+  }
 });
 
 test('Nolan customer screenshot reopens existing ENT numbers even when their cells are red', () => {

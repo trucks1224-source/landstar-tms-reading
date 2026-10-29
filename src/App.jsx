@@ -2479,10 +2479,6 @@ async function readClipboardImage(clipboard) {
   throw new Error('No screenshot is on the clipboard. Take a snip with Win+Shift+S, then return here and paste it.');
 }
 
-let rateAdvanceTimer = null;
-let pendingAdvance = null;
-const loadAdvanceDelayMs = 5000;
-
 export default function App({ sharing = null } = {}) {
   const [brokers, setBrokers] = useState(() => {
     try {
@@ -4662,48 +4658,16 @@ export default function App({ sharing = null } = {}) {
       setSelectedIds([]);
       setExportErrorIds([]);
     }
-    if (typeof clearTimeout === 'function') clearTimeout(rateAdvanceTimer);
-    pendingAdvance = null;
     setSelectedOrder(order);
   };
 
-  // Any field typed on a load moves to the next load once typing stops for a moment.
   const handleFieldChange = (field, value) => {
     handleInputChange(field, value);
-    if (typeof clearTimeout === 'function') clearTimeout(rateAdvanceTimer);
-    pendingAdvance = null;
-    const text = String(value ?? '').trim();
-    const rate = Number(text.replace(/[$,]/g, ''));
-    const hasValue = field === 'rateInput' ? rate > 0 && Number.isFinite(rate) : Boolean(text);
-    // Look up the next load now, before the rate filter can hide this one.
-    const currentIndex = filteredOrders.findIndex(order => order.id === selectedOrder?.id);
-    const nextOrder = currentIndex >= 0 ? filteredOrders[currentIndex + 1] : null;
-    if (nextOrder && hasValue && typeof setTimeout === 'function') {
-      pendingAdvance = () => {
-        pendingAdvance = null;
-        setSelectedOrder(nextOrder);
-        if (typeof document !== 'undefined') {
-          document.getElementById(`load-card-${nextOrder.id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        }
-      };
-      rateAdvanceTimer = setTimeout(pendingAdvance, loadAdvanceDelayMs);
-    } else {
-      pendingAdvance = null;
-    }
-  };
-
-  // Clicking into another box on the same load restarts the wait so it doesn't jump mid-edit.
-  const handleDetailFocus = () => {
-    if (!pendingAdvance || typeof setTimeout !== 'function') return;
-    clearTimeout(rateAdvanceTimer);
-    rateAdvanceTimer = setTimeout(pendingAdvance, loadAdvanceDelayMs);
   };
 
   const handleRateKeyDown = event => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
-    if (typeof clearTimeout === 'function') clearTimeout(rateAdvanceTimer);
-    pendingAdvance = null;
     const rate = Number(String(selectedOrder?.rateInput || '').replace(/[$,]/g, ''));
     if (!(rate > 0) || !Number.isFinite(rate)) return;
 
@@ -5342,7 +5306,7 @@ export default function App({ sharing = null } = {}) {
           );
         })()}
         {selectedOrder ? (
-          <div onFocusCapture={handleDetailFocus}>
+          <div>
             <div className="tms-action-bar flex items-center justify-between bg-[#161f36] px-4 py-3 rounded-lg mb-6 border border-[#1c2541]">
               <div className="flex items-center space-x-3">
                 <span className="text-xs font-bold text-gray-400">MOVE TO:</span>

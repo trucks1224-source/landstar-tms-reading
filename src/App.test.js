@@ -907,21 +907,14 @@ test('double-clicking a load card selects and unselects it', () => {
   assert.equal(checkbox().props.checked, false);
 });
 
-test('typing any detail on a load moves to the next load after a pause', () => {
-  let pending = null;
-  const timers = { setTimeout: fn => { pending = fn; return 1; }, clearTimeout: () => { pending = null; } };
-  const app = createAppHarness(customers[0], [{ ...load, id: '1' }, { ...load, id: '2' }], null, {}, timers);
+test('typing a detail on a load stays on that load', () => {
+  const app = createAppHarness(customers[0], [{ ...load, id: '1' }, { ...load, id: '2' }]);
   const driver = () => app.find(node => node.props?.id === 'assignment-driver');
   driver().props.onChange({ target: { value: 'Alex' } });
   app.render();
   assert.equal(driver().props.value, 'Alex');
-  assert.equal(typeof pending, 'function');
-  pending();
-  app.render();
-  assert.equal(driver().props.value, '');
-  assert.equal(app.find(node => node.props?.id === 'load-card-2').props.className.includes('ring-yellow-300'), true);
-  driver().props.onChange({ target: { value: '' } });
-  assert.equal(pending, null);
+  assert.equal(app.find(node => node.props?.id === 'load-card-1').props.className.includes('ring-yellow-300'), true);
+  assert.equal(app.find(node => node.props?.id === 'load-card-2').props.className.includes('ring-yellow-300'), false);
 });
 
 test('Para screenshot import keeps loads moved to ENT by hand', () => {

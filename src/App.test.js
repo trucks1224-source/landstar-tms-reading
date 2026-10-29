@@ -918,6 +918,8 @@ test('flatbed loads map to F,SD and export as FLAT', () => {
   assert.equal(policy.getLandstarEquipmentCode('F,SD'), 'FLAT');
   assert.equal(policy.getLandstarEquipmentCode('FH'), 'FLAT');
   assert.equal(policy.getLandstarEquipmentCode('D-LG'), 'D-LG');
+  assert.equal(policy.getLandstarEquipmentCode('FLCS'), 'FLCS');
+  assert.equal(policy.getEquipmentDescription('FLCS'), 'FLCS');
   assert.equal(policy.isHazmatLoad({ eCode: 'FH' }), true);
   assert.equal(policy.getLoadCommodity({ eCode: 'FH' }), 'HAZMAT');
   assert.match(policy.getEquipmentDescription('F,SD'), /STEP/);

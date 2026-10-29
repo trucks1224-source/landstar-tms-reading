@@ -523,7 +523,7 @@ function parseNtgScreenshotLines(lines, imageWidth, imageHeight, options = {}) {
     const shortDate = value => value.replace(/^(\d{2})\/(\d{2})\/\d{4}\s+(\d{4}).*$/, '$1/$2 $3');
     return {
       id: idWord ? idWord.text : `NTG-${Date.now()}-${index}`,
-      eCode: /str\w{0,3}ght\s*tr\w*/i.test(equipmentText) ? 'D-LG' : /sprinter|box\s*truck/i.test(equipmentText) ? 'D-LG,D-ST' : isFlatbed ? (isHazmat ? 'FH' : 'F,SD') : isHazmat ? (isReefer && !/\bvan\b/i.test(equipmentText) ? 'RZ' : 'VZ') : isReefer ? (/\bvan\b/i.test(equipmentText) ? 'VR' : 'R') : 'V',
+      eCode: /str\w{0,3}ght\s*tr\w*/i.test(equipmentText) ? 'D-LG' : /sprinter|box\s*truck/i.test(equipmentText) ? 'D-LG,D-ST' : /c\w{1,3}est\w{0,2}ga/i.test(equipmentText) ? 'FLCS' : isFlatbed ? (isHazmat ? 'FH' : 'F,SD') : isHazmat ? (isReefer && !/\bvan\b/i.test(equipmentText) ? 'RZ' : 'VZ') : isReefer ? (/\bvan\b/i.test(equipmentText) ? 'VR' : 'R') : 'V',
       ...(isHazmat ? { hazmat: 'true' } : {}),
       ...(tags.some(tag => /tanker/i.test(tag)) ? { tanker: 'true' } : {}),
       status: 'OPEN',
@@ -1164,6 +1164,7 @@ function getEquipmentDescription(eCode) {
     case 'F': return '48FL, 53FL, FLAT';
     case 'F,SD': return '48FL, 53FL, FLAT, STEP:SD';
     case 'FH': return '48FL, 53FL, FLAT, STEP:SD';
+    case 'FLCS': return 'FLCS';
     case 'SD': return 'STEP:SD';
     case 'D-LG': return 'D-LG';
     case 'D-LG,D-ST': return 'D-LG, D-ST';
@@ -1788,6 +1789,7 @@ function getLandstarEquipmentCode(value) {
     F: 'FLAT',
     'F,SD': 'FLAT',
     FH: 'FLAT',
+    FLCS: 'FLCS',
     SD: 'STEP'
   };
   if (equipmentCodes[code]) return equipmentCodes[code];

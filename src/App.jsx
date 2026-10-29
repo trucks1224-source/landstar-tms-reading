@@ -4202,23 +4202,25 @@ export default function App({ sharing = null } = {}) {
     }
   };
 
-  const handlePasteNtgScreenshot = async () => {
+  const handlePasteScreenshot = async (importMode) => {
     if (isImportingScreenshot) return;
     setIsImportingScreenshot(true);
-    setScreenshotImportMode('ntg');
+    setScreenshotImportMode(importMode);
     setScreenshotImportProgress('Reading clipboard...');
     try {
       const image = await readClipboardImage(navigator.clipboard);
-      await importScreenshotFile(image, 'ntg');
+      await importScreenshotFile(image, importMode);
     } catch (error) {
-      console.error('Could not read the NTG screenshot from the clipboard:', error);
-      alert(`Could not paste the NTG screenshot: ${error.message}\n\nIf clipboard access was blocked, click the app background and press Ctrl+V instead.`);
+      console.error(`Could not read the ${importMode.toUpperCase()} screenshot from the clipboard:`, error);
+      alert(`Could not paste the ${importMode.toUpperCase()} screenshot: ${error.message}\n\nIf clipboard access was blocked, click the app background and press Ctrl+V instead.`);
     } finally {
       setIsImportingScreenshot(false);
       setScreenshotImportMode('');
       setScreenshotImportProgress('');
     }
   };
+
+  const handlePasteNtgScreenshot = () => handlePasteScreenshot('ntg');
 
   useEffect(() => {
     const handlePaste = event => {
@@ -4893,6 +4895,15 @@ export default function App({ sharing = null } = {}) {
                 title="Take a snip with Win+Shift+S, then paste it here without saving a file. You can also click the app background and press Ctrl+V. Imports into the selected customer."
               >
                 Paste NTG Screenshot
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePasteScreenshot('dat')}
+                disabled={isImportingScreenshot}
+                className="bg-indigo-600 hover:bg-indigo-500 px-2 py-0.5 text-[10px] font-bold rounded text-white cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+                title="Take a snip of the DAT load board with Win+Shift+S, then paste it here without saving a file. Imports into the selected customer."
+              >
+                Paste DAT Screenshot
               </button>
               <label className="bg-blue-600 hover:bg-blue-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center" title="Import Excel Spreadsheet">
                 <span>📂 Import Excel</span>

@@ -679,7 +679,7 @@ test('repeating a full-list import is idempotent and reopens existing ON HOLD nu
   assert.equal(second.loads[0].status, 'OPEN');
 });
 
-function createAppHarness(customer, existing, supabase = null, savedRates = {}) {
+function createAppHarness(customer, existing, supabase = null, savedRates = {}, extraContext = {}) {
   const storage = new Map([
     ['landstar_brokers', JSON.stringify([customer])],
     ['landstar_laneRates', JSON.stringify(savedRates)],
@@ -729,7 +729,8 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}) 
       if (name === 'xlsx') return XLSX;
       if (name === './lib/supabase') return { supabase };
       throw new Error(`Unexpected dependency: ${name}`);
-    }
+    },
+    ...extraContext
   };
   vm.runInNewContext(code, appContext);
   let tree = appContext.module.exports.default();
@@ -838,6 +839,23 @@ test('double-clicking a load card selects and unselects it', () => {
   card().props.onDoubleClick(event);
   app.render();
   assert.equal(checkbox().props.checked, false);
+});
+
+test('typing any detail on a load moves to the next load after a pause', () => {
+  let pending = null;
+  const timers = { setTimeout: fn => { pending = fn; return 1; }, clearTimeout: () => { pending = null; } };
+  const app = createAppHarness(customers[0], [{ ...load, id: '1' }, { ...load, id: '2' }], null, {}, timers);
+  const driver = () => app.find(node => node.props?.id === 'assignment-driver');
+  driver().props.onChange({ target: { value: 'Alex' } });
+  app.render();
+  assert.equal(driver().props.value, 'Alex');
+  assert.equal(typeof pending, 'function');
+  pending();
+  app.render();
+  assert.equal(driver().props.value, '');
+  assert.equal(app.find(node => node.props?.id === 'load-card-2').props.className.includes('ring-yellow-300'), true);
+  driver().props.onChange({ target: { value: '' } });
+  assert.equal(pending, null);
 });
 
 test('Para screenshot import keeps loads moved to ENT by hand', () => {

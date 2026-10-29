@@ -2977,7 +2977,7 @@ export default function App({ sharing = null } = {}) {
         <input
           type="text"
           value={selectedOrder[field] || ''}
-          onChange={(e) => handleInputChange(field, e.target.value)}
+          onChange={(e) => handleFieldChange(field, e.target.value)}
           className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-xs text-white"
         />
         <button
@@ -4594,17 +4594,21 @@ export default function App({ sharing = null } = {}) {
       setSelectedIds([]);
       setExportErrorIds([]);
     }
+    if (typeof clearTimeout === 'function') clearTimeout(rateAdvanceTimer);
     setSelectedOrder(order);
   };
 
-  const handleRateChange = value => {
-    handleInputChange('rateInput', value);
+  // Any field typed on a load moves to the next load once typing stops for a moment.
+  const handleFieldChange = (field, value) => {
+    handleInputChange(field, value);
     if (typeof clearTimeout === 'function') clearTimeout(rateAdvanceTimer);
-    const rate = Number(String(value || '').replace(/[$,]/g, ''));
+    const text = String(value ?? '').trim();
+    const rate = Number(text.replace(/[$,]/g, ''));
+    const hasValue = field === 'rateInput' ? rate > 0 && Number.isFinite(rate) : Boolean(text);
     // Look up the next load now, before the rate filter can hide this one.
     const currentIndex = filteredOrders.findIndex(order => order.id === selectedOrder?.id);
     const nextOrder = currentIndex >= 0 ? filteredOrders[currentIndex + 1] : null;
-    if (nextOrder && rate > 0 && Number.isFinite(rate) && typeof setTimeout === 'function') {
+    if (nextOrder && hasValue && typeof setTimeout === 'function') {
       rateAdvanceTimer = setTimeout(() => {
         setSelectedOrder(nextOrder);
         if (typeof document !== 'undefined') {
@@ -5287,7 +5291,7 @@ export default function App({ sharing = null } = {}) {
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">ORDER #</label>
                   <div className="flex gap-1">
-                    <input type="text" value={selectedOrder.id} onChange={(e) => handleInputChange('id', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white outline-none" />
+                    <input type="text" value={selectedOrder.id} onChange={(e) => handleFieldChange('id', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white outline-none" />
                     <button
                       type="button"
                       onClick={() => copyToClipboard(selectedOrder.id, 'Order #')}
@@ -5310,7 +5314,7 @@ export default function App({ sharing = null } = {}) {
                       <label className="text-xs text-gray-400 block mt-2 mb-1">SOURCE EQUIPMENT CODE (VE = VAN / CHEM)</label>
                     </>
                   )}
-                  <input type="text" value={isTeamEquipment(selectedOrder.eCode) ? 'V' : selectedOrder.eCode} onChange={(e) => handleInputChange('eCode', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white outline-none" />
+                  <input type="text" value={isTeamEquipment(selectedOrder.eCode) ? 'V' : selectedOrder.eCode} onChange={(e) => handleFieldChange('eCode', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white outline-none" />
                   <div className="text-[11px] text-emerald-400 mt-1 font-mono">{getEquipmentDescription(selectedOrder.eCode)}</div>
                 </div>
               </div>
@@ -5318,7 +5322,7 @@ export default function App({ sharing = null } = {}) {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">Brokerable (true / false)</label>
-                  <input type="text" value={selectedOrder.brokerable || 'false'} onChange={(e) => handleInputChange('brokerable', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono" placeholder="false" />
+                  <input type="text" value={selectedOrder.brokerable || 'false'} onChange={(e) => handleFieldChange('brokerable', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono" placeholder="false" />
                 </div>
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">POSTING CODE</label>
@@ -5326,7 +5330,7 @@ export default function App({ sharing = null } = {}) {
                     type="text"
                     value={selectedOrder.postingCode || profile.postingCode}
                     placeholder="Set in ⚙ My Settings"
-                    onChange={(e) => handleInputChange('postingCode', e.target.value)}
+                    onChange={(e) => handleFieldChange('postingCode', e.target.value)}
                     className="w-full bg-[#0b132b] border border-emerald-500/60 rounded p-2 text-sm text-white font-mono"
                   />
                 </div>
@@ -5344,7 +5348,7 @@ export default function App({ sharing = null } = {}) {
                   <input
                     type="text"
                     value={selectedOrder.pickupTime || ''}
-                    onChange={(e) => handleInputChange('pickupTime', e.target.value)}
+                    onChange={(e) => handleFieldChange('pickupTime', e.target.value)}
                     className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
                   />
                 </div>
@@ -5359,7 +5363,7 @@ export default function App({ sharing = null } = {}) {
                   <div>
                     <label className="text-xs text-gray-400 block mb-1">Weight</label>
                     <div className="flex space-x-2">
-                      <input type="text" value={selectedOrder.weight} onChange={(e) => handleInputChange('weight', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-xs text-white" />
+                      <input type="text" value={selectedOrder.weight} onChange={(e) => handleFieldChange('weight', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-xs text-white" />
                       <button onClick={() => copyToClipboard(selectedOrder.weight, 'Weight')} className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-xs cursor-pointer">📋 Copy</button>
                     </div>
                   </div>
@@ -5379,7 +5383,7 @@ export default function App({ sharing = null } = {}) {
                     type="text"
                     value={selectedOrder.deliveryTime || ''}
                     placeholder={String(selectedBroker || '').includes('965974') ? 'MM/DD/YY 08:00  MM/DD/YY 16:00' : ''}
-                    onChange={(e) => handleInputChange('deliveryTime', e.target.value)}
+                    onChange={(e) => handleFieldChange('deliveryTime', e.target.value)}
                     className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
                   />
                 </div>
@@ -5394,7 +5398,7 @@ export default function App({ sharing = null } = {}) {
                   <div>
                     <label className="text-xs text-gray-400 block mb-1">Miles</label>
                     <div className="flex space-x-2">
-                      <input type="text" value={selectedOrder.miles} onChange={(e) => handleInputChange('miles', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-xs text-white" />
+                      <input type="text" value={selectedOrder.miles} onChange={(e) => handleFieldChange('miles', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-xs text-white" />
                       <button onClick={() => copyToClipboard(selectedOrder.miles, 'Miles')} className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-xs cursor-pointer">📋 Copy</button>
                     </div>
                   </div>
@@ -5418,7 +5422,7 @@ export default function App({ sharing = null } = {}) {
                       <input
                         type="text"
                         value={['user-entered', 'dat-screenshot', 'dat-api'].includes(selectedOrder.rateSource) ? selectedOrder.rateInput || '' : ''}
-                        onChange={(e) => handleRateChange(e.target.value)}
+                        onChange={(e) => handleFieldChange('rateInput', e.target.value)}
                         onKeyDown={handleRateKeyDown}
                         placeholder="Enter DAT quote"
                         className="flex-1 basis-0 min-w-0 h-12 bg-[#0b132b] border-2 border-emerald-500 rounded px-3 text-xl text-white font-mono font-extrabold"
@@ -5441,7 +5445,7 @@ export default function App({ sharing = null } = {}) {
                         );
                       })()}
                     </div>
-                    <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. After you type a rate, it moves to the next load automatically (or press Enter).</p>
+                    <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. After you type a rate or any other load detail, it moves to the next load automatically (or press Enter).</p>
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-[1fr_8rem] gap-4">
@@ -5477,14 +5481,14 @@ export default function App({ sharing = null } = {}) {
                   <div>
                     <label htmlFor="assignment-driver" className="text-xs text-gray-400 block mb-1">Driver Name</label>
                     <div className="flex gap-1">
-                      <input id="assignment-driver" type="text" value={selectedOrder.driver || ''} onChange={(e) => handleInputChange('driver', e.target.value)} placeholder="Enter driver name" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                      <input id="assignment-driver" type="text" value={selectedOrder.driver || ''} onChange={(e) => handleFieldChange('driver', e.target.value)} placeholder="Enter driver name" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                       <button type="button" onClick={() => copyToClipboard(selectedOrder.driver || '', 'Driver Name')} title="Copy Driver Name" aria-label="Copy Driver Name" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
                     </div>
                   </div>
                   <div>
                     <label htmlFor="assignment-truck" className="text-xs text-gray-400 block mb-1">Truck Number</label>
                     <div className="flex gap-1">
-                      <input id="assignment-truck" type="text" value={selectedOrder.truck || ''} onChange={(e) => handleInputChange('truck', e.target.value)} placeholder="Truck number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                      <input id="assignment-truck" type="text" value={selectedOrder.truck || ''} onChange={(e) => handleFieldChange('truck', e.target.value)} placeholder="Truck number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                       <button type="button" onClick={() => copyToClipboard(selectedOrder.truck || '', 'Truck Number')} title="Copy Truck Number" aria-label="Copy Truck Number" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
                     </div>
                   </div>
@@ -5493,19 +5497,19 @@ export default function App({ sharing = null } = {}) {
                   <div>
                     <label htmlFor="assignment-trailer" className="text-xs text-gray-400 block mb-1">Trailer Number</label>
                     <div className="flex gap-1">
-                      <input id="assignment-trailer" type="text" value={selectedOrder.trailer || ''} onChange={(e) => handleInputChange('trailer', e.target.value)} placeholder="Trailer number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                      <input id="assignment-trailer" type="text" value={selectedOrder.trailer || ''} onChange={(e) => handleFieldChange('trailer', e.target.value)} placeholder="Trailer number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                       <button type="button" onClick={() => copyToClipboard(selectedOrder.trailer || '', 'Trailer Number')} title="Copy Trailer Number" aria-label="Copy Trailer Number" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
                     </div>
                   </div>
                   <div>
                     <label htmlFor="assignment-pickup-eta" className="text-xs text-gray-400 block mb-1">Pickup ETA</label>
-                    <input id="assignment-pickup-eta" type="text" value={selectedOrder.pickupEta || ''} onChange={(e) => handleInputChange('pickupEta', e.target.value)} placeholder="MM/DD/YYYY HH:mm (local pickup time)" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <input id="assignment-pickup-eta" type="text" value={selectedOrder.pickupEta || ''} onChange={(e) => handleFieldChange('pickupEta', e.target.value)} placeholder="MM/DD/YYYY HH:mm (local pickup time)" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                   </div>
                 </div>
                 <div className="mt-3">
                   <label htmlFor="assignment-driver-phone" className="text-xs text-gray-400 block mb-1">Driver Cell Phone</label>
                   <div className="flex gap-1">
-                    <input id="assignment-driver-phone" type="tel" value={selectedOrder.driverPhone || ''} onChange={(e) => handleInputChange('driverPhone', e.target.value)} placeholder="Enter cell phone number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <input id="assignment-driver-phone" type="tel" value={selectedOrder.driverPhone || ''} onChange={(e) => handleFieldChange('driverPhone', e.target.value)} placeholder="Enter cell phone number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                     <button type="button" onClick={() => copyToClipboard(selectedOrder.driverPhone || '', 'Driver Cell Phone')} title="Copy Driver Cell Phone" aria-label="Copy Driver Cell Phone" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
                   </div>
                 </div>
@@ -5517,7 +5521,7 @@ export default function App({ sharing = null } = {}) {
                 <input
                   type="text"
                   value={selectedOrder.planningComment}
-                  onChange={(e) => handleInputChange('planningComment', e.target.value)}
+                  onChange={(e) => handleFieldChange('planningComment', e.target.value)}
                   className="w-full bg-[#0b132b] border border-amber-600/30 rounded p-1.5 text-xs text-amber-200 font-mono outline-none"
                 />
               </div>

@@ -256,6 +256,8 @@ test('2279568 preserves VERNON rather than the preferred postal city for ZIP 900
   assert.equal(saved.origCity, 'VERNON');
   assert.equal(saved.status, 'OPEN');
   assert.equal(policy.getLandstarCity(saved.origCity, zipcodes.lookup('90058')), 'VERNON');
+  assert.equal(policy.getLandstarCity('EAST ST LOUIS', { city: 'East Saint Louis' }), 'East Saint Louis');
+  assert.equal(policy.getLandstarCity('MT. VERNON', { city: 'Mount Vernon' }), 'Mount Vernon');
 });
 
 test('ZIP city verification still fills missing cities and fixes close OCR errors', () => {

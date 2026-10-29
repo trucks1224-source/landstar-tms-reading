@@ -1869,7 +1869,9 @@ function getLandstarCommodityValue(code) {
 function getLandstarCity(value, location) {
   const city = String(value || '').trim();
   const postalCity = String(location?.city || '').trim();
-  const normalize = name => name.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const normalize = name => name.toUpperCase()
+    .replace(/\bST\b\.?/g, 'SAINT').replace(/\bMT\b\.?/g, 'MOUNT').replace(/\bFT\b\.?/g, 'FORT')
+    .replace(/[^A-Z0-9]/g, '');
   return postalCity && normalize(city) === normalize(postalCity) ? postalCity : city;
 }
 

@@ -15,7 +15,7 @@ export {
   keepPreviouslyExportedLoadsOpen, markDifferentScheduleLoadsEnt,
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
-  normalizeCanadianPostalCode, getCountryForRegion,
+  normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
@@ -445,6 +445,16 @@ test('Canadian postal codes are normalized and provinces export as Canada', () =
     assert.equal(policy.getCountryForRegion(province), 'CA', province);
   }
   assert.equal(policy.getCountryForRegion('WY'), 'US');
+});
+
+test('Canadian postal codes autofill for known cities and stay blank otherwise', () => {
+  assert.equal(policy.lookupCanadianPostalCode('ST JN S RICHELIEU', 'QC'), 'J3B 1A1');
+  assert.equal(policy.lookupCanadianPostalCode('St Jn S Richelieu', 'qc'), 'J3B 1A1');
+  assert.equal(policy.lookupCanadianPostalCode('TORONTO', 'ON'), 'M1A 0A1');
+  assert.equal(policy.lookupCanadianPostalCode('VANCOUVER', 'BC'), 'V5K 0A1');
+  assert.equal(policy.lookupCanadianPostalCode('NOWHERE', 'QC'), '');
+  assert.equal(policy.lookupCanadianPostalCode('', 'QC'), '');
+  assert.equal(policy.lookupCanadianPostalCode('TORONTO', ''), '');
 });
 
 test('screenshot equipment OCR restores the letter whitelist after reading load digits', async () => {

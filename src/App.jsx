@@ -15,6 +15,105 @@ const zipDatabase = {
   // Add other recurring lanes or missing cities here as needed:
 };
 
+// CANADIAN POSTAL CODE AUTO-FILL (the zipcodes package is US-only)
+// Key: "CITY, PROVINCE" (uppercase). Value: a representative postal code.
+// Add recurring Canadian lanes here as they come up.
+const canadianPostalDatabase = {
+  // Quebec
+  "ST JN S RICHELIEU, QC": "J3B 1A1",
+  "SAINT JEAN SUR RICHELIEU, QC": "J3B 1A1",
+  "ST JEAN SUR RICHELIEU, QC": "J3B 1A1",
+  "MONTREAL, QC": "H1A 0A1",
+  "QUEBEC, QC": "G1A 0A1",
+  "QUEBEC CITY, QC": "G1A 0A1",
+  "LAVAL, QC": "H7A 0A1",
+  "GATINEAU, QC": "J8P 0A1",
+  "LONGUEUIL, QC": "J3Y 0A1",
+  "SHERBROOKE, QC": "J1H 0A1",
+  "TROIS RIVIERES, QC": "G8T 0A1",
+  "DRUMMONDVILLE, QC": "J2A 0A1",
+  "GRANBY, QC": "J2G 0A1",
+  "SAINT HYACINTHE, QC": "J2R 0A1",
+  "BROSSARD, QC": "J4W 0A1",
+  // Ontario
+  "TORONTO, ON": "M1A 0A1",
+  "MISSISSAUGA, ON": "L4T 0A1",
+  "BRAMPTON, ON": "L6P 0A1",
+  "VAUGHAN, ON": "L4H 0A1",
+  "ETOBICOKE, ON": "M8V 0A1",
+  "SCARBOROUGH, ON": "M1B 0A1",
+  "MARKHAM, ON": "L3P 0A1",
+  "HAMILTON, ON": "L8E 0A1",
+  "LONDON, ON": "N5V 0A1",
+  "KITCHENER, ON": "N2A 0A1",
+  "CAMBRIDGE, ON": "N1R 0A1",
+  "GUELPH, ON": "N1E 0A1",
+  "WINDSOR, ON": "N8N 0A1",
+  "OTTAWA, ON": "K1A 0A1",
+  "BARRIE, ON": "L4M 0A1",
+  "OSHAWA, ON": "L1G 0A1",
+  "BURLINGTON, ON": "L7L 0A1",
+  "OAKVILLE, ON": "L6H 0A1",
+  "MILTON, ON": "L9T 0A1",
+  "AJAX, ON": "L1S 0A1",
+  "PICKERING, ON": "L1V 0A1",
+  "WHITBY, ON": "L1M 0A1",
+  "KINGSTON, ON": "K7K 0A1",
+  "SUDBURY, ON": "P3A 0A1",
+  "THUNDER BAY, ON": "P7A 0A1",
+  "SARNIA, ON": "N7S 0A1",
+  "BELLEVILLE, ON": "K8N 0A1",
+  "CORNWALL, ON": "K6H 0A1",
+  "BROCKVILLE, ON": "K6V 0A1",
+  "NIAGARA FALLS, ON": "L2E 0A1",
+  "ST CATHARINES, ON": "L2M 0A1",
+  // Manitoba
+  "WINNIPEG, MB": "R2C 0A1",
+  "BRANDON, MB": "R7A 0A1",
+  // Saskatchewan
+  "REGINA, SK": "S4N 0A1",
+  "SASKATOON, SK": "S7H 0A1",
+  // Alberta
+  "CALGARY, AB": "T1X 0A1",
+  "EDMONTON, AB": "T5A 0A1",
+  "RED DEER, AB": "T4N 0A1",
+  "LETHBRIDGE, AB": "T1H 0A1",
+  "FORT MCMURRAY, AB": "T9H 0A1",
+  // British Columbia
+  "VANCOUVER, BC": "V5K 0A1",
+  "SURREY, BC": "V3R 0A1",
+  "BURNABY, BC": "V5A 0A1",
+  "RICHMOND, BC": "V6V 0A1",
+  "DELTA, BC": "V3M 0A1",
+  "LANGLEY, BC": "V2Y 0A1",
+  "ABBOTSFORD, BC": "V2S 0A1",
+  "KELOWNA, BC": "V1V 0A1",
+  "VICTORIA, BC": "V8T 0A1",
+  "KAMLOOPS, BC": "V1S 0A1",
+  "PRINCE GEORGE, BC": "V2L 0A1",
+  // New Brunswick
+  "MONCTON, NB": "E1A 0A1",
+  "SAINT JOHN, NB": "E2H 0A1",
+  "FREDERICTON, NB": "E3A 0A1",
+  // Nova Scotia
+  "HALIFAX, NS": "B3H 0A1",
+  "DARTMOUTH, NS": "B2V 0A1",
+  "SYDNEY, NS": "B1L 0A1",
+  // Prince Edward Island
+  "CHARLOTTETOWN, PE": "C1A 0A1",
+  // Newfoundland and Labrador
+  "ST JOHNS, NL": "A1A 0A1",
+  // Yukon / Northwest Territories / Nunavut
+  "WHITEHORSE, YT": "Y1A 0A1",
+  "YELLOWKNIFE, NT": "X1A 0A1",
+  "IQALUIT, NU": "X0A 0H0"
+};
+
+function lookupCanadianPostalCode(city, province) {
+  const key = `${String(city || '').trim().toUpperCase()}, ${String(province || '').trim().toUpperCase()}`;
+  return canadianPostalDatabase[key] || '';
+}
+
 function autoFillLoadZipCodes(loads) {
   return loads.map(load => {
     const updated = { ...load };
@@ -4212,10 +4311,10 @@ export default function App({ sharing = null } = {}) {
       const originLocation = enteredOriginLocation || (originCountry === 'US' ? lookupCityState(ord.origCity, originState) : null);
       const destinationLocation = enteredDestinationLocation || (destinationCountry === 'US' ? lookupCityState(ord.destCity, destinationState) : null);
       const originZip = originCountry === 'CA'
-        ? enteredOriginZip
+        ? enteredOriginZip || lookupCanadianPostalCode(ord.origCity, originState)
         : originLocation?.zip || (enteredOriginLocation ? enteredOriginZip : '');
       const destinationZip = destinationCountry === 'CA'
-        ? enteredDestinationZip
+        ? enteredDestinationZip || lookupCanadianPostalCode(ord.destCity, destinationState)
         : destinationLocation?.zip || (enteredDestinationLocation ? enteredDestinationZip : '');
       // A ZIP found from the city name means the postal spelling matched, so send that spelling to Landstar.
       const originCity = !enteredOriginLocation && originLocation?.city ? originLocation.city : getLandstarCity(ord.origCity, originLocation);

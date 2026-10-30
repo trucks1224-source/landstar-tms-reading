@@ -14,14 +14,15 @@ export {
   preservesImportedLoadStatus, getReimportedLoadStatus,
   keepPreviouslyExportedLoadsOpen, markDifferentScheduleLoadsEnt,
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
-  parseScreenshotLines, correctCitiesFromZip, getLandstarCity,
+  parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription, normalizeEquipmentCode,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
-  getPastedImage, readClipboardImage, getImportedLoadSelection
+  getPastedImage, readClipboardImage, getImportedLoadSelection,
+  getFuelSurchargeRegion, getFuelSurchargeRate, normalizeFuelSurchargeRates, getLinehaulRate
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -399,6 +400,14 @@ test('2279568 preserves VERNON rather than the preferred postal city for ZIP 900
   assert.equal(policy.getLandstarCity(saved.origCity, zipcodes.lookup('90058')), 'VERNON');
   assert.equal(policy.getLandstarCity('EAST ST LOUIS', { city: 'East Saint Louis' }), 'East Saint Louis');
   assert.equal(policy.getLandstarCity('MT. VERNON', { city: 'Mount Vernon' }), 'Mount Vernon');
+});
+
+test('Landstar city names are capped at 18 characters with known abbreviations', () => {
+  assert.equal(policy.toLandstarCity('Washington Court House'), 'Washington CH');
+  assert.equal(policy.toLandstarCity('WASHINGTON COURT HOUSE'), 'Washington CH');
+  assert.equal(policy.toLandstarCity('Houston'), 'Houston');
+  assert.equal(policy.toLandstarCity('A Very Long City Name Here').length, 18);
+  assert.equal(policy.toLandstarCity(''), '');
 });
 
 test('ZIP city verification still fills missing cities and fixes close OCR errors', () => {
@@ -870,6 +879,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       }
     },
     fetch: async url => {
+      if (url === '/api/road-miles') return { ok: true, json: async () => ({ miles: 500 }) };
       assert.equal(url, '/api/dat-rate');
       return { json: async () => ({ rate: 2000 }) };
     },
@@ -975,6 +985,28 @@ test('Copy Selected button counts checked loads', () => {
   app.render();
   assert.equal(copyButton().props.disabled, false);
   assert.match([copyButton().props.children].flat(Infinity).join(''), /\(2\)/);
+});
+
+test('Select All then Move to ENT moves every selected load to ENT', () => {
+  const app = createAppHarness(customers[0], [
+    { ...load, id: '1', status: 'OPEN', tag: 'OPEN' },
+    { ...load, id: '2', status: 'OPEN', tag: 'OPEN' },
+    { ...load, id: '3', status: 'ON HOLD', tag: 'HOLD' }
+  ]);
+  app.find(node => node.type === 'input' && node.props.type === 'checkbox' && node.props.title === undefined
+    && typeof node.props.onChange === 'function' && !node.props.disabled).props.onChange();
+  app.render();
+  const moveButton = app.find(node => node.type === 'button' && node.props.title?.startsWith('Move ') && node.props.title?.endsWith(' to ENT'));
+  assert.ok(moveButton, 'Move to ENT button exists');
+  moveButton.props.onClick();
+  app.render();
+  app.effects[0]();
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[0]];
+  for (const order of saved) {
+    assert.equal(order.status, 'ENT', order.id);
+    assert.equal(order.tag, 'ENT', order.id);
+  }
+  assert.equal(app.errors.length, 0);
 });
 
 test('double-clicking a load card selects and unselects it', () => {
@@ -1106,6 +1138,85 @@ test('Excel equipment text normalizes to TMS equipment codes', () => {
   assert.equal(policy.getLandstarEquipmentCode(policy.normalizeEquipmentCode('Reefer - 53')), 'REFR');
 });
 
+test('RXO Excel import maps reefer equipment to REFR instead of VAN', async () => {
+  const app = createAppHarness(customers[1], []);
+  await app.importExcel([
+    ['Order Number', 'Equipment Type', '', '', '', '', 'Origin City', 'Origin State', 'Origin Zip',
+      '', '', 'Destination City', 'Destination State', 'Destination Zip', 'Weight', '',
+      'Pickup Time', 'Delivery Time', 'Miles'],
+    ['900001', 'Reefer - 53', '', '', '', '', 'Chicago', 'IL', '60601', '', '', 'Dallas', 'TX',
+      '75201', '42000', '', '10/27/2026 0800 - 1600', '10/30/2026 0800 - 1600', '900'],
+    ['900002', 'Van', '', '', '', '', 'Chicago', 'IL', '60601', '', '', 'Austin', 'TX',
+      '78701', '42000', '', '10/27/2026 0800 - 1600', '10/30/2026 0800 - 1600', '900']
+  ]);
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[1]];
+  const reefer = saved.find(order => order.id === '900001');
+  const van = saved.find(order => order.id === '900002');
+  assert.equal(reefer.eCode, 'R');
+  assert.equal(policy.getLandstarEquipmentCode(reefer.eCode), 'REFR');
+  assert.equal(van.eCode, 'VAN:VAN');
+  assert.equal(policy.getLandstarEquipmentCode(van.eCode), 'VAN');
+  assert.equal(app.errors.length, 0);
+});
+
+test('Van or Reefer equipment imports as V,R and exports as VAN with REFR alternate', async () => {
+  assert.equal(policy.normalizeEquipmentCode('Van or Reefer - 53'), 'V,R');
+  assert.equal(policy.normalizeEquipmentCode('Van or Reefer'), 'V,R');
+  assert.equal(policy.getLandstarEquipmentCode('V,R'), 'VAN');
+  assert.equal(policy.getLandstarEquipment2({ eCode: 'V,R' }), 'REFR');
+  assert.equal(policy.getLandstarCommodity('V,R'), 'CGAPP');
+
+  const app = createAppHarness(customers[1], []);
+  await app.importExcel([
+    ['Order Number', 'Equipment Type', '', '', '', '', 'Origin City', 'Origin State', 'Origin Zip',
+      '', '', 'Destination City', 'Destination State', 'Destination Zip', 'Weight', '',
+      'Pickup Time', 'Delivery Time', 'Miles'],
+    ['900003', 'Van or Reefer - 53', '', '', '', '', 'Chicago', 'IL', '60601', '', '', 'Dallas', 'TX',
+      '75201', '42000', '', '10/27/2026 0800 - 1600', '10/30/2026 0800 - 1600', '900']
+  ]);
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[1]];
+  assert.equal(saved.find(order => order.id === '900003').eCode, 'V,R');
+  assert.equal(app.errors.length, 0);
+});
+
+test('Excel import replaces spreadsheet miles with Google driving miles', async () => {
+  const app = createAppHarness(customers[1], []);
+  await app.importExcel([
+    ['Order Number', 'Equipment Type', '', '', '', '', 'Origin City', 'Origin State', 'Origin Zip',
+      '', '', 'Destination City', 'Destination State', 'Destination Zip', 'Weight', '',
+      'Pickup Time', 'Delivery Time', 'Loaded Miles'],
+    ['900010', 'Reefer - 53', '', '', '', '', 'Chicago', 'IL', '60601', '', '', 'Dallas', 'TX',
+      '75201', '42000', '', '10/27/2026 0800 - 1600', '10/30/2026 0800 - 1600', '396.3 miles'],
+    ['900011', 'Van', '', '', '', '', 'Chicago', 'IL', '60601', '', '', 'Austin', 'TX',
+      '78701', '42000', '', '10/27/2026 0800 - 1600', '10/30/2026 0800 - 1600', '1,532 miles']
+  ]);
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[1]];
+  assert.equal(saved.find(order => order.id === '900010').miles, '500');
+  assert.equal(saved.find(order => order.id === '900011').miles, '500');
+  assert.equal(policy.getRatePerMile('2000', saved.find(order => order.id === '900010').miles), '4.00');
+  assert.equal(app.errors.length, 0);
+});
+
+test('RXO allLoadsSearch export imports pickup and delivery times from its own columns', async () => {
+  const app = createAppHarness(customers[1], []);
+  await app.importExcel([
+    ['Order Number', 'Equipment Type', 'Origin - City', 'Origin - State', 'Origin - Zip',
+      'Pickup Time', 'Destination - City', 'Destination - State', 'Destination - Zip',
+      'Delivery Time', 'Weight', 'Commodity', 'Loaded Miles'],
+    ['24553376', 'Van - 53 Feet', 'Spartanburg', 'SC', '29303', 46331.833333333336,
+      'Fayetteville', 'NC', '28306', 46332.541666666664, '44000lbs', 'SOLAR PANELS', '214.2 miles']
+  ]);
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[1]];
+  const imported = saved.find(order => order.id === '24553376');
+  assert.equal(imported.origCity, 'SPARTANBURG');
+  assert.equal(imported.destCity, 'FAYETTEVILLE');
+  // RXO payer imports widen the times to business hours on the same dates.
+  assert.equal(imported.pickupTime, '11/05/2026 0800 - 2000');
+  assert.equal(imported.deliveryTime, '11/06/2026 0800 - 1200');
+  assert.equal(imported.miles, '500');
+  assert.equal(app.errors.length, 0);
+});
+
 test('straight trucks import as D-LG,D-ST and export to Landstar as D-LG with D-ST alternate', () => {
   for (const code of ['D-LG', 'D-LG,D-ST']) {
     assert.equal(policy.getLandstarEquipmentCode(code), 'D-LG', code);
@@ -1162,9 +1273,60 @@ test('NTG card regions are found between grey gaps', () => {
 test('rate per mile is calculated from rate and miles', () => {
   assert.equal(policy.getRatePerMile('6200', '1841.0'), '3.37');
   assert.equal(policy.getRatePerMile('$1,500', '500'), '3.00');
+  assert.equal(policy.getRatePerMile('2000', '396.3 miles'), '5.05');
+  assert.equal(policy.getRatePerMile('1500', '1,532 miles'), '0.98');
   assert.equal(policy.getRatePerMile('', '500'), '');
   assert.equal(policy.getRatePerMile('1500', ''), '');
   assert.equal(policy.getRatePerMile('1500', '0'), '');
+});
+
+test('Landstar export rate is the linehaul: customer rate minus fuel surcharge', () => {
+  assert.equal(policy.getLinehaulRate('2000', '500', 0.87), 1565);
+  assert.equal(policy.getLinehaulRate('$2,000', '396.3', 0.9), 1643.33);
+  assert.equal(policy.getLinehaulRate('2000', '1,532 miles', 1.04), 406.72);
+  assert.equal(policy.getLinehaulRate('2000', '500', null), 2000);
+  assert.equal(policy.getLinehaulRate('2000', '', 0.87), 2000);
+  assert.equal(policy.getLinehaulRate('2000', '0', 0.87), 2000);
+});
+
+test('fuel surcharge region follows the pickup state', () => {
+  for (const state of ['CT', 'ME', 'MA', 'NH', 'RI', 'VT', 'vt']) {
+    assert.equal(policy.getFuelSurchargeRegion(state), 'newEngland', state);
+  }
+  for (const state of ['CO', 'ID', 'MT', 'UT', 'WY']) {
+    assert.equal(policy.getFuelSurchargeRegion(state), 'rockyMountain', state);
+  }
+  for (const state of ['AK', 'AZ', 'CA', 'HI', 'NV', 'OR', 'WA']) {
+    assert.equal(policy.getFuelSurchargeRegion(state), 'westCoast', state);
+  }
+  for (const state of ['IL', 'TX', 'NY', 'PA', 'FL', 'ON', '', undefined]) {
+    assert.equal(policy.getFuelSurchargeRegion(state), 'national', String(state));
+  }
+});
+
+test('fuel surcharge rate resolves per mile by region with national fallback', () => {
+  const rates = { national: '0.87', newEngland: '0.89', rockyMountain: '0.90', westCoast: '1.04' };
+  assert.equal(policy.getFuelSurchargeRate(rates, 'IL'), 0.87);
+  assert.equal(policy.getFuelSurchargeRate(rates, 'MA'), 0.89);
+  assert.equal(policy.getFuelSurchargeRate(rates, 'WY'), 0.90);
+  assert.equal(policy.getFuelSurchargeRate(rates, 'CA'), 1.04);
+  assert.equal(policy.getFuelSurchargeRate({ ...rates, westCoast: '' }, 'CA'), 0.87);
+  assert.equal(policy.getFuelSurchargeRate({ national: '', newEngland: '', rockyMountain: '', westCoast: '' }, 'IL'), null);
+  assert.equal(policy.getFuelSurchargeRate(undefined, 'IL'), null);
+  assert.equal(policy.getFuelSurchargeRate({ national: '$0.87' }, 'tx'), 0.87);
+});
+
+test('fuel surcharge rates normalize to cents per mile and keep intentional blanks', () => {
+  const normalized = value => JSON.parse(JSON.stringify(policy.normalizeFuelSurchargeRates(value)));
+  assert.deepEqual(normalized(undefined), {
+    national: '0.87', newEngland: '0.89', rockyMountain: '0.90', westCoast: '1.04'
+  });
+  assert.deepEqual(normalized({ national: '$0.875', westCoast: '1.04' }), {
+    national: '0.88', newEngland: '', rockyMountain: '', westCoast: '1.04'
+  });
+  assert.deepEqual(normalized({ national: '', newEngland: '', rockyMountain: '', westCoast: '' }), {
+    national: '', newEngland: '', rockyMountain: '', westCoast: ''
+  });
 });
 
 test('load cards have a copy button for the pickup and delivery city/state', () => {

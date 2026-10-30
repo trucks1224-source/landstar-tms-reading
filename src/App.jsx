@@ -1299,6 +1299,7 @@ function getEquipmentDescription(eCode) {
     case 'VM':
     case 'VT': return 'VAN:VAN, VAN:53VN';
     case 'VR': return 'VAN:VAN, REFR:REFR';
+    case 'V,R': return 'VAN:VAN, REFR:REFR';
     case 'R': return 'REFR:REFR';
     case 'RZ': return 'REFR:REFR';
     case 'F': return '48FL, 53FL, FLAT';
@@ -1938,9 +1939,54 @@ function hasLoadRate(load) {
 
 function getRatePerMile(rate, miles) {
   const rateValue = Number(String(rate || '').replace(/[$,]/g, ''));
-  const mileValue = Number(String(miles || '').replace(/[,\s]/g, ''));
+  // Miles can arrive with a unit suffix from broker exports, e.g. '396.3 miles'.
+  const mileValue = Number(String(miles || '').replace(/,/g, '').match(/\d+(?:\.\d+)?/)?.[0]);
   if (!(rateValue > 0) || !(mileValue > 0)) return '';
   return (rateValue / mileValue).toFixed(2);
+}
+
+// Weekly fuel surcharge report ($/mile) by pickup region; everything not listed uses the national average.
+const fuelSurchargeRegions = {
+  national: { label: 'National Average', states: [] },
+  newEngland: { label: 'New England (PADD 1A)', states: ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'] },
+  rockyMountain: { label: 'Rocky Mountain (PADD 4)', states: ['CO', 'ID', 'MT', 'UT', 'WY'] },
+  westCoast: { label: 'West Coast (PADD 5)', states: ['AK', 'AZ', 'CA', 'HI', 'NV', 'OR', 'WA'] }
+};
+
+const defaultFuelSurchargeRates = { national: '0.87', newEngland: '0.89', rockyMountain: '0.90', westCoast: '1.04' };
+
+function normalizeFuelSurchargeRates(value) {
+  const rates = { ...defaultFuelSurchargeRates };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return rates;
+  Object.keys(rates).forEach(key => {
+    const parsed = Number(String(value[key] ?? '').replace(/[$,]/g, ''));
+    rates[key] = parsed > 0 ? String(Math.round(parsed * 100) / 100) : '';
+  });
+  return rates;
+}
+
+function getFuelSurchargeRegion(state) {
+  const code = String(state || '').trim().toUpperCase();
+  const match = Object.entries(fuelSurchargeRegions)
+    .find(([, info]) => info.states.includes(code));
+  return match ? match[0] : 'national';
+}
+
+// $/mile for a pickup state; a blank regional rate falls back to the national average.
+function getFuelSurchargeRate(rates, state) {
+  if (!rates || typeof rates !== 'object') return null;
+  const parse = value => Number(String(value || '').replace(/[$,]/g, ''));
+  const regional = parse(rates[getFuelSurchargeRegion(state)]);
+  const rate = regional > 0 ? regional : parse(rates.national);
+  return rate > 0 ? rate : null;
+}
+
+// The Landstar rate column carries the linehaul: customer rate minus the fuel surcharge.
+function getLinehaulRate(rateInput, milesValue, fuelSurchargeRate) {
+  const rate = Number(String(rateInput || '').replace(/[$,]/g, ''));
+  const miles = Number(normalizeMilesValue(milesValue));
+  const fscTotal = fuelSurchargeRate && miles > 0 ? fuelSurchargeRate * miles : 0;
+  return Math.round((rate - fscTotal) * 100) / 100;
 }
 
 function isTeamLoad(load) {
@@ -1956,6 +2002,7 @@ function normalizeEquipmentCode(value) {
   if (/CONESTOGA/.test(code)) return 'FLCS';
   if (/FLAT\s*BED|\bFLAT\b/.test(code)) return 'F,SD';
   if (/STEP\s*DECK|\bSTEP\b/.test(code)) return 'SD';
+  if (/\bVAN\b\s+OR\s+(REEFER|REFR)\b/.test(code)) return 'V,R';
   if (/REEFER|\bREFR/.test(code)) return 'R';
   if (/\bVAN\b/.test(code)) return 'V';
   return code;
@@ -1973,6 +2020,7 @@ function getLandstarEquipment2(ord) {
   if (isFlatbedEquipment(ord?.eCode)) return 'STEP';
   const code = String(ord?.eCode || '').trim().toUpperCase();
   if (code === 'D-LG' || code === 'D-LG,D-ST') return 'D-ST';
+  if (code === 'V,R') return 'REFR';
   return '';
 }
 
@@ -1986,6 +2034,7 @@ function getLandstarEquipmentCode(value) {
     VM: 'VAN',
     VE: 'VAN',
     VR: 'VAN',
+    'V,R': 'VAN',
     R: 'REFR',
     RZ: 'REFR',
     F: 'FLAT',
@@ -2044,6 +2093,57 @@ function playExportSound() {
   }
 }
 
+// Greets the signed-in agent by posting code with a warm, natural voice. Voices load
+// asynchronously in some browsers, so wait for them before speaking.
+const WELCOME_LINES = [
+  code => `Hey, welcome back${code ? `, agent ${code}` : ''}! Good to see you.`,
+  code => `Hi${code ? `, agent ${code}` : ''}! Welcome back.`,
+  code => `Welcome back${code ? `, agent ${code}` : ''}. Hope you're doing well today.`,
+];
+
+function speakWelcomeGreeting(postingCode) {
+  try {
+    if (typeof window === 'undefined' || !window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') return;
+    const code = String(postingCode || '').trim().toUpperCase();
+    // Spell the posting code letter by letter so it reads naturally.
+    const spokenCode = code.split('').join(' ');
+    const line = WELCOME_LINES[Math.floor(Math.random() * WELCOME_LINES.length)];
+    const utterance = new SpeechSynthesisUtterance(line(spokenCode));
+    utterance.pitch = 1;
+    utterance.rate = 1;
+    utterance.volume = 0.9;
+    const speak = () => {
+      const voices = window.speechSynthesis.getVoices();
+      // Prefer Chrome's natural-sounding Google voices; they avoid the robotic
+      // tone of the older Microsoft desktop voices.
+      const preferred = voices.find(voice => /^google us english$/i.test(voice.name))
+        || voices.find(voice => /google uk english female/i.test(voice.name))
+        || voices.find(voice => /^google/i.test(voice.name) && /^en([-_]|$)/i.test(voice.lang))
+        || voices.find(voice => /aria|jenny|samantha/i.test(voice.name))
+        || voices.find(voice => /^en([-_]|$)/i.test(voice.lang));
+      if (preferred) utterance.voice = preferred;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    };
+    if (window.speechSynthesis.getVoices().length) {
+      speak();
+      return;
+    }
+    const onVoicesChanged = () => {
+      window.speechSynthesis.removeEventListener('voiceschanged', onVoicesChanged);
+      speak();
+    };
+    window.speechSynthesis.addEventListener('voiceschanged', onVoicesChanged);
+    // Some browsers never fire voiceschanged; speak with the default voice after a short wait.
+    window.setTimeout(() => {
+      window.speechSynthesis.removeEventListener('voiceschanged', onVoicesChanged);
+      if (!window.speechSynthesis.speaking) speak();
+    }, 500);
+  } catch {
+    // The greeting is optional.
+  }
+}
+
 function isHazmatLoad(load) {
   return getLandstarCommodity(load?.eCode) === 'HAZMAT'
     || String(load?.hazmat || '').toLowerCase() === 'true'
@@ -2078,6 +2178,16 @@ function getLandstarCity(value, location) {
     .replace(/\bST\b\.?/g, 'SAINT').replace(/\bMT\b\.?/g, 'MOUNT').replace(/\bFT\b\.?/g, 'FORT')
     .replace(/[^A-Z0-9]/g, '');
   return postalCity && normalize(city) === normalize(postalCity) ? postalCity : city;
+}
+
+// Landstar caps city fields at 18 characters; shorten known long names, then hard-truncate.
+const landstarCityAbbreviations = {
+  'WASHINGTON COURT HOUSE': 'Washington CH'
+};
+function toLandstarCity(value) {
+  const city = String(value || '').trim();
+  const abbreviated = landstarCityAbbreviations[city.toUpperCase()] || city;
+  return abbreviated.length > 18 ? abbreviated.slice(0, 18).trim() : abbreviated;
 }
 
 const rxoCustomerName = 'R X O 2429200 - ATZ';
@@ -2148,6 +2258,36 @@ async function getGoogleRoadMiles(order) {
     throw new Error(`Could not calculate driving miles for load ${order.id}: ${result?.error || 'Google Routes returned no valid mileage.'}`);
   }
   return String(result.miles);
+}
+
+// Import policy: every imported load uses Google Routes driving miles instead of
+// the miles printed on the import, for every customer.
+async function applyGoogleRoadMiles(loads, onProgress, sourceLabel) {
+  const eligible = loads.filter(load => load.origCity && load.origSt && load.destCity && load.destSt);
+  let mileageError = '';
+  for (let index = 0; index < eligible.length; index += 1) {
+    const load = eligible[index];
+    if (onProgress) onProgress(`Calculating driving miles ${index + 1} of ${eligible.length}...`);
+    try {
+      load.miles = await getGoogleRoadMiles(load);
+      const note = 'driving miles calculated by Google Routes';
+      load.planningComment = load.planningComment ? `${load.planningComment}; ${note}` : `${sourceLabel}; ${note}`;
+    } catch (error) {
+      console.error('Google Routes could not calculate imported load miles:', error);
+      mileageError = error.message || 'Google Routes could not calculate the driving miles.';
+      for (let remaining = index; remaining < eligible.length; remaining += 1) {
+        const remainingLoad = eligible[remaining];
+        const note = Number(remainingLoad.miles) > 0
+          ? 'Google Routes unavailable; miles kept from the import'
+          : 'driving miles need to be entered manually';
+        remainingLoad.planningComment = remainingLoad.planningComment
+          ? `${remainingLoad.planningComment}; ${note}`
+          : `${sourceLabel}; ${note}`;
+      }
+      break;
+    }
+  }
+  return { mileageError };
 }
 
 // ==========================================
@@ -2619,7 +2759,7 @@ const countryFlags = {
   DE: { name: 'Germany', background: horizontalFlag('#000', '#dd0000', '#ffce00') }
 };
 
-const emptyProfile = { phone: '', postingCode: '', visibilityGroup: '', flag: 'CO' };
+const emptyProfile = { phone: '', postingCode: '', visibilityGroup: '', flag: 'CO', fuelSurcharge: { ...defaultFuelSurchargeRates } };
 
 function getUserProfile() {
   if (typeof localStorage === 'undefined') return { ...emptyProfile };
@@ -2630,7 +2770,8 @@ function getUserProfile() {
       phone: String(saved.phone || ''),
       postingCode: String(saved.postingCode || ''),
       visibilityGroup: String(saved.visibilityGroup || ''),
-      flag: saved.flag === 'NONE' || countryFlags[saved.flag] ? saved.flag : 'CO'
+      flag: saved.flag === 'NONE' || countryFlags[saved.flag] ? saved.flag : 'CO',
+      fuelSurcharge: normalizeFuelSurchargeRates(saved.fuelSurcharge)
     };
   } catch (error) {
     console.error('Could not load My Settings:', error);
@@ -2839,6 +2980,12 @@ export default function App({ sharing = null } = {}) {
             row.load = { ...row.load, rateInput: savedRate, rateSource: 'user-entered' };
           }
         });
+        const emailImportLoads = [];
+        rows.forEach(row => {
+          if (normalizeCustomerName(row.customer) && row.load?.id) emailImportLoads.push(row.load);
+        });
+        await applyGoogleRoadMiles(emailImportLoads, null, 'Imported from email');
+        if (cancelled) return;
         const fullLists = new Map();
         rows.forEach(row => {
           const customer = normalizeCustomerName(row.customer);
@@ -2879,6 +3026,11 @@ export default function App({ sharing = null } = {}) {
       cancelled = true;
       supabase.removeChannel(channel);
     };
+  }, []);
+
+  // App only mounts after sign-in (or in local mode), so this greets each agent on login.
+  useEffect(() => {
+    speakWelcomeGreeting(getUserProfile().postingCode);
   }, []);
 
   useEffect(() => {
@@ -3086,6 +3238,20 @@ export default function App({ sharing = null } = {}) {
     }));
   };
 
+  const handleMoveSelected = (newStatus) => {
+    if (selectedIds.length === 0) return;
+    const tag = newStatus === 'ENT' ? 'ENT' : newStatus === 'ON HOLD' ? 'HOLD' : 'OPEN';
+    setCustomerOrdersMap(prev => ({
+      ...prev,
+      [selectedBroker]: (prev[selectedBroker] || []).map(o => (
+        selectedIds.includes(o.id) ? { ...o, status: newStatus, tag } : o
+      ))
+    }));
+    setSelectedOrder(current => (
+      current && selectedIds.includes(current.id) ? { ...current, status: newStatus, tag } : current
+    ));
+  };
+
   const copyToClipboard = async (text, label) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -3142,8 +3308,15 @@ export default function App({ sharing = null } = {}) {
       phone: profileDraft.phone.replace(/\D/g, ''),
       postingCode: profileDraft.postingCode.trim().toUpperCase(),
       visibilityGroup: profileDraft.visibilityGroup.trim().toUpperCase(),
-      flag: profileDraft.flag
+      flag: profileDraft.flag,
+      fuelSurcharge: normalizeFuelSurchargeRates(profileDraft.fuelSurcharge)
     };
+    const invalidFuelSurcharge = Object.entries(profileDraft.fuelSurcharge || {})
+      .some(([, value]) => String(value ?? '').trim() !== '' && !(Number(String(value).replace(/[$,]/g, '')) > 0));
+    if (invalidFuelSurcharge) {
+      alert('Fuel surcharge rates must be a positive $/mile number, or blank to skip a region.');
+      return;
+    }
     if (nextProfile.phone.length !== 10) {
       alert('Enter a 10-digit phone number.');
       return;
@@ -3415,26 +3588,11 @@ export default function App({ sharing = null } = {}) {
         }
       }
 
-      let mileageCalculationError = '';
-      if (isCh593772Customer(selectedBroker)) {
-        const loadsNeedingMiles = uniqueLoads.filter(load => !(Number(load.miles) > 0));
-        for (let index = 0; index < loadsNeedingMiles.length; index += 1) {
-          const load = loadsNeedingMiles[index];
-          setGmailImportProgress(`Calculating driving miles ${index + 1} of ${loadsNeedingMiles.length}...`);
-          try {
-            load.miles = await getGoogleRoadMiles(load);
-            load.planningComment = 'Imported from Gmail; driving miles calculated by Google Routes';
-          } catch (error) {
-            console.error('Google Routes could not calculate Gmail load miles:', error);
-            mileageCalculationError = error.message || 'Google Routes could not calculate the driving miles.';
-            load.planningComment = 'Imported from Gmail; driving miles need to be entered manually';
-            for (let remainingIndex = index + 1; remainingIndex < loadsNeedingMiles.length; remainingIndex += 1) {
-              loadsNeedingMiles[remainingIndex].planningComment = 'Imported from Gmail; driving miles need to be entered manually';
-            }
-            break;
-          }
-        }
-      }
+      const { mileageError: mileageCalculationError } = await applyGoogleRoadMiles(
+        deduplicatedLoads,
+        setGmailImportProgress,
+        'Imported from Gmail'
+      );
 
       const resolvedLoads = [];
       uniqueLoads.forEach(load => {
@@ -3528,25 +3686,23 @@ export default function App({ sharing = null } = {}) {
         };
 
         const colA = findColIndex(['Order #', 'Load ID', 'Order Number', 'Load Posting Code'], 0);
-        const colB = findColIndex(['Equipment', 'Equipment 1', 'Equip'], 1);
-        const colG = findColIndex(['Origin City', 'Orig City', 'Origin'], 6);
-        const colH = findColIndex(['Origin State', 'Origin St', 'Orig State'], 7);
-        const colI = findColIndex(['Origin Zipcode', 'Origin Zip', 'Orig Zip'], 8);
-        const colL = findColIndex(['Destination City', 'Dest City', 'Destination'], 11);
-        const colM = findColIndex(['Destination State', 'Destination St', 'Dest State'], 12);
-        const colN = findColIndex(['Destination Zipcode', 'Destination Zip', 'Dest Zip'], 13);
+        const colB = findColIndex(['Equipment', 'Equipment Type', 'Equipment 1', 'Equip'], 1);
+        const colG = findColIndex(['Origin City', 'Orig City', 'Origin', 'Origin - City'], 6);
+        const colH = findColIndex(['Origin State', 'Origin St', 'Orig State', 'Origin - State'], 7);
+        const colI = findColIndex(['Origin Zipcode', 'Origin Zip', 'Orig Zip', 'Origin - Zip'], 8);
+        const colL = findColIndex(['Destination City', 'Dest City', 'Destination', 'Destination - City'], 11);
+        const colM = findColIndex(['Destination State', 'Destination St', 'Dest State', 'Destination - State'], 12);
+        const colN = findColIndex(['Destination Zipcode', 'Destination Zip', 'Dest Zip', 'Destination - Zip'], 13);
         const colO = findColIndex(['Weight', 'Wgt', 'Weight (lbs)'], 14);
         const isRxoPayerImport = normalizeCustomerName(selectedBroker) === rxoPayerCustomerName;
         const isRxoImport = isRxoCustomer(selectedBroker);
-        const hasRxoTimeColumns = headerRow.some(
-          header => String(header || '').trim().toLowerCase() === 'pickup time'
-        ) && headerRow.some(
-          header => String(header || '').trim().toLowerCase() === 'delivery time'
-        );
+        const pickupTimeCol = findColIndex(['Pickup Date (From)', 'Pickup Time', 'PU Time'], -1);
+        const deliveryTimeCol = findColIndex(['Delivery Date (From)', 'Delivery Time', 'Del Time'], -1);
+        const hasRxoTimeColumns = pickupTimeCol >= 0 && deliveryTimeCol >= 0;
         const useRxoDateTimeFormat = isRxoImport || hasRxoTimeColumns;
-        const colQ = isRxoImport ? 16 : findColIndex(['Pickup Date (From)', 'Pickup Time', 'PU Time'], 16);
-        const colR = isRxoImport ? 17 : findColIndex(['Delivery Date (From)', 'Delivery Time', 'Del Time'], 17);
-        const colS = findColIndex(['Bill as Miles', 'Miles', 'Distance'], 18);
+        const colQ = isRxoImport && !hasRxoTimeColumns ? 16 : pickupTimeCol >= 0 ? pickupTimeCol : 16;
+        const colR = isRxoImport && !hasRxoTimeColumns ? 17 : deliveryTimeCol >= 0 ? deliveryTimeCol : 17;
+        const colS = findColIndex(['Bill as Miles', 'Miles', 'Distance', 'Loaded Miles'], 18);
 
         const dataRows = rawRows.slice(1);
         const getRxoDateTime = (row, rowIndex, colIndex) => {
@@ -3573,14 +3729,17 @@ export default function App({ sharing = null } = {}) {
           const delTimeVal = useRxoDateTimeFormat
             ? getRxoDateTime(row, idx, colR)
             : formatExcelDateTime(row[colR]);
-          const milesVal = String(row[colS] || '500').trim();
+          // Broker exports append a unit to miles, e.g. '396.3 miles'; store the number only.
+          const milesVal = String(row[colS] || '500').replace(/,/g, '').match(/\d+(?:\.\d+)?/)?.[0] || '500';
 
           const laneKey = `${origC}${origS ? ', ' + origS : ''} → ${destC}${destS ? ', ' + destS : ''}`;
           
           const rawEquip = row[colB];
+          const normalizedEquip = normalizeEquipmentCode(rawEquip);
+          // RXO defaults to VAN:VAN, but reefer/flatbed/etc. equipment text wins.
           const eCodeVal = isRxoCustomer(selectedBroker)
-            ? 'VAN:VAN'
-            : normalizeEquipmentCode(rawEquip) || 'VZ';
+            ? (normalizedEquip && normalizedEquip !== 'V' ? normalizedEquip : 'VAN:VAN')
+            : normalizedEquip || 'VZ';
           
           const tempOrder = {
             origCity: origC, origSt: origS, origZip: origZ,
@@ -3633,6 +3792,7 @@ export default function App({ sharing = null } = {}) {
         // Run ZIP code auto-fill on Excel import rows
         importedRows = autoFillLoadZipCodes(importedRows);
         importedRows = applyRxoPayerBusinessHours(importedRows, selectedBroker);
+        const { mileageError: excelMileageError } = await applyGoogleRoadMiles(importedRows, null, 'Imported from Excel');
 
         const latestRegistry = getLatestExportedRegistry();
         const exportedRecords = getExportedRecordsForCustomer(latestRegistry, selectedBroker);
@@ -3711,6 +3871,7 @@ export default function App({ sharing = null } = {}) {
               : `• Previously exported; kept OPEN: ${exportedCount}\n`
             : '') +
           (duplicatesRemoved > 0 ? `• Skipped duplicates: ${duplicatesRemoved}\n` : '') +
+          (excelMileageError ? `• Driving miles could not be calculated for some loads; enter them manually. Google Routes reported: ${excelMileageError}\n` : '') +
           (saved ? '• Status: Saved successfully in browser storage.' : '• Warning: Save failed, check browser storage.')
         );
 
@@ -4133,6 +4294,11 @@ export default function App({ sharing = null } = {}) {
       }
 
       recognizedLoads = applyRxoPayerBusinessHours(recognizedLoads, brokerName);
+      const { mileageError } = await applyGoogleRoadMiles(
+        recognizedLoads,
+        setScreenshotImportProgress,
+        `Imported from ${isDatImport ? 'DAT' : isNtgImport ? 'NTG' : isChImport ? 'CH' : 'customer'} screenshot`
+      );
       const existingOrders = customerOrdersMap[brokerName] || [];
       const latestRegistry = getLatestExportedRegistry();
       const exportedRecords = getExportedRecordsForCustomer(latestRegistry, brokerName);
@@ -4172,30 +4338,6 @@ export default function App({ sharing = null } = {}) {
       });
 
       const existingIds = new Set(existingOrders.map(order => order.id));
-      let chMileageError = '';
-      if (isChImport) {
-        const loadsNeedingMiles = resolvedImportedLoads.filter(load => {
-          if (load.status === 'ENT') return false;
-          const existingMiles = existingOrders.find(order => order.id === load.id)?.miles;
-          if (Number(existingMiles) > 0) {
-            load.miles = existingMiles;
-            return false;
-          }
-          return Boolean(load.origSt && load.destSt);
-        });
-        for (let index = 0; index < loadsNeedingMiles.length; index += 1) {
-          const load = loadsNeedingMiles[index];
-          setScreenshotImportProgress(`Calculating driving miles ${index + 1} of ${loadsNeedingMiles.length}...`);
-          try {
-            load.miles = await getGoogleRoadMiles(load);
-            load.planningComment = 'Imported from CH screenshot; driving miles calculated by Google Routes';
-          } catch (error) {
-            console.error('Google Routes could not calculate CH screenshot miles:', error);
-            chMileageError = error.message || 'Google Routes could not calculate the driving miles.';
-            break;
-          }
-        }
-      }
       const mergeableFields = [
         'pickupTime', 'origCity', 'origSt', 'origZip', 'weight',
         'deliveryTime', 'destCity', 'destSt', 'destZip', 'miles',
@@ -4292,7 +4434,8 @@ export default function App({ sharing = null } = {}) {
         (unreadablePickups > 0 ? `• Missing pickup times: ${unreadablePickups}\n` : '') +
         (isChImport && unreadableRates > 0 ? `• No rate on the board (enter manually): ${unreadableRates}\n` : '') +
         (missingChStates > 0 ? `• State not read: ${missingChStates}\n` : '') +
-        (missingChMiles > 0 ? `• Driving miles missing: ${missingChMiles}${chMileageError ? ` (${chMileageError})` : ''}\n` : '') +
+        (missingChMiles > 0 ? `• Driving miles missing: ${missingChMiles}${mileageError ? ` (${mileageError})` : ''}\n` : '') +
+        (!isChImport && mileageError ? `• Google driving miles unavailable; miles kept from the import where present. Google Routes reported: ${mileageError}\n` : '') +
         (saved ? '• Status: Saved successfully.' : '• Warning: Save failed.')
       );
 
@@ -4385,7 +4528,9 @@ export default function App({ sharing = null } = {}) {
       const extraCities = {
         'HAMBERG|ND': { zip: '58145', city: 'Hamberg', state: 'ND' },
         'ROSEMONT|IL': { zip: '60018', city: 'Rosemont', state: 'IL' },
-        'MALTA|NY': { zip: '12020', city: 'Malta', state: 'NY' }
+        'MALTA|NY': { zip: '12020', city: 'Malta', state: 'NY' },
+        // Delanco's ZIP is filed under neighboring Riverside in the offline data.
+        'DELANCO|NJ': { zip: '08075', city: 'Delanco', state: 'NJ' }
       };
       const extraKey = `${String(city || '').trim().toUpperCase()}|${String(state || '').trim().toUpperCase()}`;
       if (extraCities[extraKey]) return extraCities[extraKey];
@@ -4423,6 +4568,7 @@ export default function App({ sharing = null } = {}) {
       const rowErrors = [];
       const originState = String(ord.origSt || '').trim().toUpperCase();
       const destinationState = String(ord.destSt || '').trim().toUpperCase();
+      const fuelSurchargeRate = getFuelSurchargeRate(profile.fuelSurcharge, originState);
       const originCountry = getCountryForRegion(originState);
       const destinationCountry = getCountryForRegion(destinationState);
       const enteredOriginZip = originCountry === 'CA'
@@ -4446,8 +4592,8 @@ export default function App({ sharing = null } = {}) {
         ? enteredDestinationZip || lookupCanadianPostalCode(ord.destCity, destinationState)
         : destinationLocation?.zip || (enteredDestinationLocation ? enteredDestinationZip : '');
       // A ZIP found from the city name means the postal spelling matched, so send that spelling to Landstar.
-      const originCity = !enteredOriginLocation && originLocation?.city ? originLocation.city : getLandstarCity(ord.origCity, originLocation);
-      const destinationCity = !enteredDestinationLocation && destinationLocation?.city ? destinationLocation.city : getLandstarCity(ord.destCity, destinationLocation);
+      const originCity = toLandstarCity(!enteredOriginLocation && originLocation?.city ? originLocation.city : getLandstarCity(ord.origCity, originLocation));
+      const destinationCity = toLandstarCity(!enteredDestinationLocation && destinationLocation?.city ? destinationLocation.city : getLandstarCity(ord.destCity, destinationLocation));
       const originStateMatchesZip = !ord.origSt || !originLocation || originState === originLocation.state;
       const destinationStateMatchesZip = !ord.destSt || !destinationLocation || destinationState === destinationLocation.state;
       const originZipWasResolved = !enteredOriginLocation && Boolean(originLocation);
@@ -4470,6 +4616,8 @@ export default function App({ sharing = null } = {}) {
       const miles = Number(normalizeMilesValue(ord.miles));
       const weight = parseWeightPounds(ord.weight);
       const rate = Number(String(ord.rateInput || '').replace(/[$,]/g, ''));
+      const fuelSurchargeTotal = fuelSurchargeRate && miles > 0 ? fuelSurchargeRate * miles : 0;
+      const linehaulRate = getLinehaulRate(ord.rateInput, ord.miles, fuelSurchargeRate);
       const postingCode = String(ord.postingCode || profile.postingCode).trim().toUpperCase();
       const visibilityCode = exportVisibilityGroup;
       const brokerable = ['true', 'y'].includes(String(ord.brokerable || '').trim().toLowerCase()) ? 'Y' : 'N';
@@ -4503,6 +4651,8 @@ export default function App({ sharing = null } = {}) {
       }
       if (!(rate > 0) || !['user-entered', 'dat-screenshot', 'dat-api'].includes(ord.rateSource)) {
         rowErrors.push('rate (enter a current DAT quote or import one via DAT API/screenshot)');
+      } else if (fuelSurchargeTotal > 0 && !(linehaulRate > 0)) {
+        rowErrors.push(`rate must be greater than the fuel surcharge total ($${fuelSurchargeTotal.toFixed(2)})`);
       }
 
       if (rowErrors.length) validationErrors.push(`Order ${ord.id}: ${rowErrors.join(', ')}`);
@@ -4530,7 +4680,7 @@ export default function App({ sharing = null } = {}) {
         "Equipment 3": "",
         "Weight(Required)": weight ?? '',
         "Rate Type(Required)": "Flat Rate",
-        "Rate(Required)": rate,
+        "Rate(Required)": linehaulRate,
         "Commodity": getLandstarCommodityValue(commodity),
         "Brokerable": brokerable,
         "Carrier Amt": rate,
@@ -4538,8 +4688,8 @@ export default function App({ sharing = null } = {}) {
         // The Landstar template has no Team column; team is set through this attribute.
         "Load Attributes": [isHazmatLoad(ord) && 'Hazmat', isTeamLoad(ord) && 'Team Required'].filter(Boolean).join(', '),
         "Comments": "",
-        "Fuel Surcharge Rate Type": "",
-        "Fuel Surcharge": "",
+        "Fuel Surcharge Rate Type": fuelSurchargeRate ? "Per Mile" : "",
+        "Fuel Surcharge": fuelSurchargeRate ?? "",
         "Team": isTeamLoad(ord) ? 'true' : 'false'
       };
     });
@@ -4988,10 +5138,6 @@ export default function App({ sharing = null } = {}) {
                 <span>{isImportingScreenshot && screenshotImportMode === 'ai' ? screenshotImportProgress : '✨ Customer Screenshot'}</span>
                 <input type="file" accept="image/*" onChange={handleScreenshotImport} className="hidden" disabled={isImportingScreenshot} />
               </label>
-              <label className={`bg-indigo-600 hover:bg-indigo-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} title="Import load rows from a DAT load-board screenshot">
-                <span>{isImportingScreenshot && screenshotImportMode === 'dat' ? screenshotImportProgress : '📷 Import DAT Loads'}</span>
-                <input type="file" accept="image/*" onChange={event => handleScreenshotImport(event, 'dat')} className="hidden" disabled={isImportingScreenshot} />
-              </label>
               <button
                 type="button"
                 onClick={handlePasteNtgScreenshot}
@@ -5008,7 +5154,7 @@ export default function App({ sharing = null } = {}) {
                 className="bg-indigo-600 hover:bg-indigo-500 px-2 py-0.5 text-[10px] font-bold rounded text-white cursor-pointer disabled:opacity-60 disabled:cursor-wait"
                 title="Take a snip of the DAT load board with Win+Shift+S, then paste it here without saving a file. Imports into the selected customer."
               >
-                Paste DAT Screenshot
+                {isImportingScreenshot && screenshotImportMode === 'dat' ? screenshotImportProgress : 'Paste DAT Screenshot'}
               </button>
               <label className="bg-blue-600 hover:bg-blue-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center" title="Import Excel Spreadsheet">
                 <span>📂 Import Excel</span>
@@ -5086,11 +5232,9 @@ export default function App({ sharing = null } = {}) {
               <p className="text-[10px] text-gray-500 mb-2">
                 Imports only the newest email matching this query. Only requests Gmail read-only access after you authorize Google. Pickup date comes from date headings; delivery dates are left blank if absent.
               </p>
-              {isCh593772Customer(selectedBroker) && (
-                <p className="text-[10px] text-amber-300 mb-2">
-                  This customer’s Gmail imports calculate driving miles with Google Routes. Enable the Routes API and configure GOOGLE_MAPS_API_KEY on the server (or in your local .env file); never put the key in browser code.
-                </p>
-              )}
+              <p className="text-[10px] text-amber-300 mb-2">
+                Every import calculates driving miles with Google Routes for all customers, replacing the miles on the import. Enable the Routes API and configure GOOGLE_MAPS_API_KEY on the server (or in your local .env file); never put the key in browser code.
+              </p>
               {gmailImportProgress && <p role="status" className="text-[10px] text-amber-300 mb-2">{gmailImportProgress}</p>}
               <button
                 type="button"
@@ -5213,12 +5357,25 @@ export default function App({ sharing = null } = {}) {
               ))}
             </div>
             {selectedIds.length > 0 && (
-              <button
-                onClick={handleDeleteSelected}
-                className="bg-red-600 hover:bg-red-700 text-white text-[10px] px-2 py-1 rounded font-bold cursor-pointer"
-              >
-                Delete Selected ({selectedIds.length})
-              </button>
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-gray-400">Move to:</span>
+                {['OPEN', 'ON HOLD', 'ENT'].map(status => (
+                  <button
+                    key={status}
+                    onClick={() => handleMoveSelected(status)}
+                    title={`Move ${selectedIds.length} selected load${selectedIds.length === 1 ? '' : 's'} to ${status}`}
+                    className={`text-white text-[10px] px-2 py-1 rounded font-bold cursor-pointer ${status === 'OPEN' ? 'bg-emerald-600 hover:bg-emerald-500' : status === 'ENT' ? 'bg-yellow-600 hover:bg-yellow-500' : 'bg-red-700 hover:bg-red-600'}`}
+                  >
+                    {status}
+                  </button>
+                ))}
+                <button
+                  onClick={handleDeleteSelected}
+                  className="bg-red-600 hover:bg-red-700 text-white text-[10px] px-2 py-1 rounded font-bold cursor-pointer"
+                >
+                  Delete Selected ({selectedIds.length})
+                </button>
+              </div>
             )}
           </div>
 
@@ -5451,7 +5608,7 @@ export default function App({ sharing = null } = {}) {
         </div>
         {profileDraft && (
           <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60" role="dialog" aria-label="My Settings">
-            <form onSubmit={handleSaveProfile} className="w-80 bg-[#121829] border border-[#1c2541] rounded-lg p-5 space-y-3">
+            <form onSubmit={handleSaveProfile} className="w-96 bg-[#121829] border border-[#1c2541] rounded-lg p-5 space-y-3">
               <h2 className="text-sm font-bold text-gray-100">⚙ My Settings</h2>
               <p className="text-[11px] text-gray-400">Used on your exports. Each teammate has their own.</p>
               {[
@@ -5488,6 +5645,28 @@ export default function App({ sharing = null } = {}) {
                   )}
                 </div>
               </label>
+              <fieldset className="border border-[#1c2541] rounded p-3">
+                <legend className="text-xs text-gray-300 px-1">⛽ Fuel surcharge ($/mile, by pickup region)</legend>
+                <p className="text-[11px] text-gray-400 mb-2">Exported as a Per Mile surcharge on each load. Update weekly from your fuel surcharge report. Blank regions use the National Average; blank National exports no surcharge.</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {Object.entries(fuelSurchargeRegions).map(([key, region]) => (
+                    <label key={key} className="block text-xs text-gray-400">
+                      {region.label}
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={profileDraft.fuelSurcharge?.[key] ?? ''}
+                        onChange={(e) => setProfileDraft(current => ({
+                          ...current,
+                          fuelSurcharge: { ...current.fuelSurcharge, [key]: e.target.value }
+                        }))}
+                        placeholder="0.00"
+                        className="mt-1 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setProfileDraft(null)} className="bg-gray-600 hover:bg-gray-500 text-white px-3 py-1.5 text-xs rounded">Cancel</button>
                 <button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 text-xs rounded font-bold">Save</button>
@@ -5800,6 +5979,45 @@ export default function App({ sharing = null } = {}) {
                       })()}
                     </div>
                     <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. After you type a rate or any other load detail, it moves to the next load about 5 seconds after you stop editing (or press Enter).</p>
+                    {(() => {
+                      const fscRate = getFuelSurchargeRate(profile.fuelSurcharge, selectedOrder.origSt);
+                      if (!fscRate) return null;
+                      const region = fuelSurchargeRegions[getFuelSurchargeRegion(selectedOrder.origSt)];
+                      const fscMiles = Number(String(selectedOrder.miles || '').replace(/,/g, '').match(/\d+(?:\.\d+)?/)?.[0]);
+                      const fscTotal = fscMiles > 0 ? fscRate * fscMiles : null;
+                      const shownRate = ['user-entered', 'dat-screenshot', 'dat-api'].includes(selectedOrder.rateSource)
+                        ? Number(String(selectedOrder.rateInput || '').replace(/[$,]/g, ''))
+                        : 0;
+                      const linehaul = shownRate > 0 && fscTotal !== null ? shownRate - fscTotal : null;
+                      return (
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          <div
+                            aria-label="Linehaul"
+                            title="Linehaul = customer rate − fuel surcharge"
+                            className="h-12 flex items-center justify-between gap-2 bg-sky-950 border-2 border-sky-500 text-sky-300 px-3 rounded"
+                          >
+                            <span className="text-xl font-mono font-extrabold whitespace-nowrap">
+                              🚛 {linehaul !== null ? `$${linehaul.toFixed(2)}` : 'Linehaul'}
+                            </span>
+                            <span className="text-[11px] text-sky-400/90 text-right leading-tight">
+                              {linehaul !== null && fscMiles > 0 ? `$${(linehaul / fscMiles).toFixed(2)}/mi` : 'rate − FSC'}
+                            </span>
+                          </div>
+                          <div
+                            aria-label="Fuel surcharge"
+                            title={`Fuel surcharge on export (${region.label}). Update weekly in ⚙ My Settings.`}
+                            className="h-12 flex items-center justify-between gap-2 bg-amber-950 border-2 border-amber-500 text-amber-300 px-3 rounded"
+                          >
+                            <span className="text-xl font-mono font-extrabold whitespace-nowrap">
+                              ⛽ {fscTotal !== null ? `$${fscTotal.toFixed(2)}` : 'FSC'}
+                            </span>
+                            <span className="text-[11px] text-amber-400/90 text-right leading-tight">
+                              ${fscRate.toFixed(2)}/mi • {region.label}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-[1fr_8rem] gap-4">

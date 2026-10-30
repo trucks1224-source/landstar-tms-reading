@@ -151,13 +151,27 @@
 }
 
 .tms-colombia-flag {
+  position: relative;
   display: inline-block;
   flex-shrink: 0;
   width: 30px;
   height: 20px;
-  border-radius: 2px;
+  border-radius: 6px;
   background: linear-gradient(to bottom, #fcd116 0% 50%, #003893 50% 75%, #ce1126 75% 100%);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.22),
+    0 4px 14px rgba(0, 0, 0, 0.45),
+    0 0 12px rgba(94, 234, 212, 0.18);
+  overflow: hidden;
+}
+
+.tms-colombia-flag::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(115deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0.08) 28%, rgba(255, 255, 255, 0) 55%);
+  pointer-events: none;
 }
 
 .tms-brand-phone:hover {

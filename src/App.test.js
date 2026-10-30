@@ -22,7 +22,7 @@ export {
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
   getPastedImage, readClipboardImage, getImportedLoadSelection,
-  getFuelSurchargeRegion, getFuelSurchargeRate, normalizeFuelSurchargeRates, getLinehaulRate
+  getFuelSurchargeRegion, getFuelSurchargeRate, normalizeFuelSurchargeRates
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -1278,15 +1278,6 @@ test('rate per mile is calculated from rate and miles', () => {
   assert.equal(policy.getRatePerMile('', '500'), '');
   assert.equal(policy.getRatePerMile('1500', ''), '');
   assert.equal(policy.getRatePerMile('1500', '0'), '');
-});
-
-test('Landstar export rate is the linehaul: customer rate minus fuel surcharge', () => {
-  assert.equal(policy.getLinehaulRate('2000', '500', 0.87), 1565);
-  assert.equal(policy.getLinehaulRate('$2,000', '396.3', 0.9), 1643.33);
-  assert.equal(policy.getLinehaulRate('2000', '1,532 miles', 1.04), 406.72);
-  assert.equal(policy.getLinehaulRate('2000', '500', null), 2000);
-  assert.equal(policy.getLinehaulRate('2000', '', 0.87), 2000);
-  assert.equal(policy.getLinehaulRate('2000', '0', 0.87), 2000);
 });
 
 test('fuel surcharge region follows the pickup state', () => {

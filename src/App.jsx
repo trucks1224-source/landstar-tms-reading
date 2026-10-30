@@ -1981,14 +1981,6 @@ function getFuelSurchargeRate(rates, state) {
   return rate > 0 ? rate : null;
 }
 
-// The Landstar rate column carries the linehaul: customer rate minus the fuel surcharge.
-function getLinehaulRate(rateInput, milesValue, fuelSurchargeRate) {
-  const rate = Number(String(rateInput || '').replace(/[$,]/g, ''));
-  const miles = Number(normalizeMilesValue(milesValue));
-  const fscTotal = fuelSurchargeRate && miles > 0 ? fuelSurchargeRate * miles : 0;
-  return Math.round((rate - fscTotal) * 100) / 100;
-}
-
 function isTeamLoad(load) {
   return String(load?.team || '').trim().toLowerCase() === 'true' || isTeamEquipment(load?.eCode);
 }
@@ -4616,8 +4608,6 @@ export default function App({ sharing = null } = {}) {
       const miles = Number(normalizeMilesValue(ord.miles));
       const weight = parseWeightPounds(ord.weight);
       const rate = Number(String(ord.rateInput || '').replace(/[$,]/g, ''));
-      const fuelSurchargeTotal = fuelSurchargeRate && miles > 0 ? fuelSurchargeRate * miles : 0;
-      const linehaulRate = getLinehaulRate(ord.rateInput, ord.miles, fuelSurchargeRate);
       const postingCode = String(ord.postingCode || profile.postingCode).trim().toUpperCase();
       const visibilityCode = exportVisibilityGroup;
       const brokerable = ['true', 'y'].includes(String(ord.brokerable || '').trim().toLowerCase()) ? 'Y' : 'N';
@@ -4651,8 +4641,6 @@ export default function App({ sharing = null } = {}) {
       }
       if (!(rate > 0) || !['user-entered', 'dat-screenshot', 'dat-api'].includes(ord.rateSource)) {
         rowErrors.push('rate (enter a current DAT quote or import one via DAT API/screenshot)');
-      } else if (fuelSurchargeTotal > 0 && !(linehaulRate > 0)) {
-        rowErrors.push(`rate must be greater than the fuel surcharge total ($${fuelSurchargeTotal.toFixed(2)})`);
       }
 
       if (rowErrors.length) validationErrors.push(`Order ${ord.id}: ${rowErrors.join(', ')}`);
@@ -4680,7 +4668,7 @@ export default function App({ sharing = null } = {}) {
         "Equipment 3": "",
         "Weight(Required)": weight ?? '',
         "Rate Type(Required)": "Flat Rate",
-        "Rate(Required)": linehaulRate,
+        "Rate(Required)": rate,
         "Commodity": getLandstarCommodityValue(commodity),
         "Brokerable": brokerable,
         "Carrier Amt": rate,

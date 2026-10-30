@@ -4688,8 +4688,9 @@ export default function App({ sharing = null } = {}) {
         // The Landstar template has no Team column; team is set through this attribute.
         "Load Attributes": [isHazmatLoad(ord) && 'Hazmat', isTeamLoad(ord) && 'Team Required'].filter(Boolean).join(', '),
         "Comments": "",
-        "Fuel Surcharge Rate Type": fuelSurchargeRate ? "Per Mile" : "",
-        "Fuel Surcharge": fuelSurchargeRate ?? "",
+        // FSC columns stay blank; the fuel surcharge is already removed from the linehaul rate.
+        "Fuel Surcharge Rate Type": "",
+        "Fuel Surcharge": "",
         "Team": isTeamLoad(ord) ? 'true' : 'false'
       };
     });

@@ -8,7 +8,9 @@ export default defineConfig(({ mode }) => {
   for (const key of ['GOOGLE_MAPS_API_KEY', 'DAT_USERNAME', 'DAT_PASSWORD', 'DAT_USER_USERNAME', 'DAT_AUTH_BASE', 'DAT_RATECAST_URL']) {
     if (!process.env[key] && env[key]) {
       process.env[key] = env[key]
-    } I was a bunch of 
+    }
+  }
+
   return {
     server: {
       host: '127.0.0.1'

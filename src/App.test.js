@@ -705,7 +705,10 @@ for (const customer of customers) {
     const result = policy.replaceImportedCustomerLoads(customer, imported, existing);
     assert.equal(result.loads.length, 3);
     assert.deepEqual(Array.from(result.loads, order => order.id), ['123456', '123456-ALTA', '444444']);
-    assert.equal(result.loads.every(order => order.status === 'OPEN' && order.tag === 'OPEN'), true);
+    // Past-dated pickups (10/2026) import as ENT; re-imported existing loads reopen.
+    assert.equal(result.loads[0].status, 'OPEN');
+    assert.equal(result.loads[1].status, 'OPEN');
+    assert.equal(result.loads[2].status, 'ENT');
     assert.equal(result.loads[0].pickupTime, imported[0].pickupTime);
     assert.equal(result.loads[0].rateInput, '2100');
     assert.equal(result.loads[0].notes, 'Keep my note');
@@ -820,7 +823,8 @@ test('Para keeps one Richmond to Arion load per pickup day and applies red scree
   const result = policy.replaceImportedCustomerLoads(customers[0], imported, []);
   assert.deepEqual(Array.from(result.loads, order => order.id), ['2279675']);
   assert.equal(result.laneDayDuplicateCount, 2);
-  assert.equal(result.loads[0].status, 'OPEN');
+  // Past-dated pickup imports as ENT.
+  assert.equal(result.loads[0].status, 'ENT');
   const red = policy.replaceImportedCustomerLoads(customers[0], imported.map(order => ({
     ...order, screenshotStatus: 'ON HOLD'
   })), result.loads);
@@ -1392,16 +1396,17 @@ test('Nolan import selection uses processed load IDs and supports the NTG alias'
 });
 
 test('Nolan Excel imports check only imported loads while other customers keep manual selection', async () => {
+  const futureLoad = { ...load, pickupTime: '10/27/2099 0800 - 1200', deliveryTime: '10/28/2099 0800 - 1600' };
   for (const customer of [customers[2], customers[0]]) {
     const app = createAppHarness(customer, [
-      load,
+      futureLoad,
       { ...load, id: '999999', destCity: 'Boston', status: 'ENT', tag: 'ENT',
         landstarExportedAt: new Date().toISOString() }
     ]);
     await app.importExcel([
-      ['Load ID', 'Equipment', 'Origin City', 'Origin State', 'Origin Zip', 'Destination City', 'Destination State', 'Destination Zip'],
-      [load.id, 'V', 'Chicago', 'IL', '60601', 'Dallas', 'TX', '75201'],
-      ['222222', 'V', 'Chicago', 'IL', '60601', 'Austin', 'TX', '78701']
+      ['Load ID', 'Equipment', 'Origin City', 'Origin State', 'Origin Zip', 'Destination City', 'Destination State', 'Destination Zip', 'Pickup Date (From)', 'Delivery Date (From)'],
+      [load.id, 'V', 'Chicago', 'IL', '60601', 'Dallas', 'TX', '75201', '10/27/2099 0800', '10/28/2099 0800'],
+      ['222222', 'V', 'Chicago', 'IL', '60601', 'Austin', 'TX', '78701', '10/27/2099 0800', '10/28/2099 0800']
     ]);
     app.render();
     assert.equal(JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customer].length, 3);
@@ -1458,7 +1463,7 @@ test('DAT re-import reopens unchanged and manually priced ENT lanes while retain
   assert.equal(reopened.rateInput, '2500');
   assert.equal(reopened.driverPhone, '555-1234');
   assert.equal(Object.hasOwn(reopened, 'landstarExportedAt'), false);
-  assert.equal(result.loads.find(order => order.id === 'DAT-456-2').status, 'OPEN');
+  assert.equal(result.loads.find(order => order.id === 'DAT-456-2').status, 'ENT');
   assert.equal(result.loads.find(order => order.id === 'archive').status, 'ENT');
 });
 
@@ -1476,7 +1481,9 @@ test('all customers retain missing exported ENT loads for exactly 30 days, but r
     assert.equal(result.loads.find(order => order.id === 'recent').status, 'ENT', customer);
     assert.equal(result.loads.some(order => order.id === 'expired'), false, customer);
     const reopened = policy.replaceImportedCustomerLoads(customer, [load], [recent], { now }).loads[0];
-    assert.equal(reopened.status, 'OPEN');
+    // Named customers: the import is a new load with a past pickup, so it lands as ENT.
+    // Other customers: the import matches 'recent' by lane/day and reopens it.
+    assert.equal(reopened.status, customer === 'Other customer' ? 'OPEN' : 'ENT', customer);
     assert.equal(Object.hasOwn(reopened, 'landstarExportedAt'), false);
     const cleaned = policy.removeExpiredExportedLoads({ [customer]: [recent, expired] }, now);
     assert.deepEqual(Array.from(cleaned[customer], order => order.id), ['recent']);

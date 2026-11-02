@@ -2480,6 +2480,10 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
       value !== undefined && value !== null && String(value).trim() !== ''
     ));
     const merged = { ...existing, ...populatedFields, status: 'OPEN', tag: 'OPEN' };
+    if (!existing && hasPastPickupDate(load)) {
+      merged.status = 'ENT';
+      merged.tag = 'ENT';
+    }
     if (existing) {
       ['rateInput', 'rateSource', 'carrier', 'driver', 'driverPhone', 'truck', 'trailer', 'pickupEta', 'notes'].forEach(field => {
         if (String(existing[field] || '').trim()) merged[field] = existing[field];
@@ -2602,6 +2606,28 @@ function toAlphabeticalSuffix(index) {
 
 function getBaseLoadId(order) {
   return String(order?.sourceLoadId || order?.id || '').trim().replace(/-ALT[A-Z]+$/i, '');
+}
+
+// Returns true when the load's pickup date is before today (past-dated imports become ENT).
+function hasPastPickupDate(load) {
+  const text = String(load?.pickupTime || load?.puDate || '');
+  const match = text.match(/(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})\b/);
+  if (!match) return false;
+  const year = match[3].length === 2 ? 2000 + Number(match[3]) : Number(match[3]);
+  const pickup = new Date(year, Number(match[1]) - 1, Number(match[2]));
+  if (Number.isNaN(pickup.getTime())) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return pickup < today;
+}
+
+// Past-dated pickups import as ENT, but only for loads we have never seen before;
+// re-imports of existing loads keep their current status/assignment behavior.
+function applyPastPickupEntStatus(importedLoad, existingLoads) {
+  if (!hasPastPickupDate(importedLoad)) return importedLoad;
+  const baseId = getBaseLoadId(importedLoad);
+  const isNew = !existingLoads.some(load => getBaseLoadId(load) === baseId);
+  return isNew ? { ...importedLoad, status: 'ENT', tag: 'ENT' } : importedLoad;
 }
 
 function assignImportedLoadIdentity(importedLoad, existingLoads, stagedLoads) {
@@ -3588,7 +3614,7 @@ export default function App({ sharing = null } = {}) {
 
       const resolvedLoads = [];
       uniqueLoads.forEach(load => {
-        resolvedLoads.push(assignImportedLoadIdentity(load, existingOrders, resolvedLoads));
+        resolvedLoads.push(assignImportedLoadIdentity(applyPastPickupEntStatus(load, existingOrders), existingOrders, resolvedLoads));
       });
       const merged = new Map(existingOrders.map(load => [String(load.id), load]));
       resolvedLoads.forEach(load => {
@@ -3806,7 +3832,7 @@ export default function App({ sharing = null } = {}) {
 
         const resolvedImportedLoads = [];
         importedLoads.forEach(load => {
-          resolvedImportedLoads.push(assignImportedLoadIdentity(load, existingLoads, resolvedImportedLoads));
+          resolvedImportedLoads.push(assignImportedLoadIdentity(applyPastPickupEntStatus(load, existingLoads), existingLoads, resolvedImportedLoads));
         });
         const mergedLoads = new Map(existingLoads.map(load => [load.id, load]));
         resolvedImportedLoads.forEach(load => {
@@ -4326,7 +4352,7 @@ export default function App({ sharing = null } = {}) {
 
       const resolvedImportedLoads = [];
       importedLoads.forEach(load => {
-        resolvedImportedLoads.push(assignImportedLoadIdentity(load, existingOrders, resolvedImportedLoads));
+        resolvedImportedLoads.push(assignImportedLoadIdentity(applyPastPickupEntStatus(load, existingOrders), existingOrders, resolvedImportedLoads));
       });
 
       const existingIds = new Set(existingOrders.map(order => order.id));

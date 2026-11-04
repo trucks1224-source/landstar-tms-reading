@@ -24,7 +24,7 @@ export {
   getPastedImage, readClipboardImage, getImportedLoadSelection,
   getFuelSurchargeRegion, getFuelSurchargeRate, normalizeFuelSurchargeRates,
   writeSyncedKey, initSyncGuardFromStorage, readDataVersions, getChangedSyncedKeys,
-  isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted,
+  isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted, classifyChangedSyncedKeys,
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
@@ -1013,6 +1013,25 @@ test('unversioned load-list changes are detected and reverted to the last known 
     landstar_customerOrdersMap: storage.get('landstar_customerOrdersMap')
   })], ['landstar_customerOrdersMap']);
 });
+
+test('load-list changes from the cloud are adopted, never reverted, even without a version bump', () => {
+  const storage = new Map();
+  const deviceB = createSyncContext(storage);
+  deviceB.writeSyncedKey('landstar_customerOrdersMap', '{"rxo":[1]}');
+  // Another signed-in device imports; its list reaches this browser before (or without)
+  // the matching version row.
+  storage.set('landstar_customerOrdersMap', '{"rxo":[1,2,3]}');
+  const versions = deviceB.readDataVersions();
+  const changed = [...deviceB.getChangedSyncedKeys({ landstar_customerOrdersMap: storage.get('landstar_customerOrdersMap') })];
+  const fromCloud = deviceB.classifyChangedSyncedKeys(changed, versions, true);
+  assert.deepEqual([...fromCloud.adopt], ['landstar_customerOrdersMap']);
+  assert.equal(fromCloud.heal, false);
+  // The same unversioned change from a stale tab in this browser is still reverted.
+  const fromTab = deviceB.classifyChangedSyncedKeys(changed, versions, false);
+  assert.deepEqual([...fromTab.adopt], []);
+  assert.equal(fromTab.heal, true);
+});
+
 
 test('version bumps for unrelated keys do not mark the load list as externally changed', () => {
   const storage = new Map();

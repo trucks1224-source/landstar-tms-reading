@@ -3673,7 +3673,8 @@ function LoadListHistory({ onRestore }) {
       <button
         type="button"
         onClick={() => { setOpen(true); void loadRows(); }}
-        className="bg-slate-700 hover:bg-slate-600 px-2 py-0.5 text-[10px] font-bold rounded text-white cursor-pointer"
+        className="tms-tool"
+        data-accent="slate"
         title="Roll your load list back to a saved copy from the last 3 days"
       >
         🕘 History
@@ -6648,68 +6649,84 @@ export default function App({ sharing = null } = {}) {
               {showTools ? '▾ Hide tools' : '▸ Show tools'}
             </button>
             {showTools && (
-            <div className="flex flex-wrap items-center gap-1">
-              <label className={`bg-emerald-600 hover:bg-emerald-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} title="AI Screenshot Import">
-                <span>{isImportingScreenshot && screenshotImportMode === 'ai' ? screenshotImportProgress : '✨ Customer Screenshot'}</span>
-                <input type="file" accept="image/*" onChange={handleScreenshotImport} className="hidden" disabled={isImportingScreenshot} />
-              </label>
-              <button
-                type="button"
-                onClick={handlePasteNtgScreenshot}
-                disabled={isImportingScreenshot}
-                className="bg-amber-600 hover:bg-amber-500 px-2 py-0.5 text-[10px] font-bold rounded text-white cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-                title="Take a snip with Win+Shift+S, then paste it here without saving a file. You can also click the app background and press Ctrl+V. Imports into the selected customer."
-              >
-                Paste NTG Screenshot
-              </button>
-              <button
-                type="button"
-                onClick={() => handlePasteScreenshot('dat')}
-                disabled={isImportingScreenshot}
-                className="bg-indigo-600 hover:bg-indigo-500 px-2 py-0.5 text-[10px] font-bold rounded text-white cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-                title="Take a snip of the DAT load board with Win+Shift+S, then paste it here without saving a file. Imports into the selected customer."
-              >
-                {isImportingScreenshot && screenshotImportMode === 'dat' ? screenshotImportProgress : 'Paste DAT Screenshot'}
-              </button>
-              <label className="bg-blue-600 hover:bg-blue-500 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center" title="Import Excel Spreadsheet">
-                <span>📂 Import Excel</span>
-                <input type="file" accept=".xlsx, .xls, .csv" onChange={handleExcelImport} className="hidden" />
-              </label>
-              <button
-                type="button"
-                onClick={() => setIsGmailImportOpen(open => !open)}
-                className="bg-red-700 hover:bg-red-600 px-2 py-0.5 text-[10px] font-bold rounded text-white"
-                title="Search Gmail for loads"
-              >
-                Import Gmail
-              </button>
-              <button
-                onClick={handleExportToLandstar}
-                className="bg-purple-600 hover:bg-purple-500 px-2 py-0.5 text-[10px] font-bold rounded text-white cursor-pointer"
-              >
-                📥 Export
-              </button>
+            <div className="tms-toolbox">
+              <div className="tms-tool-group">
+                <span className="tms-tool-label">Import</span>
+                <div className="tms-tool-row">
+                  <label className={`tms-tool cursor-pointer ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} data-accent="emerald" title="AI Screenshot Import">
+                    <span>{isImportingScreenshot && screenshotImportMode === 'ai' ? screenshotImportProgress : '✨ Customer Screenshot'}</span>
+                    <input type="file" accept="image/*" onChange={handleScreenshotImport} className="hidden" disabled={isImportingScreenshot} />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handlePasteNtgScreenshot}
+                    disabled={isImportingScreenshot}
+                    className="tms-tool"
+                    data-accent="amber"
+                    title="Take a snip with Win+Shift+S, then paste it here without saving a file. You can also click the app background and press Ctrl+V. Imports into the selected customer."
+                  >
+                    Paste NTG Screenshot
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePasteScreenshot('dat')}
+                    disabled={isImportingScreenshot}
+                    className="tms-tool"
+                    data-accent="indigo"
+                    title="Take a snip of the DAT load board with Win+Shift+S, then paste it here without saving a file. Imports into the selected customer."
+                  >
+                    {isImportingScreenshot && screenshotImportMode === 'dat' ? screenshotImportProgress : 'Paste DAT Screenshot'}
+                  </button>
+                  <label className="tms-tool cursor-pointer" data-accent="sky" title="Import Excel Spreadsheet">
+                    <span>📂 Import Excel</span>
+                    <input type="file" accept=".xlsx, .xls, .csv" onChange={handleExcelImport} className="hidden" />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setIsGmailImportOpen(open => !open)}
+                    className="tms-tool"
+                    data-accent="rose"
+                    title="Search Gmail for loads"
+                  >
+                    Import Gmail
+                  </button>
+                </div>
+              </div>
+              <div className="tms-tool-group">
+                <span className="tms-tool-label">Post</span>
+                <div className="tms-tool-row">
+                  <button
+                    onClick={handleExportToLandstar}
+                    className="tms-tool tms-tool--primary"
+                    data-accent="violet"
+                    title="Export the selected (or shown) loads to a Landstar bulk file; the bot uploads it"
+                  >
+                    🚀 Export to Landstar
+                  </button>
+                </div>
+              </div>
+              <div className="tms-tool-group">
+                <span className="tms-tool-label">Data</span>
+                <div className="tms-tool-row">
+                  <button
+                    type="button"
+                    onClick={handleBackupExport}
+                    className="tms-tool"
+                    data-accent="slate"
+                    title="Download all customers, loads and rates as a backup file"
+                  >
+                    💾 Backup
+                  </button>
+                  <label className="tms-tool cursor-pointer" data-accent="slate" title="Restore customers, loads and rates from a backup file">
+                    <span>📤 Restore</span>
+                    <input type="file" accept=".json,application/json" onChange={handleBackupImport} className="hidden" />
+                  </label>
+                  <LoadListHistory onRestore={restoreLoadListSnapshot} />
+                </div>
+              </div>
             </div>
             )}
           </div>
-
-          {showHeader && (
-          <div className="tms-top-controls flex items-center justify-end gap-1 mb-2">
-            <button
-              type="button"
-              onClick={handleBackupExport}
-              className="bg-slate-700 hover:bg-slate-600 px-2 py-0.5 text-[10px] font-bold rounded text-white cursor-pointer"
-              title="Download all customers, loads and rates as a backup file"
-            >
-              💾 Backup
-            </button>
-            <label className="bg-slate-700 hover:bg-slate-600 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer text-white inline-flex items-center" title="Restore customers, loads and rates from a backup file">
-              <span>📤 Restore</span>
-              <input type="file" accept=".json,application/json" onChange={handleBackupImport} className="hidden" />
-            </label>
-            <LoadListHistory onRestore={restoreLoadListSnapshot} />
-          </div>
-          )}
 
           {isGmailImportOpen && (
             <div className="mb-3 rounded border border-red-700/60 bg-[#0b132b] p-2.5">

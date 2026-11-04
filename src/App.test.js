@@ -29,7 +29,7 @@ export {
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity,
-  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker
+  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -2274,4 +2274,15 @@ test('imported equipment and commodity text marks hazmat and tanker loads', () =
   assert.equal(policy.getImportedHazmatTanker('Van', ['NON-HAZMAT CHEMICALS']).hazmat, undefined);
   assert.equal(policy.getImportedHazmatTanker('Tanker', []).tanker, 'true');
   assert.deepEqual({ ...policy.getImportedHazmatTanker('Van - 53 Feet', ['CONSUMER GOODS']) }, {});
+});
+
+test('history copies are described by customer with load and booked counts', () => {
+  assert.equal(policy.describeLoadListSummary({
+    'Para 1522166 - ATZ': { loads: 27, booked: 0 },
+    'R X O 2429200 - ATZ': { loads: 2463, booked: 1 },
+    'Nolan 965974 - ATZ H': { loads: 0, booked: 0 }
+  }), 'R X O 2429200 - ATZ: 2,463 loads (1 booked) · Para 1522166 - ATZ: 27 loads');
+  assert.equal(policy.describeLoadListSummary({ X: { loads: 1, booked: 0 } }), 'X: 1 load');
+  assert.equal(policy.describeLoadListSummary({}), 'Empty list');
+  assert.equal(policy.describeLoadListSummary(null), 'No details');
 });

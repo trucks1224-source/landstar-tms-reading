@@ -2308,8 +2308,13 @@ function getLandstarCity(value, location) {
 }
 
 // Landstar caps city fields at 18 characters; shorten known long names, then hard-truncate.
+// ZIP city names Landstar rejects as "Invalid Origin/Destination", mapped to the
+// spelling its city list uses (the Post Office's short name, as shown on the board).
 const landstarCityAbbreviations = {
-  'WASHINGTON COURT HOUSE': 'Washington CH'
+  'WASHINGTON COURT HOUSE': 'Washington CH',
+  'HOT SPRINGS NATIONAL PARK': 'Hot Sprs', // ZIP 71901/71913
+  'FEASTERVILLE TREVOSE': 'Fstrvl Trvose', // ZIP 19053
+  'MC CORDSVILLE': 'McCordsville' // ZIP 46055
 };
 // Landstar shortens military-base names (e.g. its city list has "MARCH ARB, CA" for
 // ZIP 92518 "March Air Reserve Base"); cutting them at 18 characters instead gives a

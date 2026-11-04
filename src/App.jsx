@@ -2281,6 +2281,16 @@ function isTankerLoad(load) {
   return String(load?.tanker || '').toLowerCase() === 'true' || /tanker/i.test(String(load?.planningComment || ''));
 }
 
+// Customer lists mark hazmat and tanker freight in the equipment type ("Van Hazmat",
+// "Tanker") or the commodity ("HAZMAT CHEMICALS"). "NON-HAZMAT ..." is not hazmat.
+function getImportedHazmatTanker(equipment, commodities = []) {
+  const flags = {};
+  const text = [equipment, ...commodities].map(value => String(value || '')).join(' | ');
+  if (/(?<!NON[-\s]?)\bHAZ\s*MAT\b/i.test(text)) flags.hazmat = 'true';
+  if (/\bTANK(ER)?\b/i.test(String(equipment || ''))) flags.tanker = 'true';
+  return flags;
+}
+
 function isFlatbedEquipment(value) {
   return ['F', 'F,SD', 'FH'].includes(String(value || '').replace(/\s/g, '').toUpperCase());
 }
@@ -2364,12 +2374,15 @@ function isRxoCustomer(name) {
 }
 
 // R X O 2429200 - ATZ only (not ATZ P): van freight picking up in these states is
-// skipped on import and never exported. Reefer and other equipment are unaffected.
+// skipped on import and never exported. Reefer and other equipment, and hazmat or tanker
+// loads, are unaffected.
 const rxoSkippedVanOriginStates = new Set(['WI', 'IN', 'OH', 'MI', 'MN', 'SD', 'ND', 'UT', 'ID']);
 const vanEquipmentCodes = new Set(['VAN', '24VN', '28VN', '48VN', '53VN']);
 
 function isRxoSkippedVanLoad(customer, load) {
   if (normalizeCustomerName(customer) !== rxoCustomerName) return false;
+  // Hazmat and tanker freight is always kept, whatever the pickup state.
+  if (isHazmatLoad(load) || isTankerLoad(load)) return false;
   const originState = String(load?.origSt || '').trim().toUpperCase();
   if (!rxoSkippedVanOriginStates.has(originState)) return false;
   // getLandstarEquipmentCode maps V, VZ, VT and Van-or-Reefer (VR) to VAN.
@@ -4739,6 +4752,11 @@ export default function App({ sharing = null } = {}) {
         const colQ = isRxoImport && !hasRxoTimeColumns ? 16 : pickupTimeCol >= 0 ? pickupTimeCol : 16;
         const colR = isRxoImport && !hasRxoTimeColumns ? 17 : deliveryTimeCol >= 0 ? deliveryTimeCol : 17;
         const colS = findColIndex(['Bill as Miles', 'Miles', 'Distance', 'Loaded Miles'], 18);
+        // Only real column names here (no position fallback): other files put weight or
+        // dates where an RXO list has its commodity.
+        const commodityCols = ['Commodity', 'Commodity Description']
+          .map(name => findColIndex([name], -1))
+          .filter(index => index >= 0);
 
         const dataRows = rawRows.slice(1);
         const getRxoDateTime = (row, rowIndex, colIndex) => {
@@ -4807,9 +4825,11 @@ export default function App({ sharing = null } = {}) {
             }
           }
 
+          const hazmatTanker = getImportedHazmatTanker(rawEquip, commodityCols.map(index => row[index]));
           importedRows.push({
             id: loadId,
             eCode: eCodeVal,
+            ...hazmatTanker,
             status: 'OPEN',
             tag: 'OPEN',
             route: laneKey,

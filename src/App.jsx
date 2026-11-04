@@ -2987,44 +2987,59 @@ function createLaneLookupKey(order) {
   return JSON.stringify([origin, normalize(order.origSt), destination, normalize(order.destSt)]);
 }
 
-function recordRateHistory(customer, order, rate, source = 'manual') {
-  const history = readRateHistory();
-  const numericRate = Number(String(rate || '').replace(/[$,]/g, ''));
-  const key = createLaneRateKey(customer, order);
-  const lane = createLaneLookupKey(order);
-  if (!key || !lane || !(numericRate > 0) || !Number.isFinite(numericRate)) return history;
-  const now = new Date().toISOString();
-  const existingIndex = history.findIndex(entry => entry && entry.key === key && entry.rate === String(numericRate));
-  let next;
-  if (existingIndex >= 0) {
-    next = history.slice();
-    next[existingIndex] = { ...next[existingIndex], source, savedAt: now };
-  } else {
-    next = [...history, {
-      key,
-      lane,
-      customer: normalizeCustomerName(customer),
-      origCity: String(order.origCity || '').trim().toUpperCase(),
-      origSt: String(order.origSt || '').trim().toUpperCase(),
-      destCity: String(order.destCity || '').trim().toUpperCase(),
-      destSt: String(order.destSt || '').trim().toUpperCase(),
-      eCode: String(order.eCode || '').trim().toUpperCase(),
-      rate: String(numericRate),
-      source,
-      savedAt: now
-    }];
-  }
+// Adds (or refreshes) one rate per item in a history list; pure, no saving.
+function addRateHistoryEntries(history, customer, items, source, now = new Date().toISOString()) {
+  let next = history.slice();
+  items.forEach(({ order, rate }) => {
+    const numericRate = Number(String(rate || '').replace(/[$,]/g, ''));
+    const key = createLaneRateKey(customer, order);
+    const lane = createLaneLookupKey(order);
+    if (!key || !lane || !(numericRate > 0) || !Number.isFinite(numericRate)) return;
+    const existingIndex = next.findIndex(entry => entry && entry.key === key && entry.rate === String(numericRate));
+    if (existingIndex >= 0) {
+      next[existingIndex] = { ...next[existingIndex], source, savedAt: now };
+    } else {
+      next.push({
+        key,
+        lane,
+        customer: normalizeCustomerName(customer),
+        origCity: String(order.origCity || '').trim().toUpperCase(),
+        origSt: String(order.origSt || '').trim().toUpperCase(),
+        destCity: String(order.destCity || '').trim().toUpperCase(),
+        destSt: String(order.destSt || '').trim().toUpperCase(),
+        eCode: String(order.eCode || '').trim().toUpperCase(),
+        rate: String(numericRate),
+        source,
+        savedAt: now
+      });
+    }
+  });
   if (next.length > rateHistoryLimit) {
-    next = next.slice()
-      .sort((a, b) => String(b.savedAt).localeCompare(String(a.savedAt)))
-      .slice(0, rateHistoryLimit);
+    next = next.sort((a, b) => String(b.savedAt).localeCompare(String(a.savedAt))).slice(0, rateHistoryLimit);
   }
+  return next;
+}
+
+function saveRateHistory(next) {
   try {
     writeSyncedKey(rateHistoryKey, JSON.stringify(next));
   } catch (error) {
     console.error('Could not save rate history:', error);
   }
   return next;
+}
+
+function recordRateHistory(customer, order, rate, source = 'manual') {
+  const history = readRateHistory();
+  const next = addRateHistoryEntries(history, customer, [{ order, rate }], source);
+  return next.length === history.length && next.every((entry, i) => entry === history[i]) ? history : saveRateHistory(next);
+}
+
+// Every load exported to Landstar becomes a past rate for its lane, so the rate
+// outlives the ENT load (ENT loads are removed 30 days after export).
+function recordExportedRates(customer, exportedLoads) {
+  const items = exportedLoads.map(order => ({ order, rate: order.rateInput }));
+  return saveRateHistory(addRateHistoryEntries(readRateHistory(), customer, items, 'exported'));
 }
 
 // One-time seed: lanes that already have a saved rate predate the history log.
@@ -6012,6 +6027,7 @@ export default function App({ sharing = null } = {}) {
       ))
     };
     const saved = persistAppData(brokers, nextOrders);
+    setRateHistory(recordExportedRates(selectedBroker, readyEntries.map(({ ord }) => ord)));
     setExportErrorIds(failedIds);
     setCustomerOrdersMap(nextOrders);
     setSelectedIds(prev => prev.filter(id => !exportedIds.has(String(id))));
@@ -7113,7 +7129,7 @@ export default function App({ sharing = null } = {}) {
                               const titleParts = [
                                 entry.customer,
                                 entry.eCode || 'Any equipment',
-                                entry.source === 'manual' ? 'Entered' : entry.source === 'saved' ? 'Saved rate' : entry.source,
+                                entry.source === 'manual' ? 'Entered' : entry.source === 'saved' ? 'Saved rate' : entry.source === 'exported' ? 'Exported to Landstar' : entry.source,
                                 savedDate && !Number.isNaN(savedDate.getTime()) ? savedDate.toLocaleString() : ''
                               ].filter(Boolean);
                               if (!isExact) titleParts.push('different customer/equipment');

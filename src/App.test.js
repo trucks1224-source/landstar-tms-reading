@@ -27,7 +27,7 @@ export {
   isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted,
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
-  buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace
+  buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -2082,4 +2082,17 @@ test('long military base names are shortened the way Landstar lists them', () =>
   assert.equal(policy.toLandstarCity('Washington Court House'), 'Washington CH');
   assert.equal(policy.toLandstarCity('Air Force Base'), 'Air Force Base');
   assert.equal(policy.toLandstarCity('Elk Grove Village'), 'Elk Grove Village');
+});
+
+test('exported rates become past rates for the lane, one entry per distinct rate', () => {
+  const lane = { ...load, origCity: 'Elk Grove Village', origSt: 'IL', destCity: 'Mansfield', destSt: 'TX', eCode: 'VAN' };
+  let history = policy.addRateHistoryEntries([], customers[1], [
+    { order: { ...lane, id: '1' }, rate: '3175' },
+    { order: { ...lane, id: '2' }, rate: '$3,525' },
+    { order: { ...lane, id: '3' }, rate: '' }
+  ], 'exported', '2026-11-04T12:00:00.000Z');
+  assert.deepEqual(Array.from(history, entry => `${entry.rate}|${entry.source}`), ['3175|exported', '3525|exported']);
+  history = policy.addRateHistoryEntries(history, customers[1], [{ order: lane, rate: '3175' }], 'exported', '2026-11-05T12:00:00.000Z');
+  assert.equal(history.length, 2, 'same lane and rate refreshes instead of duplicating');
+  assert.equal(history.find(entry => entry.rate === '3175').savedAt, '2026-11-05T12:00:00.000Z');
 });

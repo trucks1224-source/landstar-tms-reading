@@ -2303,3 +2303,14 @@ test('intermodal (INT) loads are never imported, from any source, and older ones
   assert.deepEqual(Array.from(result.loads, l => l.id), ['2290002']);
   assert.equal(result.skippedEquipmentCount, 1);
 });
+
+test('the Team switch decides team, overriding team equipment codes', () => {
+  assert.equal(policy.isTeamLoad({ eCode: 'V', team: 'true' }), true);
+  assert.equal(policy.isTeamLoad({ eCode: 'VM', team: 'false' }), false, 'switched off on a team van');
+  assert.equal(policy.isTeamLoad({ eCode: 'VM' }), true, 'team equipment defaults to team');
+  assert.equal(policy.isTeamLoad({ eCode: 'V' }), false);
+  const app = createAppHarness(customers[0], [{ ...load, eCode: 'V' }]);
+  const team = app.find(node => node.props?.id === 'load-team');
+  assert.equal(team.type, 'select');
+  assert.equal(typeof team.props.onChange, 'function');
+});

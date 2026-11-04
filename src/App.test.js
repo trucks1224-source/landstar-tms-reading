@@ -2034,7 +2034,7 @@ test('Landstar comment box saves on the load, suggests Landstar comments, and su
   assert.equal(loads[0].landstarComment, 'Load Ready now');
 });
 
-test('driver links share only public load details and go after the comment in column AA', () => {
+test('driver links share only public load details and always use the live site', () => {
   const details = policy.buildInquiryDetails({
     ...load, id: '24552929', origCity: 'ELK GROVE VILLAGE', origSt: 'IL', destCity: 'MANSFIELD', destSt: 'TX',
     eCode: 'VAN', weight: '42000lbs', miles: '965', rateInput: '3175', planningComment: 'internal', driver: 'Alex'
@@ -2048,11 +2048,14 @@ test('driver links share only public load details and go after the comment in co
   assert.equal(details.callbackPhone, '(484) 575-6486');
   assert.ok(!JSON.stringify(details).includes('internal'));
 
-  assert.equal(policy.getInquiryUrl('abcDEF1234567890abcdef', 'https://tms.example.com'), 'https://tms.example.com/i/abcDEF1234567890abcdef');
-  assert.equal(policy.getInquiryUrl('abcDEF1234567890abcdef', 'http://localhost:5173'), 'http://localhost:5173/inquire.html?t=abcDEF1234567890abcdef');
-  assert.equal(policy.getLandstarExportComment({ landstarComment: ' Load Ready now ' }, 'https://x/i/T'), 'Load Ready now · Inquire: https://x/i/T');
-  assert.equal(policy.getLandstarExportComment({}, 'https://x/i/T'), 'Inquire: https://x/i/T');
-  assert.equal(policy.getLandstarExportComment({ landstarComment: 'No touch' }, ''), 'No touch');
+  assert.equal(policy.getInquiryUrl('abcDEF1234567890abcdef', 'https://tms.example.com/'), 'https://tms.example.com/i/abcDEF1234567890abcdef');
+  // Never a localhost link, even when the TMS runs on this computer.
+  assert.equal(policy.getInquiryUrl('abcDEF1234567890abcdef'), 'https://landstar-tms-reading-cffe.vercel.app/i/abcDEF1234567890abcdef');
+  // Column AA is a Landstar comment CODE: only standard comments go out, spelled Landstar's way.
+  assert.equal(policy.getLandstarExportComment({ landstarComment: ' load ready NOW ' }), 'Load Ready now');
+  assert.equal(policy.getLandstarExportComment({ landstarComment: 'Test comment' }), '');
+  assert.equal(policy.getLandstarExportComment({ landstarComment: 'Load Ready now · Inquire: https://x/i/T' }), '');
+  assert.equal(policy.getLandstarExportComment({}), '');
 });
 
 test('export uses the city and state of the entered ZIP, which is always correct', () => {
@@ -2064,4 +2067,11 @@ test('export uses the city and state of the entered ZIP, which is always correct
   assert.equal(wrongState.state, 'TX');
   const noZip = policy.getExportPlace('Elk Grove Village', 'IL', null);
   assert.deepEqual({ ...noZip }, { city: 'Elk Grove Village', state: 'IL', fromZip: false });
+});
+
+test('comment box warns when a comment is not a Landstar comment code', () => {
+  const app = createAppHarness(customers[0], [{ ...load, id: '1', landstarComment: 'Test comment' }]);
+  assert.ok(app.find(node => node.props?.id === 'landstar-comment-warning'), 'free text is flagged');
+  const standard = createAppHarness(customers[0], [{ ...load, id: '1', landstarComment: 'load ready now' }]);
+  assert.equal(standard.find(node => node.props?.id === 'landstar-comment-warning'), null);
 });

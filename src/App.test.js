@@ -29,7 +29,7 @@ export {
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity,
-  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, isRxoSkippedVanLoad, isMexicoLoad
+  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -2210,7 +2210,11 @@ test('RXO ATZ van loads picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID are s
   for (const state of ['WI', 'IN', 'OH', 'MI', 'MN', 'SD', 'ND', 'UT', 'ID']) {
     assert.equal(policy.isRxoSkippedVanLoad(rxo, van(state)), true, state);
   }
-  for (const eCode of ['V', 'VZ', 'VAN', 'VR', 'VT', '53 FT VAN']) assert.equal(policy.isRxoSkippedVanLoad(rxo, van('OH', eCode)), true, eCode);
+  for (const eCode of ['V', 'VAN', 'VR', 'VT', '53 FT VAN']) assert.equal(policy.isRxoSkippedVanLoad(rxo, van('OH', eCode)), true, eCode);
+  // Hazmat and tanker freight is never skipped.
+  assert.equal(policy.isRxoSkippedVanLoad(rxo, van('OH', 'VZ')), false, 'VZ is a hazmat van');
+  assert.equal(policy.isRxoSkippedVanLoad(rxo, { ...van('OH', 'VAN:VAN'), hazmat: 'true' }), false, 'hazmat');
+  assert.equal(policy.isRxoSkippedVanLoad(rxo, { ...van('OH', 'VAN:VAN'), tanker: 'true' }), false, 'tanker');
   assert.equal(policy.isRxoSkippedVanLoad(rxo, van('OH', 'R')), false, 'reefer is not skipped');
   assert.equal(policy.isRxoSkippedVanLoad(rxo, van('OH', 'F')), false, 'flatbed is not skipped');
   assert.equal(policy.isRxoSkippedVanLoad(rxo, { ...van('IL'), destSt: 'OH' }), false, 'only the pickup state counts');
@@ -2221,15 +2225,16 @@ test('RXO ATZ van loads picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID are s
 test('RXO ATZ imports leave out skipped-state van loads and clear older ones', () => {
   const rxo = 'R X O 2429200 - ATZ';
   const result = policy.replaceImportedCustomerLoads(rxo, [
-    { ...load, id: '24590001', origCity: 'Columbus', origSt: 'OH', eCode: 'VZ' },
+    { ...load, id: '24590001', origCity: 'Columbus', origSt: 'OH', eCode: 'V' },
     { ...load, id: '24590002', origCity: 'Columbus', origSt: 'OH', eCode: 'R' },
-    { ...load, id: '24590003', origCity: 'Atlanta', origSt: 'GA', eCode: 'VZ' }
+    { ...load, id: '24590003', origCity: 'Atlanta', origSt: 'GA', eCode: 'V' },
+    { ...load, id: '24590004', origCity: 'Columbus', origSt: 'OH', destCity: 'Memphis', destSt: 'TN', destZip: '38118', eCode: 'VAN:VAN', hazmat: 'true' }
   ], [
     { ...load, id: '24580000', origCity: 'Detroit', origSt: 'MI', eCode: 'V' },
     { ...load, id: '24580001', origCity: 'Detroit', origSt: 'MI', eCode: 'V', status: 'BOOKED', tag: 'BOOKED', driver: 'Alex' }
   ]);
   const ids = Array.from(result.loads, l => l.id).sort();
-  assert.deepEqual(ids, ['24580001', '24590002', '24590003'], 'OH van skipped, OH reefer kept, old MI van cleared, booked kept');
+  assert.deepEqual(ids, ['24580001', '24590002', '24590003', '24590004'], 'OH van skipped, OH reefer and OH hazmat van kept, old MI van cleared, booked kept');
   assert.equal(result.skippedRxoVanCount, 1);
 });
 
@@ -2260,4 +2265,13 @@ test('imports leave out loads to or from Mexico and clear older ones; booked loa
   assert.throws(() => policy.replaceImportedCustomerLoads('R X O 2429200 - ATZ', [
     { ...load, id: '24590103', origSt: 'TX', destSt: 'JA' }
   ], []), /Mexico/);
+});
+
+test('imported equipment and commodity text marks hazmat and tanker loads', () => {
+  assert.equal(policy.getImportedHazmatTanker('Van Hazmat', ['HAZMAT CHEMICALS']).hazmat, 'true');
+  assert.equal(policy.getImportedHazmatTanker('Van Hazmat', ['NON-HAZMAT CHEMICALS']).hazmat, 'true', 'hazmat equipment wins');
+  assert.equal(policy.getImportedHazmatTanker('Van or Reefer - 53', ['HAZMAT CHEMICALS']).hazmat, 'true');
+  assert.equal(policy.getImportedHazmatTanker('Van', ['NON-HAZMAT CHEMICALS']).hazmat, undefined);
+  assert.equal(policy.getImportedHazmatTanker('Tanker', []).tanker, 'true');
+  assert.deepEqual({ ...policy.getImportedHazmatTanker('Van - 53 Feet', ['CONSUMER GOODS']) }, {});
 });

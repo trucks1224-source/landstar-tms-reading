@@ -27,7 +27,7 @@ export {
   isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted,
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
-  buildInquiryDetails, getInquiryUrl, getLandstarExportComment
+  buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -2053,4 +2053,15 @@ test('driver links share only public load details and go after the comment in co
   assert.equal(policy.getLandstarExportComment({ landstarComment: ' Load Ready now ' }, 'https://x/i/T'), 'Load Ready now · Inquire: https://x/i/T');
   assert.equal(policy.getLandstarExportComment({}, 'https://x/i/T'), 'Inquire: https://x/i/T');
   assert.equal(policy.getLandstarExportComment({ landstarComment: 'No touch' }, ''), 'No touch');
+});
+
+test('export uses the city and state of the entered ZIP, which is always correct', () => {
+  const commerce = policy.getExportPlace('CITY OF COMMER...', 'CA', zipcodes.lookup('90040'));
+  assert.deepEqual({ ...commerce }, { city: 'Los Angeles', state: 'CA', fromZip: true });
+  const neville = policy.getExportPlace('NEVILLE ISLAND', 'PA', zipcodes.lookup('15225'));
+  assert.deepEqual({ ...neville }, { city: 'Pittsburgh', state: 'PA', fromZip: true });
+  const wrongState = policy.getExportPlace('Mansfield', 'OK', zipcodes.lookup('76063'));
+  assert.equal(wrongState.state, 'TX');
+  const noZip = policy.getExportPlace('Elk Grove Village', 'IL', null);
+  assert.deepEqual({ ...noZip }, { city: 'Elk Grove Village', state: 'IL', fromZip: false });
 });

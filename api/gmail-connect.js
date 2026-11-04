@@ -1,6 +1,8 @@
 import { connectState, getServiceClient, secretsMatch } from './_lib/server.js';
 
-const scope = 'https://www.googleapis.com/auth/gmail.readonly';
+// readonly: import rate confirmations. send: email you when a driver inquires
+// about a load (api/load-inquiry.js). Reconnect once after adding a scope.
+const scope = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send';
 
 // One-time setup: open /api/gmail-connect?key=<CRON_SECRET> while signed in to the
 // Gmail account that receives the rate confirmations. Google redirects back here

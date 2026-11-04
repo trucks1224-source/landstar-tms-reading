@@ -13,7 +13,10 @@ export default defineConfig(({ mode }) => {
 
   return {
     server: {
-      host: '127.0.0.1'
+      host: '127.0.0.1',
+      watch: {
+        ignored: ['**/bot/browser-profile/**']
+      }
     },
     plugins: [
       react(),

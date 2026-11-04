@@ -5,6 +5,8 @@ import { detectScreenshotGrid, readScreenshotGrid } from './lib/screenshotTable.
 import { findNtgCardRegions } from './lib/ntgCards.js';
 
 const exportedLoadRetentionMs = 30 * 24 * 60 * 60 * 1000;
+// Landstar's bulk upload accepts at most 25 loads per spreadsheet.
+const landstarExportChunkSize = 25;
 
 // ==========================================
 // ZIP CODE AUTO-FILL DICTIONARY & HELPER
@@ -153,6 +155,68 @@ function removeExpiredExportedLoads(customerOrders, now = Date.now()) {
   return changed ? nextOrders : customerOrders;
 }
 
+// Standard comments from the "Comments" tab of Landstar's bulk template (column AA).
+const landstarCommentOptions = [
+  'All inclusive rate', 'Animals prohibited at facility', 'Driver Assist', 'Includes FSC', 'Load Ready now',
+  'No Facial hair allowed', 'No touch', 'Round Trip', 'Tarping Required', 'Tracking Required',
+  'Truck may be subject to security inspection onsite'
+];
+
+function getStatusTag(status) {
+  if (status === 'ENT') return 'ENT';
+  if (status === 'ON HOLD') return 'HOLD';
+  if (status === 'BOOKED') return 'BOOKED';
+  return 'OPEN';
+}
+
+// Booking a load needs a driver; the load moves to the Booked Loads folder.
+function bookLoad(load, bookedAt = new Date().toISOString()) {
+  if (!String(load?.driver || '').trim()) {
+    throw new Error('Enter the driver name before booking this load.');
+  }
+  return { ...load, status: 'BOOKED', tag: 'BOOKED', bookedAt: load.bookedAt || bookedAt };
+}
+
+// Drivers, trucks and trailers already used on any load, for auto-complete.
+// When a driver appears on several loads, the most recently booked one wins
+// and any missing phone/truck/trailer is filled from their other loads.
+function buildDriverDirectory(customerOrdersMap) {
+  const clean = value => String(value || '').trim();
+  const drivers = new Map();
+  const trucks = new Set();
+  const trailers = new Set();
+  Object.values(customerOrdersMap || {}).flat().forEach(load => {
+    const truck = clean(load?.truck);
+    const trailer = clean(load?.trailer);
+    if (truck) trucks.add(truck);
+    if (trailer) trailers.add(trailer);
+    const driver = clean(load?.driver);
+    if (!driver) return;
+    const key = driver.toUpperCase();
+    const entry = { driver, driverPhone: clean(load.driverPhone), truck, trailer, at: Date.parse(load.bookedAt) || 0 };
+    const known = drivers.get(key);
+    if (!known) { drivers.set(key, entry); return; }
+    const [newer, older] = entry.at > known.at ? [entry, known] : [known, entry];
+    drivers.set(key, {
+      ...newer,
+      driverPhone: newer.driverPhone || older.driverPhone,
+      truck: newer.truck || older.truck,
+      trailer: newer.trailer || older.trailer
+    });
+  });
+  const byText = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  return {
+    drivers: Array.from(drivers.values()).sort((a, b) => byText(a.driver, b.driver)),
+    trucks: Array.from(trucks).sort(byText),
+    trailers: Array.from(trailers).sort(byText)
+  };
+}
+
+function findKnownDriver(directory, name) {
+  const key = String(name || '').trim().toUpperCase();
+  return key ? directory.drivers.find(entry => entry.driver.toUpperCase() === key) || null : null;
+}
+
 function markLoadsExported(loads, exportedIds, exportedAt) {
   return loads.map(load => exportedIds.has(String(load.id))
     ? { ...load, status: 'ENT', tag: 'ENT', landstarExportedAt: exportedAt }
@@ -163,6 +227,7 @@ const screenshotColumns = [0, 0.024, 0.081, 0.171, 0.27, 0.352, 0.452, 0.547, 0.
 const canadianProvinceCodes = new Set('AB BC MB NB NL NS NT NU ON PE QC SK YT'.split(' '));
 const stateCodes = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
 canadianProvinceCodes.forEach(code => stateCodes.add(code));
+const sortedStateCodes = Array.from(stateCodes).sort();
 
 function normalizeCanadianPostalCode(value) {
   const compact = String(value || '').toUpperCase().replace(/[\s-]/g, '');
@@ -1986,14 +2051,20 @@ function isTeamLoad(load) {
 }
 
 // Team vans (VM/VT) are shown as a plain V; the Team flag carries the team part.
+// Oversized/specialized equipment we don't haul; these rows are skipped on import.
+function isSkippableEquipment(value) {
+  return /OVER\s*DIMENSIONAL|OVER\s*SIZE|OVERSIZE|REMOVABLE\s*GOOSE\s*NECK|GOOSE\s*NECK|\bRGN\b|LOW\s*BOY|DOUBLE\s*DROP/i.test(String(value || ''));
+}
+
 function normalizeEquipmentCode(value) {
   const code = String(value || '').trim().toUpperCase();
   if (!code) return '';
   if (/^D-LG/.test(code)) return code.includes('D-ST') ? 'D-LG,D-ST' : 'D-LG';
   if (/STRAIGHT\s*TRUCK|SPRINTER|BOX\s*TRUCK|HOT\s*SHOT/.test(code)) return 'D-LG,D-ST';
   if (/CONESTOGA/.test(code)) return 'FLCS';
-  if (/FLAT\s*BED|\bFLAT\b/.test(code)) return 'F,SD';
-  if (/STEP\s*DECK|\bSTEP\b/.test(code)) return 'SD';
+  // Step Deck before flatbed so "Flatbed or Step Deck" imports as SD.
+  if (/STEP\s*DECK|STEPDECK|\bSTEP\b/.test(code)) return 'SD';
+  if (/FLAT\s*BED|\bFLAT\b/.test(code)) return 'F';
   if (/\bVAN\b\s+OR\s+(REEFER|REFR)\b/.test(code)) return 'V,R';
   if (/REEFER|\bREFR/.test(code)) return 'R';
   if (/\bVAN\b/.test(code)) return 'V';
@@ -2308,11 +2379,11 @@ async function fetchDatRateForImport(order, selectedBroker, laneRates) {
     if (data && data.rate) {
       return { rateInput: String(data.rate), rateSource: 'dat-api' };
     }
+    return { rateInput: '', rateSource: undefined, error: data?.error || `DAT rate request failed (${response.status}).` };
   } catch (error) {
     console.error(`Could not auto-fetch DAT rate for order ${order.id}:`, error);
+    return { rateInput: '', rateSource: undefined, error: error.message || 'Could not reach the DAT rate service.' };
   }
-
-  return { rateInput: '', rateSource: undefined };
 }
 
 function normalizeLoadId(value) {
@@ -2485,7 +2556,7 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
       merged.tag = 'ENT';
     }
     if (existing) {
-      ['rateInput', 'rateSource', 'carrier', 'driver', 'driverPhone', 'truck', 'trailer', 'pickupEta', 'notes'].forEach(field => {
+      ['rateInput', 'rateSource', 'carrier', 'driver', 'driverPhone', 'truck', 'trailer', 'pickupEta', 'notes', 'landstarComment'].forEach(field => {
         if (String(existing[field] || '').trim()) merged[field] = existing[field];
       });
       if (allowGeneratedIds && load.rateSource === 'dat-screenshot' && existing.rateSource !== 'user-entered'
@@ -2510,6 +2581,12 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
       merged.tag = 'HOLD';
     }
     delete merged.screenshotStatus;
+    // A booked load stays booked when the customer's list is imported again.
+    if (existing?.status === 'BOOKED' && !isNewDayForExistingLoad(existing, load)) {
+      merged.status = 'BOOKED';
+      merged.tag = 'BOOKED';
+      merged.bookedAt = existing.bookedAt;
+    }
     const reservedLoads = existingLoads.filter(order => additive || (order.status === 'ENT'
       && Number.isFinite(Date.parse(order.landstarExportedAt))
       && now - Date.parse(order.landstarExportedAt) < exportedLoadRetentionMs));
@@ -2517,6 +2594,8 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
   }
   const retained = existingLoads.filter(load => {
     if (matchedIds.has(String(load.id))) return false;
+    // Booked loads are covered; keep them even when the customer drops them from the list.
+    if (load.status === 'BOOKED') return true;
     const exportedAt = Date.parse(load.landstarExportedAt);
     // Screenshot imports also keep loads moved to ENT by hand (no export date).
     const retainedArchive = load.status === 'ENT' && (Number.isFinite(exportedAt)
@@ -2690,6 +2769,151 @@ function createLaneRateKey(customer, order) {
   ]);
 }
 
+// ==========================================
+// MULTI-TAB / MULTI-DEVICE WRITE GUARD
+// ==========================================
+// Every saved write carries a per-key version number. A tab may only write a key when
+// its state is based on the latest saved version; otherwise an older tab's save would
+// wipe newer data (e.g. freshly imported loads) saved from another tab or device.
+const dataVersionKey = 'landstar_dataVersion';
+const syncedDataKeys = [
+  'landstar_brokers',
+  'landstar_customerOrdersMap',
+  'landstar_laneRates',
+  'landstar_rateHistory',
+  'landstar_exportedLoads',
+  'landstar_profile'
+];
+let syncGuardReady = false;
+const lastSavedValues = {};
+const lastSavedVersions = {};
+let reloadSavedDataFn = null;
+let loadListHealTimer = null;
+
+function readDataVersions() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(dataVersionKey));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function initSyncGuardFromStorage() {
+  if (syncGuardReady) return;
+  syncGuardReady = true;
+  const versions = readDataVersions();
+  syncedDataKeys.forEach(key => {
+    try {
+      lastSavedValues[key] = localStorage.getItem(key);
+    } catch (error) {
+      lastSavedValues[key] = null;
+    }
+    lastSavedVersions[key] = versions[key] || 0;
+  });
+}
+
+function getLastSavedValue(key) {
+  return key in lastSavedValues ? lastSavedValues[key] : undefined;
+}
+
+// Writes one synced key and bumps its version. Returns false without writing when
+// storage already holds a newer version from another tab/device; the caller should
+// adopt that newer data instead of overwriting it.
+function writeSyncedKey(key, value) {
+  initSyncGuardFromStorage();
+  const versions = readDataVersions();
+  if ((versions[key] || 0) > (lastSavedVersions[key] || 0)) return false;
+  localStorage.setItem(key, value);
+  const nextVersions = { ...versions, [key]: (versions[key] || 0) + 1 };
+  localStorage.setItem(dataVersionKey, JSON.stringify(nextVersions));
+  lastSavedValues[key] = value;
+  lastSavedVersions[key] = nextVersions[key];
+  return true;
+}
+
+// Records values this tab loaded from storage so later change detection only reacts
+// to writes made elsewhere. Keys whose content is unchanged simply track the latest
+// version so unrelated version bumps do not mark them as externally changed.
+function markStorageAdopted(values) {
+  const versions = readDataVersions();
+  syncedDataKeys.forEach(key => {
+    if (key in values) {
+      lastSavedValues[key] = values[key];
+      lastSavedVersions[key] = versions[key] || 0;
+    } else {
+      try {
+        if (localStorage.getItem(key) === lastSavedValues[key]) lastSavedVersions[key] = versions[key] || 0;
+      } catch (error) {
+        // Keep the previous stamp when storage cannot be read.
+      }
+    }
+  });
+}
+
+// Synced keys whose stored string differs from what this tab last saved or adopted.
+function getChangedSyncedKeys(values) {
+  initSyncGuardFromStorage();
+  return Object.entries(values)
+    .filter(([key, value]) => lastSavedValues[key] !== value)
+    .map(([key]) => key);
+}
+
+// True when a key changed without its version advancing, i.e. it was written by an
+// outdated app version or a stale tab that does not version its writes.
+function isUnversionedExternalChange(key) {
+  initSyncGuardFromStorage();
+  if (!(key in lastSavedValues)) return false;
+  let current;
+  try {
+    current = localStorage.getItem(key);
+  } catch (error) {
+    return false;
+  }
+  if (current === lastSavedValues[key]) return false;
+  const versions = readDataVersions();
+  return (versions[key] || 0) <= (lastSavedVersions[key] || 0);
+}
+
+// Restores the last known-good value over an unversioned external write. The write
+// goes through the normal path so it also syncs back to the cloud and other tabs.
+function restoreLastSavedKey(key) {
+  const value = getLastSavedValue(key);
+  if (value === undefined || value === null) return false;
+  if (!isUnversionedExternalChange(key)) return false;
+  return writeSyncedKey(key, value);
+}
+
+// Gives a version bump a short window to arrive before treating a load-list change as
+// a regression from an outdated app version; realtime echoes of the data and its
+// version can arrive in either order.
+function scheduleUnversionedLoadListHeal() {
+  if (loadListHealTimer !== null || typeof setTimeout === 'undefined') return;
+  loadListHealTimer = setTimeout(() => {
+    loadListHealTimer = null;
+    if (restoreLastSavedKey('landstar_customerOrdersMap')) {
+      console.warn('Ignored a load-list change from an outdated app version or stale tab; kept the newer load list.');
+    }
+  }, 2500);
+}
+
+// Persist a rate for a lane so the next load in the same lane reuses it.
+// Returns the updated laneRates map (or the original if the rate/key is invalid).
+function rememberLaneRate(laneRates, customer, order, rate, source = 'manual') {
+  const numericRate = Number(String(rate || '').replace(/[$,]/g, ''));
+  const key = createLaneRateKey(customer, order);
+  if (!key || !(numericRate > 0) || !Number.isFinite(numericRate)) return laneRates;
+  recordRateHistory(customer, order, numericRate, source);
+  if (laneRates[key] === String(numericRate)) return laneRates;
+  const next = { ...laneRates, [key]: String(numericRate) };
+  try {
+    writeSyncedKey('landstar_laneRates', JSON.stringify(next));
+  } catch (error) {
+    console.error('Could not save lane rate:', error);
+  }
+  return next;
+}
+
 function getSavedLaneRate(laneRates, customer, order) {
   const fixedRate = getFixedLaneRate(customer, order);
   if (fixedRate) return fixedRate;
@@ -2712,6 +2936,123 @@ function getSavedLaneRate(laneRates, customer, order) {
     if (createLaneRateKey(parts[0], legacyOrder) === key && rate) return rate;
   }
   return '';
+}
+
+// ==========================================
+// HISTORICAL RATE LOOKUP
+// ==========================================
+// Every saved lane rate is also kept in a per-user history so the app can suggest
+// past rates for an identical lane as soon as origin and destination are known.
+// One row per distinct rate per lane; reusing a rate refreshes its timestamp.
+const rateHistoryKey = 'landstar_rateHistory';
+const rateHistoryLimit = 1000;
+
+function readRateHistory() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(rateHistoryKey));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    console.error('Could not load rate history:', error);
+    return [];
+  }
+}
+
+// Lane match ignoring customer and equipment, e.g. CITYOFINDUSTRY, CA -> CALEXICO, CA.
+function createLaneLookupKey(order) {
+  const normalize = value => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const origin = normalize(order.origCity);
+  const destination = normalize(order.destCity);
+  if (!origin || !destination) return '';
+  return JSON.stringify([origin, normalize(order.origSt), destination, normalize(order.destSt)]);
+}
+
+function recordRateHistory(customer, order, rate, source = 'manual') {
+  const history = readRateHistory();
+  const numericRate = Number(String(rate || '').replace(/[$,]/g, ''));
+  const key = createLaneRateKey(customer, order);
+  const lane = createLaneLookupKey(order);
+  if (!key || !lane || !(numericRate > 0) || !Number.isFinite(numericRate)) return history;
+  const now = new Date().toISOString();
+  const existingIndex = history.findIndex(entry => entry && entry.key === key && entry.rate === String(numericRate));
+  let next;
+  if (existingIndex >= 0) {
+    next = history.slice();
+    next[existingIndex] = { ...next[existingIndex], source, savedAt: now };
+  } else {
+    next = [...history, {
+      key,
+      lane,
+      customer: normalizeCustomerName(customer),
+      origCity: String(order.origCity || '').trim().toUpperCase(),
+      origSt: String(order.origSt || '').trim().toUpperCase(),
+      destCity: String(order.destCity || '').trim().toUpperCase(),
+      destSt: String(order.destSt || '').trim().toUpperCase(),
+      eCode: String(order.eCode || '').trim().toUpperCase(),
+      rate: String(numericRate),
+      source,
+      savedAt: now
+    }];
+  }
+  if (next.length > rateHistoryLimit) {
+    next = next.slice()
+      .sort((a, b) => String(b.savedAt).localeCompare(String(a.savedAt)))
+      .slice(0, rateHistoryLimit);
+  }
+  try {
+    writeSyncedKey(rateHistoryKey, JSON.stringify(next));
+  } catch (error) {
+    console.error('Could not save rate history:', error);
+  }
+  return next;
+}
+
+// One-time seed: lanes that already have a saved rate predate the history log.
+// They appear as undated "saved" suggestions until a fresh rate is recorded.
+function seedRateHistoryFromLaneRates(laneRates) {
+  const seeded = [];
+  Object.entries(laneRates || {}).forEach(([key, rate]) => {
+    let parts;
+    try {
+      parts = JSON.parse(key);
+    } catch (error) {
+      return;
+    }
+    const numericRate = Number(String(rate || '').replace(/[$,]/g, ''));
+    if (!Array.isArray(parts) || parts.length !== 8 || !(numericRate > 0)) return;
+    const entry = {
+      key,
+      customer: parts[0],
+      origCity: parts[1],
+      origSt: parts[2],
+      destCity: parts[4],
+      destSt: parts[5],
+      eCode: parts[7],
+      rate: String(numericRate),
+      source: 'saved',
+      savedAt: ''
+    };
+    entry.lane = createLaneLookupKey(entry);
+    if (entry.lane) seeded.push(entry);
+  });
+  return seeded;
+}
+
+// Past rates for the order's lane: exact customer/equipment matches first, then
+// the same city pair under other customers or equipment. Newest first.
+function getLaneRateHistory(history, customer, order) {
+  const key = createLaneRateKey(customer, order);
+  const lane = createLaneLookupKey(order);
+  if (!lane) return [];
+  const newestFirst = (a, b) => String(b.savedAt).localeCompare(String(a.savedAt));
+  const exact = [];
+  const similar = [];
+  history.forEach(entry => {
+    if (!entry) return;
+    const entryLane = entry.lane || createLaneLookupKey(entry);
+    if (entryLane !== lane) return;
+    (key && entry.key === key ? exact : similar).push(entry);
+  });
+  return [...exact.sort(newestFirst), ...similar.sort(newestFirst)];
 }
 
 function normalizeBrokerList(value) {
@@ -2841,6 +3182,292 @@ async function readClipboardImage(clipboard) {
   throw new Error('No screenshot is on the clipboard. Take a snip with Win+Shift+S, then return here and paste it.');
 }
 
+// ---------- Booked Loads page & driver tracking ----------
+
+const trackingStages = ['Booked', 'Dispatched', 'At Pickup', 'Loaded', 'In Transit', 'At Delivery', 'Delivered'];
+const checkCallDueMs = 4 * 60 * 60 * 1000;
+
+// First date/time in a schedule like "11/06/2026 1100 - 1300" as a local timestamp.
+function parseScheduleStart(value) {
+  const match = String(splitScheduleRange(value)[0] || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):?(\d{2})/);
+  if (!match) return null;
+  const year = match[3].length === 2 ? 2000 + Number(match[3]) : Number(match[3]);
+  return new Date(year, Number(match[1]) - 1, Number(match[2]), Number(match[4]), Number(match[5])).getTime();
+}
+
+// Every booked load across all customers: active loads by pickup time, delivered last.
+function getBookedLoads(customerOrdersMap) {
+  return Object.entries(customerOrdersMap || {})
+    .flatMap(([customer, loads]) => (loads || []).filter(load => load.status === 'BOOKED').map(load => ({ customer, load })))
+    .sort((a, b) => {
+      const delivered = entry => (entry.load.trackingStage === 'Delivered' ? 1 : 0);
+      if (delivered(a) !== delivered(b)) return delivered(a) - delivered(b);
+      return (parseScheduleStart(a.load.pickupTime) ?? Infinity) - (parseScheduleStart(b.load.pickupTime) ?? Infinity);
+    });
+}
+
+function getLastCheckCall(load) {
+  const calls = Array.isArray(load.checkCalls) ? load.checkCalls : [];
+  return calls.length ? calls[calls.length - 1] : null;
+}
+
+// What needs attention on a booked load: late (red) beats check call due (amber).
+function getTrackingAlert(load, now = Date.now()) {
+  const stage = load.trackingStage || 'Booked';
+  if (stage === 'Delivered') return null;
+  const pickupAt = parseScheduleStart(load.pickupTime);
+  if (pickupAt && now > pickupAt && ['Booked', 'Dispatched'].includes(stage)) {
+    return { level: 'late', text: 'Pickup time passed, not at pickup yet' };
+  }
+  const deliveryAt = parseScheduleStart(load.deliveryTime);
+  if (deliveryAt && now > deliveryAt && stage !== 'At Delivery') {
+    return { level: 'late', text: 'Delivery time passed, not delivered' };
+  }
+  const lastAt = Date.parse(getLastCheckCall(load)?.at) || Date.parse(load.bookedAt);
+  if (Number.isFinite(lastAt) && now - lastAt > checkCallDueMs) {
+    return { level: 'due', text: `Check call due (${Math.floor((now - lastAt) / 3600000)}h since last update)` };
+  }
+  return null;
+}
+
+// Records a check call (and the stage it reports) on the load; keeps the last 20.
+function logCheckCall(load, { stage, note = '' }, at = new Date().toISOString()) {
+  const nextStage = trackingStages.includes(stage) ? stage : (load.trackingStage || 'Booked');
+  const calls = Array.isArray(load.checkCalls) ? load.checkCalls : [];
+  return {
+    ...load,
+    trackingStage: nextStage,
+    checkCalls: [...calls, { at, stage: nextStage, note: String(note).trim() }].slice(-20)
+  };
+}
+
+function formatCheckTime(iso) {
+  const time = Date.parse(iso);
+  if (!Number.isFinite(time)) return '';
+  return new Date(time).toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: 'numeric', minute: '2-digit' });
+}
+
+function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate }) {
+  const activeCount = entries.filter(({ load }) => load.trackingStage !== 'Delivered').length;
+  const alertCount = entries.filter(({ load }) => getTrackingAlert(load, now)).length;
+  const phoneDigits = value => String(value || '').replace(/[^\d+]/g, '');
+  return (
+    <div className="flex flex-col gap-4" aria-label="Booked Loads">
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-[#161f36] px-4 py-3 rounded-lg border border-purple-500/60">
+        <div>
+          <h2 className="text-lg font-bold text-purple-200">📦 Booked Loads</h2>
+          <p className="text-xs text-gray-300">
+            {activeCount} active · {entries.length - activeCount} delivered · {alertCount} need attention · all customers
+          </p>
+        </div>
+        <button type="button" onClick={onBack} className="bg-slate-700 hover:bg-slate-600 text-white text-xs px-3 py-1.5 rounded font-semibold cursor-pointer">
+          ← Back to loads
+        </button>
+      </div>
+      {entries.length === 0 && (
+        <p className="text-sm text-gray-300 bg-[#121829] border border-[#1c2541] rounded-lg p-6 text-center">
+          No booked loads yet. Open a load, enter the driver, and click 📦 Book Load.
+        </p>
+      )}
+      {entries.map(({ customer, load }) => {
+        const stage = load.trackingStage || 'Booked';
+        const alert = getTrackingAlert(load, now);
+        const lastCall = getLastCheckCall(load);
+        const delivered = stage === 'Delivered';
+        const phone = phoneDigits(load.driverPhone);
+        return (
+          <div
+            key={`${customer}|${load.id}`}
+            data-booked-load={load.id}
+            className={`rounded-lg border p-4 bg-[#121829] ${alert?.level === 'late' ? 'border-red-500' : alert?.level === 'due' ? 'border-amber-400' : delivered ? 'border-[#1c2541] opacity-60' : 'border-purple-500/50'}`}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] text-gray-400">{customer}</p>
+                <button type="button" onClick={() => onOpen(customer, load.id)} title="Open this load" className="text-white font-bold text-sm hover:underline cursor-pointer">
+                  #{load.id}
+                </button>
+                <p className="text-sm text-white">{load.origCity}, {load.origSt} → {load.destCity}, {load.destSt}</p>
+                <p className="text-[11px] text-gray-300">PU {load.pickupTime || '—'} · DEL {load.deliveryTime || '—'}{load.rateInput ? ` · $${load.rateInput}` : ''}</p>
+              </div>
+              <div className="text-sm text-white">
+                <p className="font-semibold">🚚 {load.driver || 'No driver'}</p>
+                <p className="text-[11px] text-gray-300">Truck {load.truck || '—'} · Trailer {load.trailer || '—'}{load.pickupEta ? ` · PU ETA ${load.pickupEta}` : ''}</p>
+                {phone ? (
+                  <p className="flex gap-2 mt-1">
+                    <a href={`tel:${phone}`} className="bg-emerald-700 hover:bg-emerald-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold">📞 Call {load.driverPhone}</a>
+                    <a href={`sms:${phone}`} className="bg-sky-700 hover:bg-sky-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold">💬 Text</a>
+                  </p>
+                ) : <p className="text-[11px] text-amber-300 mt-1">No driver phone on file</p>}
+              </div>
+              <div className="flex flex-col items-end gap-1">
+                <label className="text-[11px] text-gray-400" htmlFor={`stage-${customer}-${load.id}`}>Stage</label>
+                <select
+                  id={`stage-${customer}-${load.id}`}
+                  value={stage}
+                  onChange={event => onUpdate(customer, load.id, logCheckCall(load, { stage: event.target.value, note: `Stage: ${event.target.value}` }))}
+                  className="bg-[#0b132b] border border-[#1c2541] rounded p-1 text-xs text-white"
+                >
+                  {trackingStages.map(option => <option key={option} value={option}>{option}</option>)}
+                </select>
+                {alert && (
+                  <span role="alert" className={`text-[11px] px-2 py-0.5 rounded font-bold ${alert.level === 'late' ? 'bg-red-600 text-white' : 'bg-amber-400 text-black'}`}>
+                    {alert.level === 'late' ? '⚠ ' : '⏰ '}{alert.text}
+                  </span>
+                )}
+              </div>
+            </div>
+            <form
+              className="flex gap-2 mt-3"
+              onSubmit={event => {
+                event.preventDefault();
+                const form = event.currentTarget;
+                const note = String(form.elements.note.value || '').trim();
+                if (!note) return;
+                onUpdate(customer, load.id, logCheckCall(load, { stage, note }));
+                form.reset();
+              }}
+            >
+              <input name="note" type="text" placeholder="Check call note (location, ETA, issues)…" className="min-w-0 flex-1 bg-[#0b132b] border border-[#1c2541] rounded p-1.5 text-xs text-white" />
+              <button type="submit" className="bg-purple-600 hover:bg-purple-500 text-white text-xs px-3 rounded font-semibold cursor-pointer">Log check call</button>
+            </form>
+            <p className="text-[11px] text-gray-300 mt-2">
+              {lastCall
+                ? `Last update ${formatCheckTime(lastCall.at)} · ${lastCall.stage}${lastCall.note ? ` · ${lastCall.note}` : ''}`
+                : `Booked ${formatCheckTime(load.bookedAt) || ''} · no check calls yet`}
+            </p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------- Driver inquiry links ----------
+
+const inquiryCompanyName = 'Landstar';
+
+// Long random code for a load's public driver link (not guessable).
+function createInquiryToken() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Only what a driver should see: no customer name, notes or internal fields.
+function buildInquiryDetails(load, profile = {}) {
+  const rate = Number(String(load?.rateInput || '').replace(/[$,]/g, ''));
+  const phone = String(profile.phone || '').replace(/\D/g, '');
+  const weight = parseWeightPounds(load?.weight);
+  const miles = Number(normalizeMilesValue(load?.miles));
+  return {
+    ref: String(load?.id || ''),
+    company: inquiryCompanyName,
+    callbackPhone: phone.length === 10 ? `(${phone.slice(0, 3)}) ${phone.slice(3, 6)}-${phone.slice(6)}` : '',
+    origin: `${load?.origCity || ''}, ${load?.origSt || ''}`.replace(/^, |, $/g, ''),
+    destination: `${load?.destCity || ''}, ${load?.destSt || ''}`.replace(/^, |, $/g, ''),
+    pickup: String(load?.pickupTime || ''),
+    delivery: String(load?.deliveryTime || ''),
+    equipment: getEquipmentDescription(load?.eCode) || String(load?.eCode || ''),
+    weight: weight ? `${weight.toLocaleString('en-US')} lbs` : '',
+    miles: miles > 0 ? `${Math.round(miles)} mi` : '',
+    rate: rate > 0 ? `$${rate.toLocaleString('en-US')}` : ''
+  };
+}
+
+// Short public link on the live site; the dev server has no /i/ route, so it uses the page directly.
+function getInquiryUrl(token, origin = window.location.origin) {
+  return /\/\/(localhost|127\.0\.0\.1)(:|$)/.test(origin)
+    ? `${origin}/inquire.html?t=${token}`
+    : `${origin}/i/${token}`;
+}
+
+// What goes in Landstar column AA: your comment, then the load's driver link.
+function getLandstarExportComment(load, url) {
+  return [String(load?.landstarComment || '').trim(), url ? `Inquire: ${url}` : '']
+    .filter(Boolean).join(' · ');
+}
+
+function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
+  return (
+    <div className="fixed right-4 top-16 z-40 w-[26rem] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto bg-[#121829] border border-purple-500 rounded-lg shadow-2xl p-3 normal-case tracking-normal text-left" role="dialog" aria-label="Driver inquiries">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-sm font-bold text-purple-200">📨 Driver inquiries</h2>
+        <button type="button" onClick={onClose} className="text-gray-300 hover:text-white text-sm px-2 cursor-pointer" aria-label="Close inquiries">✕</button>
+      </div>
+      {inquiries.length === 0 && <p className="text-xs text-gray-300">No inquiries yet. Use 🔗 Copy driver link on a load and send it to drivers.</p>}
+      {inquiries.map(inquiry => (
+        <div key={inquiry.id} className={`border rounded p-2 mb-2 text-xs text-white ${inquiry.seen ? 'border-[#1c2541] opacity-75' : 'border-purple-400 bg-purple-950/30'}`}>
+          <div className="flex justify-between gap-2">
+            <span className="font-bold">{inquiry.driver_name}</span>
+            <span className="text-gray-400">{formatCheckTime(inquiry.created_at)}</span>
+          </div>
+          <p>
+            <a href={`tel:${String(inquiry.driver_phone).replace(/[^\d+]/g, '')}`} className="text-emerald-300 underline">📞 {inquiry.driver_phone}</a>
+            {inquiry.mc_or_truck ? ` · ${inquiry.mc_or_truck}` : ''}
+          </p>
+          {inquiry.message && <p className="text-gray-200 mt-1">“{inquiry.message}”</p>}
+          <p className="text-gray-400 mt-1">Load #{inquiry.load_id} · {inquiry.customer}</p>
+          {inquiry.notify_error && <p className="text-amber-300 mt-1">Email not sent: {inquiry.notify_error}</p>}
+          <div className="flex gap-2 mt-1">
+            <button type="button" onClick={() => onOpen(inquiry)} className="bg-purple-600 hover:bg-purple-500 text-white px-2 py-0.5 rounded font-semibold cursor-pointer">Open load</button>
+            {!inquiry.seen && <button type="button" onClick={() => onSeen(inquiry)} className="bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded cursor-pointer">Mark seen</button>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// The Landstar upload bot (bot/status-server.js) reports its login status on
+// this computer while it runs. No answer means the bot is not running.
+const BOT_STATUS_URL = 'http://127.0.0.1:47615/status';
+const botStatusStyles = {
+  'logged-in': { label: 'Bot logged in', dot: '#22c55e', glow: '0 0 8px #22c55e' },
+  uploading: { label: 'Bot uploading', dot: '#22c55e', glow: '0 0 8px #22c55e' },
+  'signing-in': { label: 'Bot signing in…', dot: '#facc15', glow: '0 0 8px #facc15' },
+  starting: { label: 'Bot starting…', dot: '#facc15', glow: '0 0 8px #facc15' },
+  off: { label: 'Bot off', dot: '#64748b', glow: 'none' }
+};
+
+function BotStatusLight() {
+  const [status, setStatus] = useState({ state: 'off', message: 'Upload bot is not running' });
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1500);
+      try {
+        const response = await fetch(BOT_STATUS_URL, { cache: 'no-store', signal: controller.signal });
+        const next = await response.json();
+        if (!cancelled) setStatus(botStatusStyles[next.state] ? next : { state: 'off', message: 'Upload bot is not running' });
+      } catch {
+        if (!cancelled) setStatus({ state: 'off', message: 'Upload bot is not running' });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    check();
+    const interval = setInterval(check, 3000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+  const style = botStatusStyles[status.state] || botStatusStyles.off;
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 bg-slate-800 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal"
+      title={status.message || style.label}
+      role="status"
+      aria-live="polite"
+    >
+      <span
+        aria-hidden="true"
+        style={{ width: 10, height: 10, borderRadius: '50%', background: style.dot, boxShadow: style.glow, display: 'inline-block' }}
+      />
+      {style.label}
+    </span>
+  );
+}
+
 export default function App({ sharing = null } = {}) {
   const [brokers, setBrokers] = useState(() => {
     try {
@@ -2880,6 +3507,21 @@ export default function App({ sharing = null } = {}) {
       return {};
     }
   });
+  const [rateHistory, setRateHistory] = useState(() => readRateHistory());
+
+  // One-time seed: pre-existing saved lane rates become undated history entries.
+  useEffect(() => {
+    if (rateHistory.length || localStorage.getItem(rateHistoryKey)) return;
+    const seeded = seedRateHistoryFromLaneRates(laneRates);
+    if (!seeded.length) return;
+    try {
+      writeSyncedKey(rateHistoryKey, JSON.stringify(seeded));
+    } catch (error) {
+      console.error('Could not save rate history:', error);
+    }
+    setRateHistory(seeded);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [exportedLoadRegistry, setExportedLoadRegistry] = useState(() => {
     try {
       const savedRegistry = JSON.parse(localStorage.getItem('landstar_exportedLoads'));
@@ -2897,7 +3539,7 @@ export default function App({ sharing = null } = {}) {
 
   const [filter, setFilter] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [loadFilters, setLoadFilters] = useState({ rate: '', minMiles: '', maxMiles: '' });
+  const [loadFilters, setLoadFilters] = useState({ rate: '', minMiles: '', maxMiles: '', pickupState: '', deliveryState: '' });
   const [laneSort, setLaneSort] = useState('');
   const [showTools, setShowTools] = useState(true);
   const [showCustomers, setShowCustomers] = useState(true);
@@ -2935,6 +3577,11 @@ export default function App({ sharing = null } = {}) {
   const [shareSelection, setShareSelection] = useState([]);
   const [shareBusy, setShareBusy] = useState(false);
   const [shareMessage, setShareMessage] = useState('');
+  // Keep these last: tests address earlier state hooks by position.
+  const [view, setView] = useState('loads');
+  const [clock, setClock] = useState(() => Date.now());
+  const [inquiries, setInquiries] = useState([]);
+  const [showInquiries, setShowInquiries] = useState(false);
 
   const getLatestExportedRegistry = () => {
     try {
@@ -2950,8 +3597,31 @@ export default function App({ sharing = null } = {}) {
 
   const persistAppData = (nextBrokers = brokers, nextOrders = customerOrdersMap) => {
     try {
-      localStorage.setItem('landstar_brokers', JSON.stringify(nextBrokers));
-      localStorage.setItem('landstar_customerOrdersMap', JSON.stringify(nextOrders));
+      initSyncGuardFromStorage();
+      const versions = readDataVersions();
+      const brokersStale = (versions.landstar_brokers || 0) > (lastSavedVersions.landstar_brokers || 0);
+      const ordersStale = (versions.landstar_customerOrdersMap || 0) > (lastSavedVersions.landstar_customerOrdersMap || 0);
+      if (brokersStale || ordersStale) {
+        // Another tab or device saved newer data since this tab's state was last synced.
+        // Adopt it instead of overwriting it with this tab's older state.
+        setStorageError('Newer data was saved from another tab or device, so the list was refreshed.');
+        if (reloadSavedDataFn) reloadSavedDataFn();
+        return true;
+      }
+      const brokersValue = JSON.stringify(nextBrokers);
+      const ordersValue = JSON.stringify(nextOrders);
+      localStorage.setItem('landstar_brokers', brokersValue);
+      localStorage.setItem('landstar_customerOrdersMap', ordersValue);
+      const nextVersions = {
+        ...versions,
+        landstar_brokers: (versions.landstar_brokers || 0) + 1,
+        landstar_customerOrdersMap: (versions.landstar_customerOrdersMap || 0) + 1
+      };
+      localStorage.setItem(dataVersionKey, JSON.stringify(nextVersions));
+      lastSavedValues.landstar_brokers = brokersValue;
+      lastSavedValues.landstar_customerOrdersMap = ordersValue;
+      lastSavedVersions.landstar_brokers = nextVersions.landstar_brokers;
+      lastSavedVersions.landstar_customerOrdersMap = nextVersions.landstar_customerOrdersMap;
       setStorageError('');
       return true;
     } catch (error) {
@@ -3122,8 +3792,9 @@ export default function App({ sharing = null } = {}) {
       if (laneRateKey && numericRate > 0 && Number.isFinite(numericRate)) {
         const nextLaneRates = { ...laneRates, [laneRateKey]: String(numericRate) };
         setLaneRates(nextLaneRates);
+        setRateHistory(recordRateHistory(selectedBroker, updatedOrder, numericRate, 'manual'));
         try {
-          localStorage.setItem('landstar_laneRates', JSON.stringify(nextLaneRates));
+          writeSyncedKey('landstar_laneRates', JSON.stringify(nextLaneRates));
         } catch (error) {
           console.error('Could not save lane rate:', error);
           setStorageError('Could not save lane rates in this browser. Check available storage.');
@@ -3194,8 +3865,35 @@ export default function App({ sharing = null } = {}) {
     }
   };
 
-  const handleSave = () => {
+  const saveLoad = updatedOrder => {
+    setSelectedOrder(updatedOrder);
+    setCustomerOrdersMap(prev => ({
+      ...prev,
+      [selectedBroker]: (prev[selectedBroker] || []).map(o => o.id === updatedOrder.id ? updatedOrder : o)
+    }));
+  };
+
+  const handleBookLoad = () => {
     if (!selectedOrder) return;
+    try {
+      saveLoad(bookLoad(selectedOrder));
+    } catch (error) {
+      alert(error.message);
+    }
+  };
+
+  // Typing or picking a known driver fills in their phone, truck and trailer
+  // (only into boxes that are still empty).
+  const handleDriverChange = value => {
+    if (!selectedOrder) return;
+    const known = findKnownDriver(driverDirectory, value);
+    const updatedOrder = { ...selectedOrder, driver: value };
+    if (known) {
+      ['driverPhone', 'truck', 'trailer'].forEach(field => {
+        if (!String(selectedOrder[field] || '').trim() && known[field]) updatedOrder[field] = known[field];
+      });
+    }
+    saveLoad(updatedOrder);
   };
 
   const handleDelete = () => {
@@ -3226,9 +3924,10 @@ export default function App({ sharing = null } = {}) {
     }
   };
 
-  const handleSelectFirst25 = () => {
-    const first25Ids = filteredOrders.slice(0, 25).map(o => o.id);
-    setSelectedIds(first25Ids);
+  const handleClearAllFilters = () => {
+    setSearchQuery('');
+    setLoadFilters({ rate: '', minMiles: '', maxMiles: '', pickupState: '', deliveryState: '' });
+    setLaneSort('');
   };
 
   const handleDeleteSelected = () => {
@@ -3247,8 +3946,9 @@ export default function App({ sharing = null } = {}) {
     const updatedOrder = {
       ...selectedOrder,
       status: newStatus,
-      tag: newStatus === 'ENT' ? 'ENT' : newStatus === 'ON HOLD' ? 'HOLD' : 'OPEN'
+      tag: getStatusTag(newStatus)
     };
+    if (newStatus !== 'BOOKED') delete updatedOrder.bookedAt;
     setSelectedOrder(updatedOrder);
     setCustomerOrdersMap(prev => ({
       ...prev,
@@ -3258,7 +3958,7 @@ export default function App({ sharing = null } = {}) {
 
   const handleMoveSelected = (newStatus) => {
     if (selectedIds.length === 0) return;
-    const tag = newStatus === 'ENT' ? 'ENT' : newStatus === 'ON HOLD' ? 'HOLD' : 'OPEN';
+    const tag = getStatusTag(newStatus);
     setCustomerOrdersMap(prev => ({
       ...prev,
       [selectedBroker]: (prev[selectedBroker] || []).map(o => (
@@ -3278,42 +3978,101 @@ export default function App({ sharing = null } = {}) {
     }
   };
 
-  // Picks up changes saved from another browser or by teammates on shared customers
-  // without resetting the customer and load being worked on.
+  // Picks up changes saved from another browser or by teammates on shared customers.
+  // Only keys whose stored value actually changed are adopted, so an unrelated sync
+  // event (e.g. a lane-rate update) never replaces the load list being worked on.
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const reloadSavedData = () => {
-      let nextBrokers;
-      let nextOrders;
-      let nextRates;
-      let nextRegistry;
+      let values;
       try {
-        nextBrokers = normalizeBrokerList(JSON.parse(localStorage.getItem('landstar_brokers')));
-        nextOrders = removeExpiredExportedLoads(
-          normalizeCustomerOrders(JSON.parse(localStorage.getItem('landstar_customerOrdersMap')))
-        );
-        const savedRates = JSON.parse(localStorage.getItem('landstar_laneRates'));
-        nextRates = savedRates && typeof savedRates === 'object' && !Array.isArray(savedRates) ? savedRates : {};
-        const savedRegistry = JSON.parse(localStorage.getItem('landstar_exportedLoads'));
-        nextRegistry = savedRegistry && typeof savedRegistry === 'object' && !Array.isArray(savedRegistry) ? savedRegistry : {};
+        values = {
+          landstar_brokers: localStorage.getItem('landstar_brokers'),
+          landstar_customerOrdersMap: localStorage.getItem('landstar_customerOrdersMap'),
+          landstar_laneRates: localStorage.getItem('landstar_laneRates'),
+          landstar_rateHistory: localStorage.getItem('landstar_rateHistory'),
+          landstar_exportedLoads: localStorage.getItem('landstar_exportedLoads'),
+          landstar_profile: localStorage.getItem('landstar_profile')
+        };
       } catch (error) {
         console.error('Could not load the latest saved data:', error);
         return;
       }
-      const nextSelected = nextBrokers.includes(selectedBroker) ? selectedBroker : nextBrokers[0];
-      setBrokers(nextBrokers);
-      setCustomerOrdersMap(nextOrders);
-      setLaneRates(nextRates);
-      setExportedLoadRegistry(nextRegistry);
-      setProfile(getUserProfile());
-      setSelectedBroker(nextSelected);
-      setSelectedOrder(current => {
-        const loads = nextOrders[nextSelected] || [];
-        return (current && loads.find(load => String(load.id) === String(current.id))) || loads[0] || null;
+      initSyncGuardFromStorage();
+      const versions = readDataVersions();
+      const changedKeys = getChangedSyncedKeys(values);
+      const adopted = {};
+      changedKeys.forEach(key => {
+        const versioned = (versions[key] || 0) > (lastSavedVersions[key] || 0);
+        // A load-list change without a version bump came from an outdated app version
+        // or a stale tab; keep this tab's newer list and restore it instead.
+        if (key === 'landstar_customerOrdersMap' && !versioned) {
+          scheduleUnversionedLoadListHeal();
+          return;
+        }
+        adopted[key] = values[key];
       });
+      // Track version bumps that arrived without content changes.
+      markStorageAdopted({});
+      if (!Object.keys(adopted).length) return;
+      let nextBrokers;
+      let nextOrders;
+      let nextRates;
+      let nextRateHistory;
+      let nextRegistry;
+      let brokerList;
+      let ordersMap;
+      try {
+        if ('landstar_brokers' in adopted) {
+          nextBrokers = normalizeBrokerList(JSON.parse(adopted.landstar_brokers));
+        }
+        if ('landstar_customerOrdersMap' in adopted) {
+          nextOrders = removeExpiredExportedLoads(normalizeCustomerOrders(JSON.parse(adopted.landstar_customerOrdersMap)));
+        }
+        if ('landstar_laneRates' in adopted) {
+          const savedRates = JSON.parse(adopted.landstar_laneRates);
+          nextRates = savedRates && typeof savedRates === 'object' && !Array.isArray(savedRates) ? savedRates : {};
+        }
+        if ('landstar_rateHistory' in adopted) {
+          const savedHistory = JSON.parse(adopted.landstar_rateHistory);
+          nextRateHistory = Array.isArray(savedHistory) ? savedHistory : [];
+        }
+        if ('landstar_exportedLoads' in adopted) {
+          const savedRegistry = JSON.parse(adopted.landstar_exportedLoads);
+          nextRegistry = savedRegistry && typeof savedRegistry === 'object' && !Array.isArray(savedRegistry) ? savedRegistry : {};
+        }
+        if (nextBrokers || nextOrders) {
+          brokerList = nextBrokers || normalizeBrokerList(JSON.parse(values.landstar_brokers));
+          ordersMap = nextOrders || removeExpiredExportedLoads(normalizeCustomerOrders(JSON.parse(values.landstar_customerOrdersMap)));
+        }
+      } catch (error) {
+        console.error('Could not load the latest saved data:', error);
+        return;
+      }
+      markStorageAdopted(adopted);
+      if (nextBrokers) setBrokers(nextBrokers);
+      if (nextOrders) setCustomerOrdersMap(nextOrders);
+      if (nextRates) setLaneRates(nextRates);
+      if (nextRateHistory) setRateHistory(nextRateHistory);
+      if (nextRegistry) setExportedLoadRegistry(nextRegistry);
+      setProfile(getUserProfile());
+      if (nextBrokers || nextOrders) {
+        const nextSelected = brokerList.includes(selectedBroker) ? selectedBroker : brokerList[0];
+        setSelectedBroker(nextSelected);
+        setSelectedOrder(current => {
+          const loads = ordersMap[nextSelected] || [];
+          return (current && loads.find(load => String(load.id) === String(current.id))) || loads[0] || null;
+        });
+      }
     };
+    reloadSavedDataFn = reloadSavedData;
     window.addEventListener('landstar-data-changed', reloadSavedData);
-    return () => window.removeEventListener('landstar-data-changed', reloadSavedData);
+    window.addEventListener('storage', reloadSavedData);
+    return () => {
+      if (reloadSavedDataFn === reloadSavedData) reloadSavedDataFn = null;
+      window.removeEventListener('landstar-data-changed', reloadSavedData);
+      window.removeEventListener('storage', reloadSavedData);
+    };
   }, [selectedBroker]);
 
   useEffect(() => (sharing ? sharing.onSharedCustomersChange(setSharedCustomers) : undefined), [sharing]);
@@ -3344,7 +4103,7 @@ export default function App({ sharing = null } = {}) {
       return;
     }
     try {
-      localStorage.setItem('landstar_profile', JSON.stringify(nextProfile));
+      writeSyncedKey('landstar_profile', JSON.stringify(nextProfile));
     } catch (error) {
       console.error('Could not save My Settings:', error);
       alert('Could not save My Settings. Check available browser storage and try again.');
@@ -3596,15 +4355,20 @@ export default function App({ sharing = null } = {}) {
       }
 
       // Auto-fetch DAT rates for Gmail imported loads if missing
+      let gmailDatRateError = '';
       for (const load of uniqueLoads) {
         if (!Number(load.rateInput) > 0) {
           const datRateInfo = await fetchDatRateForImport(load, selectedBroker, laneRates);
           if (datRateInfo.rateInput) {
             load.rateInput = datRateInfo.rateInput;
             load.rateSource = datRateInfo.rateSource;
+            setLaneRates(prev => rememberLaneRate(prev, selectedBroker, load, load.rateInput, load.rateSource));
+          } else if (!gmailDatRateError && datRateInfo.error) {
+            gmailDatRateError = datRateInfo.error;
           }
         }
       }
+      setRateHistory(readRateHistory());
 
       const { mileageError: mileageCalculationError } = await applyGoogleRoadMiles(
         deduplicatedLoads,
@@ -3663,6 +4427,7 @@ export default function App({ sharing = null } = {}) {
             ? `• Previously exported; moved to OPEN: ${exportedCount}\n`
             : `• Previously exported; kept OPEN: ${exportedCount}\n`
           : '') +
+        (gmailDatRateError ? `• DAT rates could not be fetched; enter rates manually. DAT reported: ${gmailDatRateError}\n` : '') +
         (saved ? '• Status: Saved successfully in browser storage.' : '• Warning: Save failed, check browser storage.')
       );
 
@@ -3677,6 +4442,7 @@ export default function App({ sharing = null } = {}) {
 
   const handleExcelImport = (e) => {
     const file = e.target.files[0];
+    e.target.value = '';
     if (!file) return;
 
     const reader = new FileReader();
@@ -3727,10 +4493,18 @@ export default function App({ sharing = null } = {}) {
           const cell = worksheet[XLSX.utils.encode_cell({ r: rowIndex + 1, c: colIndex })];
           return formatRxoExcelDateTime(cell ? XLSX.utils.format_cell(cell) : row[colIndex]);
         };
+        let datRateError = '';
+        let skippedEquipmentCount = 0;
         let importedRows = [];
         for (let idx = 0; idx < dataRows.length; idx++) {
           const row = dataRows[idx];
           if (!row || row.length === 0) continue;
+
+          // Skip oversized/specialized equipment we don't haul (Over Dimensional, RGN, etc.).
+          if (isSkippableEquipment(row[colB])) {
+          skippedEquipmentCount += 1;
+          continue;
+          }
 
           const loadId = String(row[colA] || `IMP-${Date.now()}-${idx}`).trim();
           const origC = String(row[colG] || 'UNKNOWN').toUpperCase().trim();
@@ -3774,6 +4548,10 @@ export default function App({ sharing = null } = {}) {
             if (datRateInfo.rateInput) {
               rateVal = datRateInfo.rateInput;
               rateSrc = datRateInfo.rateSource;
+              // Remember DAT-fetched rates so the next load in this lane reuses the last rate.
+              setLaneRates(prev => rememberLaneRate(prev, selectedBroker, tempOrder, rateVal));
+            } else if (!datRateError && datRateInfo.error) {
+              datRateError = datRateInfo.error;
             }
           }
 
@@ -3889,6 +4667,8 @@ export default function App({ sharing = null } = {}) {
               : `• Previously exported; kept OPEN: ${exportedCount}\n`
             : '') +
           (duplicatesRemoved > 0 ? `• Skipped duplicates: ${duplicatesRemoved}\n` : '') +
+          (skippedEquipmentCount > 0 ? `• Skipped oversized/specialized equipment: ${skippedEquipmentCount}\n` : '') +
+          (datRateError ? `• DAT rates could not be fetched; enter rates manually. DAT reported: ${datRateError}\n` : '') +
           (excelMileageError ? `• Driving miles could not be calculated for some loads; enter them manually. Google Routes reported: ${excelMileageError}\n` : '') +
           (saved ? '• Status: Saved successfully in browser storage.' : '• Warning: Save failed, check browser storage.')
         );
@@ -4504,6 +5284,125 @@ export default function App({ sharing = null } = {}) {
     return () => window.removeEventListener('paste', handlePaste);
   }, [isImportingScreenshot, importScreenshotFile]);
 
+  // Refreshes Booked Loads alerts (check call due / late) every minute.
+  // Keep this the last effect: tests address earlier effects by position.
+  useEffect(() => {
+    if (view !== 'booked') return undefined;
+    setClock(Date.now());
+    const timer = setInterval(() => setClock(Date.now()), 60 * 1000);
+    return () => clearInterval(timer);
+  }, [view]);
+
+  const updateCustomerLoad = (customer, id, updatedLoad) => {
+    setCustomerOrdersMap(prev => ({
+      ...prev,
+      [customer]: (prev[customer] || []).map(o => (String(o.id) === String(id) ? updatedLoad : o))
+    }));
+    setSelectedOrder(current => (current && customer === selectedBroker && String(current.id) === String(id) ? updatedLoad : current));
+  };
+
+  const openBookedLoad = (customer, id) => {
+    const target = (customerOrdersMap[customer] || []).find(o => String(o.id) === String(id));
+    if (!target) return;
+    if (customer !== selectedBroker) handleSelectBroker(customer);
+    setFilter('BOOKED');
+    setSelectedOrder(target);
+    setView('loads');
+  };
+
+  // Driver inquiries: checked when the app opens and every minute after.
+  // Keep this the last effect: tests address earlier effects by position.
+  useEffect(() => {
+    if (!supabase) return undefined;
+    let cancelled = false;
+    const loadInquiries = async () => {
+      const { data, error } = await supabase
+        .from('load_inquiries')
+        .select('id, customer, load_id, driver_name, driver_phone, mc_or_truck, message, notify_error, seen, created_at')
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (error) {
+        // Table not created yet (run supabase/load-inquiries.sql) or signed out: stay quiet.
+        if (!/does not exist|schema cache/i.test(error.message || '')) console.error('Could not load driver inquiries:', error);
+        return;
+      }
+      if (!cancelled) setInquiries(data || []);
+    };
+    loadInquiries();
+    const timer = setInterval(loadInquiries, 60 * 1000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  const unseenInquiryCount = inquiries.filter(inquiry => !inquiry.seen).length;
+
+  const markInquirySeen = async inquiry => {
+    setInquiries(current => current.map(item => (item.id === inquiry.id ? { ...item, seen: true } : item)));
+    if (!supabase) return;
+    const { error } = await supabase.from('load_inquiries').update({ seen: true }).eq('id', inquiry.id);
+    if (error) console.error('Could not mark the inquiry as seen:', error);
+  };
+
+  const openInquiryLoad = inquiry => {
+    const loads = customerOrdersMap[inquiry.customer] || [];
+    const target = loads.find(o => String(o.id) === String(inquiry.load_id));
+    if (!target) {
+      alert(`Load #${inquiry.load_id} is no longer in ${inquiry.customer}.`);
+      return;
+    }
+    if (inquiry.customer !== selectedBroker) handleSelectBroker(inquiry.customer);
+    setFilter('ALL');
+    setSelectedOrder(target);
+    setView('loads');
+    setShowInquiries(false);
+    if (!inquiry.seen) void markInquirySeen(inquiry);
+  };
+
+  // Creates or refreshes the public driver links for these loads (one per load,
+  // reused across exports) and returns Map(loadId -> token). Throws if unavailable.
+  const ensureInquiryLinks = async (customer, loads) => {
+    if (!supabase) throw new Error('Driver links need the cloud account. Sign in to the TMS with cloud sync turned on.');
+    const { data: userData } = await supabase.auth.getUser();
+    const user = userData?.user;
+    if (!user) throw new Error('Sign in again to create driver links.');
+    const loadIds = loads.map(load => String(load.id));
+    const { data: existing, error: findError } = await supabase
+      .from('load_inquiry_links').select('token, load_id')
+      .eq('owner_id', user.id).eq('customer', customer).in('load_id', loadIds);
+    if (findError) throw findError;
+    const tokens = new Map((existing || []).map(row => [String(row.load_id), row.token]));
+    const now = new Date().toISOString();
+    const rows = loads.map(load => {
+      const loadId = String(load.id);
+      if (!tokens.has(loadId)) tokens.set(loadId, createInquiryToken());
+      return {
+        token: tokens.get(loadId), owner_id: user.id, owner_email: user.email || null, customer, load_id: loadId,
+        details: buildInquiryDetails(load, profile), active: true, updated_at: now
+      };
+    });
+    const { error: saveError } = await supabase.from('load_inquiry_links').upsert(rows, { onConflict: 'token' });
+    if (saveError) throw saveError;
+    return tokens;
+  };
+
+  const describeLinkError = error => (/does not exist|schema cache/i.test(error?.message || '')
+    ? 'Driver links are not set up yet: run supabase/load-inquiries.sql in Supabase first.'
+    : error?.message || 'Try again.');
+
+  // Creates (or refreshes) this load's driver link, shows it under the comment box, and copies it.
+  const handleCopyDriverLink = async () => {
+    if (!selectedOrder) return;
+    try {
+      const token = (await ensureInquiryLinks(selectedBroker, [selectedOrder])).get(String(selectedOrder.id));
+      if (selectedOrder.inquiryToken !== token) saveLoad({ ...selectedOrder, inquiryToken: token });
+      const url = getInquiryUrl(token);
+      await copyToClipboard(url, 'Driver link');
+      alert(`Driver link copied for load #${selectedOrder.id}:\n${url}\n\nIt is also added to this load's Landstar comment on export. You'll get an email when a driver inquires.`);
+    } catch (error) {
+      console.error('Could not create the driver link:', error);
+      alert(`Could not create the driver link: ${describeLinkError(error)}`);
+    }
+  };
+
   const handleExportToLandstar = async () => {
     setExportErrorIds([]);
     const exportPhone = profile.phone.replace(/\D/g, '');
@@ -4513,14 +5412,34 @@ export default function App({ sharing = null } = {}) {
       openProfileSettings();
       return;
     }
-    const loadsToExport = selectedIds.length > 0
+    // Export everything on the current list, including loads already exported
+    // (ENT) — re-posting the same loads to Landstar is allowed. Loads not on
+    // the list are untouched; exported loads are (re)marked ENT below.
+    const candidateLoads = selectedIds.length > 0
       ? orders.filter(o => selectedIds.includes(o.id))
-      : filteredOrders.slice(0, 25);
+      : filteredOrders;
+    // Booked loads already have a truck; never post them to the Landstar board.
+    const loadsToExport = candidateLoads.filter(o => o.status !== 'BOOKED');
+    const skippedBookedCount = candidateLoads.length - loadsToExport.length;
 
     if (loadsToExport.length === 0) {
-      alert('No loads selected for export!');
+      alert(skippedBookedCount
+        ? `Booked loads are not exported to Landstar (${skippedBookedCount} booked load${skippedBookedCount === 1 ? '' : 's'} skipped).`
+        : 'No loads selected for export!');
       return;
     }
+
+    // Each exported load carries its driver inquiry link in the Landstar comment (column AA).
+    // If links can't be made (offline, not set up), the export still goes out without them.
+    let inquiryTokens = new Map();
+    let inquiryLinkError = '';
+    try {
+      inquiryTokens = await ensureInquiryLinks(selectedBroker, loadsToExport);
+    } catch (error) {
+      console.error('Could not create driver links for the export:', error);
+      inquiryLinkError = describeLinkError(error);
+    }
+    const reExportCount = loadsToExport.filter(o => o.status === 'ENT').length;
 
     const normalizedBroker = normalizeCustomerName(selectedBroker).toUpperCase().replace(/[^A-Z0-9]/g, '');
     const customerIdVal = normalizedBroker.includes('593772')
@@ -4548,15 +5467,29 @@ export default function App({ sharing = null } = {}) {
         'ROSEMONT|IL': { zip: '60018', city: 'Rosemont', state: 'IL' },
         'MALTA|NY': { zip: '12020', city: 'Malta', state: 'NY' },
         // Delanco's ZIP is filed under neighboring Riverside in the offline data.
-        'DELANCO|NJ': { zip: '08075', city: 'Delanco', state: 'NJ' }
+        'DELANCO|NJ': { zip: '08075', city: 'Delanco', state: 'NJ' },
+        // Pembroke's ZIP 03275 is filed under Suncook (a village in Pembroke) in the offline data.
+        'PEMBROKE|NH': { zip: '03275', city: 'Pembroke', state: 'NH' },
+        // Broker lists abbreviate North Smithfield; the offline data only has the full name.
+        'N SMITHFIELD|RI': { zip: '02896', city: 'North Smithfield', state: 'RI' },
+        // Logan Township's ZIPs are filed under Swedesboro/Bridgeport in the offline data.
+        'LOGAN TOWNSHIP|NJ': { zip: '08085', city: 'Logan Township', state: 'NJ' },
+        // Woolwich Township's ZIP 08085 is also filed under Swedesboro in the offline data.
+        'WOOLWICH TOWNSHIP|NJ': { zip: '08085', city: 'Woolwich Township', state: 'NJ' }
       };
       const extraKey = `${String(city || '').trim().toUpperCase()}|${String(state || '').trim().toUpperCase()}`;
       if (extraCities[extraKey]) return extraCities[extraKey];
       const rawCity = String(city || '').trim();
       const cityName = rawCity
         .replace(/\bMT\.?\s+/gi, 'Mount ').replace(/\bST\.?\s+/gi, 'Saint ').replace(/\bFT\.?\s+/gi, 'Fort ');
+      // Broker lists often abbreviate directions (N/S/E/W) or add suffixes the postal data omits.
+      const expandedCity = cityName
+        .replace(/^N\.?\s+/i, 'North ').replace(/^S\.?\s+/i, 'South ')
+        .replace(/^E\.?\s+/i, 'East ').replace(/^W\.?\s+/i, 'West ');
+      const strippedCity = expandedCity
+        .replace(/\s+(Township|Twp|Borough|Boro|Village|City)$/i, '');
       const stateCode = String(state || '').trim();
-      const exactMatches = [cityName, rawCity, rawCity.replace(/\./g, '')]
+      const exactMatches = [cityName, rawCity, rawCity.replace(/\./g, ''), expandedCity, strippedCity]
         .map(name => zipData.lookupByName?.(name, stateCode) || [])
         .find(matches => matches.length) || [];
       const prefixCounts = exactMatches.reduce((counts, location) => {
@@ -4582,7 +5515,8 @@ export default function App({ sharing = null } = {}) {
     const representativeZipExamples = [];
 
     const validationErrors = [];
-    const exportData = loadsToExport.map(ord => {
+    const exportEntries = [];
+    loadsToExport.forEach(ord => {
       const rowErrors = [];
       const originState = String(ord.origSt || '').trim().toUpperCase();
       const destinationState = String(ord.destSt || '').trim().toUpperCase();
@@ -4610,8 +5544,24 @@ export default function App({ sharing = null } = {}) {
         ? enteredDestinationZip || lookupCanadianPostalCode(ord.destCity, destinationState)
         : destinationLocation?.zip || (enteredDestinationLocation ? enteredDestinationZip : '');
       // A ZIP found from the city name means the postal spelling matched, so send that spelling to Landstar.
-      const originCity = toLandstarCity(!enteredOriginLocation && originLocation?.city ? originLocation.city : getLandstarCity(ord.origCity, originLocation));
-      const destinationCity = toLandstarCity(!enteredDestinationLocation && destinationLocation?.city ? destinationLocation.city : getLandstarCity(ord.destCity, destinationLocation));
+      // When a ZIP was entered directly, still correct the city to the ZIP's postal spelling when it is
+      // clearly the same place (spacing/punctuation only, e.g. "McCordsville" -> "Mc Cordsville");
+      // otherwise flag the mismatch below so Landstar's city/ZIP lookup does not reject the posting.
+      const normalizeCityName = name => String(name || '').toUpperCase()
+        .replace(/\bST\b\.?/g, 'SAINT').replace(/\bMT\b\.?/g, 'MOUNT').replace(/\bFT\b\.?/g, 'FORT')
+        .replace(/[^A-Z0-9]/g, '');
+      const cityMatchesPostalCity = (city, location) =>
+        Boolean(location?.city) && normalizeCityName(city) === normalizeCityName(location.city);
+      const originCity = toLandstarCity(
+        (!enteredOriginLocation && originLocation?.city) || cityMatchesPostalCity(ord.origCity, enteredOriginLocation)
+          ? originLocation.city
+          : getLandstarCity(ord.origCity, originLocation)
+      );
+      const destinationCity = toLandstarCity(
+        (!enteredDestinationLocation && destinationLocation?.city) || cityMatchesPostalCity(ord.destCity, enteredDestinationLocation)
+          ? destinationLocation.city
+          : getLandstarCity(ord.destCity, destinationLocation)
+      );
       const originStateMatchesZip = !ord.origSt || !originLocation || originState === originLocation.state;
       const destinationStateMatchesZip = !ord.destSt || !destinationLocation || destinationState === destinationLocation.state;
       const originZipWasResolved = !enteredOriginLocation && Boolean(originLocation);
@@ -4644,10 +5594,16 @@ export default function App({ sharing = null } = {}) {
       if (!originState || !stateCodes.has(originState)) rowErrors.push('origin state/province');
       if (originCountry === 'CA' && !originZip) rowErrors.push('valid Canadian origin postal code');
       if (!originStateMatchesZip) rowErrors.push(`origin state must match ZIP ${originZip} (${originLocation.state})`);
+      if (enteredOriginLocation && !cityMatchesPostalCity(ord.origCity, enteredOriginLocation)) {
+        rowErrors.push(`origin city "${ord.origCity}" does not match ZIP ${enteredOriginZip} (postal city: ${enteredOriginLocation.city}) — correct the city or ZIP`);
+      }
       if (!ord.destCity) rowErrors.push('destination city');
       if (!destinationState || !stateCodes.has(destinationState)) rowErrors.push('destination state/province');
       if (destinationCountry === 'CA' && !destinationZip) rowErrors.push('valid Canadian destination postal code');
       if (!destinationStateMatchesZip) rowErrors.push(`destination state must match ZIP ${destinationZip} (${destinationLocation.state})`);
+      if (enteredDestinationLocation && !cityMatchesPostalCity(ord.destCity, enteredDestinationLocation)) {
+        rowErrors.push(`destination city "${ord.destCity}" does not match ZIP ${enteredDestinationZip} (postal city: ${enteredDestinationLocation.city}) — correct the city or ZIP`);
+      }
       if (pickupFrom === null || pickupThru === null) {
         rowErrors.push(`pickup date/time (current value "${ord.pickupTime || ''}" — use MM/DD/YYYY HHMM - HHMM)`);
       }
@@ -4669,9 +5625,12 @@ export default function App({ sharing = null } = {}) {
         rowErrors.push('rate (enter a current DAT quote or import one via DAT API/screenshot)');
       }
 
-      if (rowErrors.length) validationErrors.push(`Order ${ord.id}: ${rowErrors.join(', ')}`);
+      if (rowErrors.length) {
+        validationErrors.push(`Order ${ord.id}: ${rowErrors.join(', ')}`);
+        return;
+      }
 
-      return {
+      exportEntries.push({ ord, record: {
         "Customer ID(Required)": customerIdVal,
         "Posting Call Back 10 Digits Phone Number": exportPhone,
         "Origin City": originCity,
@@ -4701,43 +5660,52 @@ export default function App({ sharing = null } = {}) {
         "Carrier Load Alerts": "",
         // The Landstar template has no Team column; team is set through this attribute.
         "Load Attributes": [isHazmatLoad(ord) && 'Hazmat', isTeamLoad(ord) && 'Team Required'].filter(Boolean).join(', '),
-        "Comments": "",
+        "Comments": getLandstarExportComment(ord, inquiryTokens.has(String(ord.id)) ? getInquiryUrl(inquiryTokens.get(String(ord.id))) : ''),
         // FSC columns stay blank; the fuel surcharge is already removed from the linehaul rate.
         "Fuel Surcharge Rate Type": "",
         "Fuel Surcharge": "",
         "Team": isTeamLoad(ord) ? 'true' : 'false'
-      };
+      } });
     });
 
-    if (validationErrors.length) {
-      const failedIds = validationErrors
-        .map(error => error.match(/^Order\s+([^:]+):/)?.[1])
-        .filter(Boolean);
+    const failedIds = validationErrors
+      .map(error => error.match(/^Order\s+([^:]+):/)?.[1])
+      .filter(Boolean);
+    if (failedIds.length) {
       setExportErrorIds(failedIds);
       const firstFailedOrder = loadsToExport.find(order => failedIds.includes(String(order.id)));
       if (firstFailedOrder) setSelectedOrder(firstFailedOrder);
-      const visibleErrors = validationErrors.slice(0, 10).join('\n');
-      const additionalCount = validationErrors.length - 10;
-      alert(`The spreadsheet was not created because Landstar-required load data needs correction:\n\n${visibleErrors}${additionalCount > 0 ? `\n…and ${additionalCount} more load(s).` : ''}\n\nCorrect these fields and export again.`);
+    }
+
+    const hasAllZips = record => Boolean(record['Origin Zipcode(Required)'] && record['Destination Zipcode(Required)']);
+    const missingZipEntries = exportEntries.filter(({ record }) => !hasAllZips(record));
+    const readyEntries = exportEntries.filter(({ record }) => hasAllZips(record));
+
+    if (!readyEntries.length) {
+      const problems = [];
+      if (validationErrors.length) {
+        const visibleErrors = validationErrors.slice(0, 10).join('\n');
+        const additionalCount = validationErrors.length - 10;
+        problems.push(`Landstar-required load data needs correction:\n\n${visibleErrors}${additionalCount > 0 ? `\n…and ${additionalCount} more load(s).` : ''}`);
+      }
+      if (missingZipEntries.length) {
+        problems.push(`No ZIP code could be found for ${missingZipEntries.length} load${missingZipEntries.length === 1 ? '' : 's'}, and Landstar needs a ZIP to fill in the state. Enter the ZIP in the load's Origin or Destination ZIP field, then export again:\n\n${missingZipEntries.slice(0, 10).map(({ record }) => `${record['Origin City'] || ''} → ${record['Destination City'] || ''}`).join('\n')}`);
+      }
+      alert(`No loads could be exported.\n\n${problems.join('\n\n')}`);
       return;
     }
 
-    const missingZipLoads = exportData.filter(record =>
-      !record['Origin Zipcode(Required)'] || !record['Destination Zipcode(Required)']
-    );
-    if (missingZipLoads.length) {
-      alert(`No ZIP code could be found for ${missingZipLoads.length} load${missingZipLoads.length === 1 ? '' : 's'}, and Landstar needs a ZIP to fill in the state. Enter the ZIP in the load's Origin or Destination ZIP field, then export again:\n\n${missingZipLoads.slice(0, 10).map(record => `${record['Origin City'] || ''} → ${record['Destination City'] || ''}`).join('\n')}`);
-      return;
-    }
-
-    const exportedIds = new Set(loadsToExport.map(order => String(order.id)));
-    let exportBlob;
+    const exportData = readyEntries.map(({ record }) => record);
+    const exportedIds = new Set(readyEntries.map(({ ord }) => String(ord.id)));
+    const exportBlobs = [];
     try {
       const templateResponse = await fetch(`${import.meta.env.BASE_URL}landstar-bulk-template.xlsx`);
       if (!templateResponse.ok) {
         throw new Error(`Template download returned HTTP ${templateResponse.status}.`);
       }
       const templateBytes = await templateResponse.arrayBuffer();
+      for (let chunkStart = 0; chunkStart < exportData.length; chunkStart += landstarExportChunkSize) {
+      const chunkData = exportData.slice(chunkStart, chunkStart + landstarExportChunkSize);
       const workbook = XLSX.read(templateBytes, { type: 'array' });
       const worksheet = workbook.Sheets.Loads;
       if (!worksheet) throw new Error('The Landstar template does not contain its required Loads sheet.');
@@ -4902,7 +5870,7 @@ export default function App({ sharing = null } = {}) {
           .forEach(cell => setCellValue(cell, ''));
       }
 
-      exportData.forEach((record, recordIndex) => {
+      chunkData.forEach((record, recordIndex) => {
         const rowNumber = recordIndex + 2;
         const row = getOrCreateRow(rowNumber);
         const recordValues = new Map(
@@ -4914,7 +5882,7 @@ export default function App({ sharing = null } = {}) {
         });
       });
 
-      const lastDataRow = exportData.length + 1;
+      const lastDataRow = chunkData.length + 1;
       const dimensions = worksheetDocument.getElementsByTagNameNS(mainNamespace, 'dimension');
       if (dimensions.length) {
         dimensions[0].setAttribute(
@@ -4940,12 +5908,13 @@ export default function App({ sharing = null } = {}) {
       sharedStrings.setAttribute('uniqueCount', String(sharedItems().length));
       zip.file(worksheetPath, serializer.serializeToString(worksheetDocument));
       zip.file('xl/sharedStrings.xml', serializer.serializeToString(sharedStringsDocument));
-      exportBlob = await zip.generateAsync({
+      exportBlobs.push(await zip.generateAsync({
         type: 'blob',
         mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         compression: 'DEFLATE',
         compressionOptions: { level: 6 }
-      });
+      }));
+      }
     } catch (error) {
       console.error('Could not prepare the official Landstar bulk template:', error);
       alert(`Could not create a spreadsheet from the official Landstar template: ${error.message || 'Please try again.'}`);
@@ -4953,15 +5922,31 @@ export default function App({ sharing = null } = {}) {
     }
 
     try {
-      const downloadUrl = URL.createObjectURL(exportBlob);
-      const downloadLink = document.createElement('a');
-      downloadLink.href = downloadUrl;
-      downloadLink.download = `Landstar_Bulk_${selectedBroker.replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`;
-      document.body.appendChild(downloadLink);
-      downloadLink.click();
-      downloadLink.remove();
-      setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+      const brokerSlug = selectedBroker.replace(/[^a-zA-Z0-9]/g, '_');
+      for (let index = 0; index < exportBlobs.length; index += 1) {
+        const downloadUrl = URL.createObjectURL(exportBlobs[index]);
+        const downloadLink = document.createElement('a');
+        downloadLink.href = downloadUrl;
+        downloadLink.download = exportBlobs.length > 1
+          ? `Landstar_Bulk_${brokerSlug}_${index + 1}of${exportBlobs.length}.xlsx`
+          : `Landstar_Bulk_${brokerSlug}.xlsx`;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        downloadLink.remove();
+        setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+        // Browsers may drop rapid consecutive downloads; space them out slightly.
+        if (index < exportBlobs.length - 1) await new Promise(resolve => setTimeout(resolve, 400));
+      }
       playExportSound();
+      if (exportBlobs.length > 1) {
+        alert(`${exportBlobs.length} spreadsheets were created (up to ${landstarExportChunkSize} loads each). If your browser asks, allow multiple downloads for this site.`);
+      }
+      if (skippedBookedCount) {
+        alert(`${skippedBookedCount} booked load${skippedBookedCount === 1 ? ' was' : 's were'} left out of the Landstar export.`);
+      }
+      if (inquiryLinkError) {
+        alert(`Exported without driver links in the comments: ${inquiryLinkError}`);
+      }
     } catch (error) {
       console.error('Could not create the Landstar bulk spreadsheet:', error);
       alert('The Landstar bulk spreadsheet could not be created. Please try again.');
@@ -4975,17 +5960,17 @@ export default function App({ sharing = null } = {}) {
     const nextExportedRecords = {
       ids: Array.from(new Set([
         ...previousRecords.ids,
-        ...loadsToExport.map(ord => normalizeLoadId(ord.id))
+        ...readyEntries.map(({ ord }) => normalizeLoadId(ord.id))
       ])),
       laneDays: Array.from(new Set([
         ...(previousRecords.laneDays || []),
-        ...loadsToExport.map(createLaneDayKey).filter(Boolean)
+        ...readyEntries.map(({ ord }) => createLaneDayKey(ord)).filter(Boolean)
       ]))
     };
     const nextExportedRegistry = { ...latestRegistry, [registryKey]: nextExportedRecords };
     let exportedRegistrySaved = true;
     try {
-      localStorage.setItem('landstar_exportedLoads', JSON.stringify(nextExportedRegistry));
+      writeSyncedKey('landstar_exportedLoads', JSON.stringify(nextExportedRegistry));
       setExportedLoadRegistry(nextExportedRegistry);
     } catch (error) {
       exportedRegistrySaved = false;
@@ -4993,10 +5978,12 @@ export default function App({ sharing = null } = {}) {
     }
     const nextOrders = {
       ...customerOrdersMap,
-      [selectedBroker]: markLoadsExported(orders, exportedIds, exportedAt)
+      [selectedBroker]: markLoadsExported(orders, exportedIds, exportedAt).map(load => (
+        inquiryTokens.has(String(load.id)) ? { ...load, inquiryToken: inquiryTokens.get(String(load.id)) } : load
+      ))
     };
     const saved = persistAppData(brokers, nextOrders);
-    setExportErrorIds([]);
+    setExportErrorIds(failedIds);
     setCustomerOrdersMap(nextOrders);
     setSelectedIds(prev => prev.filter(id => !exportedIds.has(String(id))));
     setSelectedOrder(
@@ -5005,7 +5992,23 @@ export default function App({ sharing = null } = {}) {
         : selectedOrder || nextOrders[selectedBroker][0] || null
     );
 
-    const exportWarnings = `${saved ? '' : 'Browser storage could not be updated, so the archive may not persist after refresh. '}${exportedRegistrySaved ? '' : 'Warning: exported-load history could not be saved, so duplicate imports may occur after refresh.'}`.trim();
+    const skippedNotes = [];
+    if (reExportCount > 0) {
+      skippedNotes.push(`Re-exported ${reExportCount} load(s) that were already posted to Landstar (ENT). They stay ENT.`);
+    }
+    if (validationErrors.length) {
+      const visibleErrors = validationErrors.slice(0, 10).join('\n');
+      const additionalCount = validationErrors.length - 10;
+      skippedNotes.push(`Skipped ${validationErrors.length} load(s) that need correction (they stay open and selected):\n\n${visibleErrors}${additionalCount > 0 ? `\n…and ${additionalCount} more load(s).` : ''}`);
+    }
+    if (missingZipEntries.length) {
+      skippedNotes.push(`Skipped ${missingZipEntries.length} load(s) with no ZIP code (enter the Origin/Destination ZIP and export again):\n\n${missingZipEntries.slice(0, 10).map(({ record }) => `${record['Origin City'] || ''} → ${record['Destination City'] || ''}`).join('\n')}`);
+    }
+    const exportWarnings = [
+      ...skippedNotes,
+      saved ? '' : 'Browser storage could not be updated, so the archive may not persist after refresh.',
+      exportedRegistrySaved ? '' : 'Warning: exported-load history could not be saved, so duplicate imports may occur after refresh.'
+    ].filter(Boolean).join('\n\n');
     if (exportWarnings) alert(exportWarnings);
   };
 
@@ -5022,6 +6025,8 @@ export default function App({ sharing = null } = {}) {
   const visibleOrderEntries = statusOrderEntries.filter(({ order: ord }) => {
     if (loadFilters.rate === 'with' && !hasLoadRate(ord)) return false;
     if (loadFilters.rate === 'without' && hasLoadRate(ord)) return false;
+    if (loadFilters.pickupState && String(ord.origSt || '').trim().toUpperCase() !== loadFilters.pickupState) return false;
+    if (loadFilters.deliveryState && String(ord.destSt || '').trim().toUpperCase() !== loadFilters.deliveryState) return false;
     if (hasMinMiles || hasMaxMiles) {
       const miles = Number(normalizeMilesValue(ord.miles));
       if (hasMinMiles && !(miles >= minMilesFilter)) return false;
@@ -5083,6 +6088,9 @@ export default function App({ sharing = null } = {}) {
   };
 
   const entCount = orders.filter(o => o.status === 'ENT').length;
+  const bookedCount = orders.filter(o => o.status === 'BOOKED').length;
+  const allBookedCount = Object.values(customerOrdersMap || {}).flat().filter(o => o?.status === 'BOOKED').length;
+  const driverDirectory = buildDriverDirectory(customerOrdersMap);
 
   const handleBackupExport = () => {
     const data = {};
@@ -5113,6 +6121,13 @@ export default function App({ sharing = null } = {}) {
       }
       if (!window.confirm(`Restore this backup (${new Date(backup.savedAt).toLocaleString()})? It will replace the customers, loads, rates and exported-load history in this browser.`)) return;
       entries.forEach(([key, value]) => localStorage.setItem(key, value));
+      // Bump restored keys so other tabs and devices adopt the backup instead of
+      // treating it as a regression from an outdated app version.
+      const versions = readDataVersions();
+      entries.forEach(([key]) => {
+        if (syncedDataKeys.includes(key)) versions[key] = (versions[key] || 0) + 1;
+      });
+      localStorage.setItem(dataVersionKey, JSON.stringify(versions));
       window.location.reload();
     } catch (error) {
       alert(`Could not restore the backup: ${error.message}`);
@@ -5352,8 +6367,25 @@ export default function App({ sharing = null } = {}) {
             ))}
           </div>
 
+          <div className="relative mb-2">
+            <input
+              type="text"
+              placeholder="🔍 Search all customers: load #, city, state..."
+              aria-label="Search loads across all customers"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-[#0b132b] border-2 border-blue-500/60 rounded-lg px-3 py-2.5 text-sm text-white placeholder-gray-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/40"
+            />
+          </div>
+          {isGlobalSearch && (
+            <p className="mb-2 text-[10px] text-gray-400">
+              All customers · Current status and lane filters apply. Click a result to open its customer.
+              Bulk selection and export apply to the selected customer only.
+            </p>
+          )}
+
           <div className="flex items-center justify-between text-[11px] text-gray-400 mb-2">
-            <span>{isGlobalSearch ? `${visibleOrderEntries.length} matches · All customers` : `${filteredOrders.length} shown · ${orders.length} loads · ${entCount} ENT`}</span>
+            <span>{isGlobalSearch ? `${visibleOrderEntries.length} matches · All customers` : `${filteredOrders.length} shown · ${orders.length} loads · ${entCount} ENT · ${bookedCount} booked`}</span>
             <span className={storageError ? 'text-amber-400' : 'text-emerald-400'} title={storageError || 'Loads are saved in this browser.'}>
               {storageError || '🔒 Saved in this browser'}
             </span>
@@ -5361,13 +6393,22 @@ export default function App({ sharing = null } = {}) {
 
           <div className="flex items-center justify-between mb-2">
             <div className="flex space-x-1">
-              {['ALL', 'OPEN', 'ON HOLD', 'ENT'].map(tab => (
+              {['ALL', 'OPEN', 'ON HOLD', 'ENT', 'BOOKED'].map(tab => (
                 <button
                   key={tab}
-                  onClick={() => setFilter(tab)}
-                  className={`px-2 py-1 text-[11px] rounded font-semibold ${tab === 'OPEN' ? `tms-open ${filter === tab ? 'ring-2 ring-emerald-200' : ''}` : tab === 'ENT' ? `tms-ent ${filter === tab ? 'ring-2 ring-yellow-200' : ''}` : tab === 'ON HOLD' ? filter === tab ? 'bg-red-600 text-white ring-2 ring-red-300' : 'bg-red-700 hover:bg-red-600 text-white' : filter === tab ? 'bg-blue-600 text-white' : 'bg-[#1c2541] text-gray-400'}`}
+                  onClick={() => {
+                    // BOOKED opens the Booked Loads page (all customers); other tabs filter this list.
+                    if (tab === 'BOOKED') {
+                      setView('booked');
+                    } else {
+                      setFilter(tab);
+                      setView('loads');
+                    }
+                  }}
+                  title={tab === 'BOOKED' ? 'Open the Booked Loads page: every load with a driver, all customers' : undefined}
+                  className={`px-2 py-1 text-[11px] rounded font-semibold ${tab === 'OPEN' ? `tms-open ${filter === tab ? 'ring-2 ring-emerald-200' : ''}` : tab === 'ENT' ? `tms-ent ${filter === tab ? 'ring-2 ring-yellow-200' : ''}` : tab === 'ON HOLD' ? filter === tab ? 'bg-red-600 text-white ring-2 ring-red-300' : 'bg-red-700 hover:bg-red-600 text-white' : tab === 'BOOKED' ? filter === tab ? 'bg-purple-600 text-white ring-2 ring-purple-300' : 'bg-purple-700 hover:bg-purple-600 text-white' : filter === tab ? 'bg-blue-600 text-white' : 'bg-[#1c2541] text-gray-400'}`}
                 >
-                  {tab}
+                  {tab === 'BOOKED' ? `BOOKED (${allBookedCount})` : tab}
                 </button>
               ))}
             </div>
@@ -5418,10 +6459,13 @@ export default function App({ sharing = null } = {}) {
                 📋 Copy Selected ({filteredOrders.filter(o => selectedIds.includes(o.id)).length})
               </button>
               <button
-                onClick={handleSelectFirst25}
-                className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
+                type="button"
+                onClick={handleClearAllFilters}
+                disabled={!searchQuery.trim() && !loadFilters.rate && !loadFilters.minMiles && !loadFilters.maxMiles && !loadFilters.pickupState && !loadFilters.deliveryState && !laneSort}
+                title="Clear the search box and all lane filters and sorting"
+                className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
               >
-                Select First 25
+                ✕ Clear All Filters
               </button>
             </div>
           </div>
@@ -5444,22 +6488,6 @@ export default function App({ sharing = null } = {}) {
             ))}
           </div>
 
-          <div className="relative mt-1">
-            <input
-              type="text"
-              placeholder="🔍 All customers: load #, city, state..."
-              aria-label="Search loads across all customers"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-blue-500"
-            />
-          </div>
-          {isGlobalSearch && (
-            <p className="mt-1 text-[10px] text-gray-400">
-              All customers · Current status and lane filters apply. Click a result to open its customer.
-              Bulk selection and export apply to the selected customer only.
-            </p>
-          )}
           <div className="mt-2">
             <button
               type="button"
@@ -5488,6 +6516,32 @@ export default function App({ sharing = null } = {}) {
             </select>
           </div>
           <div className="flex items-center gap-1.5 mt-1.5 px-1">
+            <span className="text-[11px] text-gray-400">States:</span>
+            <select
+              aria-label="Filter by pickup state"
+              value={loadFilters.pickupState}
+              onChange={e => { setLoadFilters(prev => ({ ...prev, pickupState: e.target.value })); setSelectedIds([]); }}
+              className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1 text-xs text-white outline-none focus:border-blue-500"
+            >
+              <option value="">Pickup state (all)</option>
+              {sortedStateCodes.map(state => (
+                <option key={state} value={state}>{state}</option>
+              ))}
+            </select>
+            <span className="text-[11px] text-gray-500">→</span>
+            <select
+              aria-label="Filter by delivery state"
+              value={loadFilters.deliveryState}
+              onChange={e => { setLoadFilters(prev => ({ ...prev, deliveryState: e.target.value })); setSelectedIds([]); }}
+              className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1 text-xs text-white outline-none focus:border-blue-500"
+            >
+              <option value="">Delivery state (all)</option>
+              {sortedStateCodes.map(state => (
+                <option key={state} value={state}>{state}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-1.5 mt-1.5 px-1">
             <span className="text-[11px] text-gray-400">Miles:</span>
             <input
               type="text"
@@ -5509,18 +6563,6 @@ export default function App({ sharing = null } = {}) {
               className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1 text-xs text-white placeholder-gray-500 outline-none focus:border-blue-500"
             />
           </div>
-          {(loadFilters.rate || loadFilters.minMiles || loadFilters.maxMiles || laneSort) && (
-            <button
-              type="button"
-              onClick={() => {
-                setLoadFilters({ rate: '', minMiles: '', maxMiles: '' });
-                setLaneSort('');
-              }}
-              className="mt-1 text-[10px] text-blue-300 hover:text-white"
-            >
-              Clear lane filters
-            </button>
-          )}
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-2">
@@ -5568,9 +6610,9 @@ export default function App({ sharing = null } = {}) {
                                             {isTankerLoad(ord) && (
                                               <span aria-label={`Tanker endorsement load ${ord.id}`} title="Tanker (N) Endorsement required" className="bg-yellow-400 text-black text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">🛢 TANKER</span>
                                             )}
-                                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ord.status === 'ENT' ? 'tms-ent' : ord.status === 'ON HOLD' ? 'bg-red-900/60 text-red-300' : ord.status === 'OPEN' ? 'tms-open' : 'bg-blue-900/60 text-blue-300'}`}>{ord.status}</span>
+                                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ord.status === 'ENT' ? 'tms-ent' : ord.status === 'ON HOLD' ? 'bg-red-900/60 text-red-300' : ord.status === 'OPEN' ? 'tms-open' : ord.status === 'BOOKED' ? 'bg-purple-900/60 text-purple-200' : 'bg-blue-900/60 text-blue-300'}`}>{ord.status}</span>
                     </div>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'tms-ent' : ord.tag === 'HOLD' ? 'bg-red-600 text-white' : ord.tag === 'OPEN' ? 'tms-open' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'tms-ent' : ord.tag === 'HOLD' ? 'bg-red-600 text-white' : ord.tag === 'OPEN' ? 'tms-open' : ord.tag === 'BOOKED' ? 'bg-purple-600 text-white' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
                   </div>
                   <div className="flex items-center gap-1.5 mb-1 min-w-0">
                     <div className="text-xs font-medium text-gray-200 truncate">{ord.route}</div>
@@ -5613,13 +6655,32 @@ export default function App({ sharing = null } = {}) {
           ) : (
             <span className="text-xs text-amber-400">Add your phone in ⚙ My Settings</span>
           )}
-          <button
-            type="button"
-            onClick={openProfileSettings}
-            className="bg-slate-700 hover:bg-slate-600 text-white text-xs px-2.5 py-1 rounded font-medium cursor-pointer"
-          >
-            ⚙ My Settings
-          </button>
+          <span className="inline-flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowInquiries(open => !open)}
+              title="Driver inquiries from your load links"
+              className={`text-white text-xs px-2.5 py-1 rounded font-medium cursor-pointer normal-case tracking-normal ${unseenInquiryCount ? 'bg-purple-600 hover:bg-purple-500' : 'bg-slate-700 hover:bg-slate-600'}`}
+            >
+              📨 Inquiries{unseenInquiryCount ? ` (${unseenInquiryCount} new)` : ''}
+            </button>
+            {showInquiries && (
+              <InquiriesPanel
+                inquiries={inquiries}
+                onOpen={openInquiryLoad}
+                onSeen={markInquirySeen}
+                onClose={() => setShowInquiries(false)}
+              />
+            )}
+            <BotStatusLight />
+            <button
+              type="button"
+              onClick={openProfileSettings}
+              className="bg-slate-700 hover:bg-slate-600 text-white text-xs px-2.5 py-1 rounded font-medium cursor-pointer"
+            >
+              ⚙ My Settings
+            </button>
+          </span>
         </div>
         {profileDraft && (
           <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60" role="dialog" aria-label="My Settings">
@@ -5796,7 +6857,15 @@ export default function App({ sharing = null } = {}) {
             </div>
           );
         })()}
-        {selectedOrder ? (
+        {view === 'booked' ? (
+          <BookedLoadsPage
+            entries={getBookedLoads(customerOrdersMap)}
+            now={clock}
+            onBack={() => setView('loads')}
+            onOpen={openBookedLoad}
+            onUpdate={updateCustomerLoad}
+          />
+        ) : selectedOrder ? (
           <div>
             <div className="tms-action-bar flex items-center justify-between bg-[#161f36] px-4 py-3 rounded-lg mb-6 border border-[#1c2541]">
               <div className="flex items-center space-x-3">
@@ -5821,7 +6890,7 @@ export default function App({ sharing = null } = {}) {
                 </button>
               </div>
               <div className="flex items-center gap-2">
-                <span className={`text-xs px-2.5 py-1 rounded font-semibold ${selectedOrder.tag === 'ENT' ? 'tms-ent' : selectedOrder.tag === 'HOLD' ? 'bg-red-600 text-white' : selectedOrder.tag === 'OPEN' ? 'tms-open' : 'bg-blue-600 text-white'}`}>{selectedOrder.tag}</span>
+                <span className={`text-xs px-2.5 py-1 rounded font-semibold ${selectedOrder.tag === 'ENT' ? 'tms-ent' : selectedOrder.tag === 'HOLD' ? 'bg-red-600 text-white' : selectedOrder.tag === 'OPEN' ? 'tms-open' : selectedOrder.tag === 'BOOKED' ? 'bg-purple-600 text-white' : 'bg-blue-600 text-white'}`}>{selectedOrder.tag}</span>
                 <button
                   type="button"
                   onClick={handleDelete}
@@ -5959,7 +7028,7 @@ export default function App({ sharing = null } = {}) {
                       className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
                     />
                   </div>
-                  <div>
+                  <div className="row-span-2">
                     <div className="flex justify-between items-center mb-1">
                       <label className="text-xs text-emerald-400 font-bold">Rate ($) - DAT quote</label>
                       <span className="text-[10px] bg-emerald-950 text-emerald-300 px-1 py-0.2 rounded font-mono border border-emerald-600/40">
@@ -5994,6 +7063,49 @@ export default function App({ sharing = null } = {}) {
                       })()}
                     </div>
                     <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. After you type a rate or any other load detail, it moves to the next load about 5 seconds after you stop editing (or press Enter).</p>
+                    {(() => {
+                      const laneHistory = getLaneRateHistory(rateHistory, selectedBroker, selectedOrder);
+                      if (!laneHistory.length) return null;
+                      const currentRate = String(Number(String(selectedOrder.rateInput || '').replace(/[$,]/g, '')) || '');
+                      const exactKey = createLaneRateKey(selectedBroker, selectedOrder);
+                      return (
+                        <div className="mt-2" aria-label="Past rates for this lane">
+                          <div className="text-[10px] text-gray-500 mb-1">
+                            📈 Past rates: {selectedOrder.origCity}, {selectedOrder.origSt} → {selectedOrder.destCity}, {selectedOrder.destSt}
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {laneHistory.slice(0, 6).map(entry => {
+                              const isCurrent = entry.rate === currentRate;
+                              const isExact = Boolean(exactKey) && entry.key === exactKey;
+                              const savedDate = entry.savedAt ? new Date(entry.savedAt) : null;
+                              const dateLabel = savedDate && !Number.isNaN(savedDate.getTime())
+                                ? savedDate.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })
+                                : 'saved';
+                              const titleParts = [
+                                entry.customer,
+                                entry.eCode || 'Any equipment',
+                                entry.source === 'manual' ? 'Entered' : entry.source === 'saved' ? 'Saved rate' : entry.source,
+                                savedDate && !Number.isNaN(savedDate.getTime()) ? savedDate.toLocaleString() : ''
+                              ].filter(Boolean);
+                              if (!isExact) titleParts.push('different customer/equipment');
+                              return (
+                                <button
+                                  key={`${entry.key}|${entry.rate}`}
+                                  type="button"
+                                  onClick={() => handleFieldChange('rateInput', entry.rate)}
+                                  title={titleParts.join(' • ')}
+                                  className={`px-2 py-1 rounded text-xs font-mono font-bold border cursor-pointer ${isCurrent
+                                    ? 'bg-emerald-600 border-emerald-400 text-white'
+                                    : 'bg-[#0b132b] border-emerald-700/50 text-emerald-300 hover:bg-emerald-950'}`}
+                                >
+                                  ${Number(entry.rate).toLocaleString('en-US')} · {dateLabel}{isExact ? '' : ` · ${String(entry.customer || '').split(' ')[0]}`}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
                     {(() => {
                       const fscRate = getFuelSurchargeRate(profile.fuelSurcharge, selectedOrder.origSt);
                       if (!fscRate) return null;
@@ -6034,6 +7146,30 @@ export default function App({ sharing = null } = {}) {
                       );
                     })()}
                   </div>
+                  <div className="col-span-2 self-start">
+                    <label htmlFor="landstar-comment" className="text-xs text-gray-400 block mb-1">
+                      Landstar Comment <span className="text-[10px] text-gray-500">(exports to column AA)</span>
+                    </label>
+                    <input
+                      id="landstar-comment"
+                      type="text"
+                      list="landstar-comment-options"
+                      autoComplete="off"
+                      maxLength={250}
+                      value={selectedOrder.landstarComment || ''}
+                      onChange={(e) => handleFieldChange('landstarComment', e.target.value)}
+                      placeholder="Type a comment or pick a Landstar comment"
+                      className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
+                    />
+                    <datalist id="landstar-comment-options">
+                      {landstarCommentOptions.map(option => <option key={option} value={option} />)}
+                    </datalist>
+                    <p className="text-[11px] text-gray-300 mt-1 break-all" id="landstar-comment-link">
+                      {selectedOrder.inquiryToken
+                        ? <>🔗 Driver link (added after your comment on export): <a href={getInquiryUrl(selectedOrder.inquiryToken)} target="_blank" rel="noreferrer" className="text-purple-300 underline">{getInquiryUrl(selectedOrder.inquiryToken)}</a></>
+                        : '🔗 A driver inquiry link is added after your comment when you export this load.'}
+                    </p>
+                  </div>
                 </div>
                 <div className="mt-3 grid grid-cols-[1fr_8rem] gap-4">
                   <div>
@@ -6063,19 +7199,62 @@ export default function App({ sharing = null } = {}) {
 
               {/* Driver & Equipment Assignment */}
               <div className="border border-[#1c2541] bg-[#121829]/60 p-4 rounded-lg">
-                <h3 className="text-xs font-bold text-purple-400 uppercase tracking-wide mb-3">Driver & Equipment Assignment</h3>
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <h3 className="text-xs font-bold text-purple-400 uppercase tracking-wide">Driver & Equipment Assignment</h3>
+                  <button
+                    type="button"
+                    onClick={handleCopyDriverLink}
+                    title="Copy a link drivers can open to see this load and send you an inquiry"
+                    className="bg-purple-700 hover:bg-purple-600 text-white text-[11px] px-2.5 py-1 rounded font-semibold cursor-pointer"
+                  >
+                    🔗 Copy driver link
+                  </button>
+                </div>
+                {(() => {
+                  const loadInquiries = inquiries.filter(inquiry => inquiry.customer === selectedBroker && String(inquiry.load_id) === String(selectedOrder.id));
+                  if (!loadInquiries.length) return null;
+                  return (
+                    <div className="mb-3 border border-purple-500/50 rounded p-2 bg-purple-950/20">
+                      <p className="text-[11px] font-bold text-purple-200 mb-1">📨 {loadInquiries.length} driver inquir{loadInquiries.length === 1 ? 'y' : 'ies'} on this load</p>
+                      {loadInquiries.map(inquiry => (
+                        <p key={inquiry.id} className="text-xs text-white">
+                          {formatCheckTime(inquiry.created_at)} · <span className="font-semibold">{inquiry.driver_name}</span> ·{' '}
+                          <a href={`tel:${String(inquiry.driver_phone).replace(/[^\d+]/g, '')}`} className="text-emerald-300 underline">{inquiry.driver_phone}</a>
+                          {inquiry.mc_or_truck ? ` · ${inquiry.mc_or_truck}` : ''}
+                          {inquiry.message ? ` · “${inquiry.message}”` : ''}
+                        </p>
+                      ))}
+                    </div>
+                  );
+                })()}
+                <datalist id="known-drivers">
+                  {driverDirectory.drivers.map(entry => (
+                    <option key={entry.driver} value={entry.driver} label={[entry.truck && `Truck ${entry.truck}`, entry.trailer && `Trailer ${entry.trailer}`, entry.driverPhone].filter(Boolean).join(' · ')} />
+                  ))}
+                </datalist>
+                <datalist id="known-trucks">
+                  {driverDirectory.trucks.map(truck => <option key={truck} value={truck} />)}
+                </datalist>
+                <datalist id="known-trailers">
+                  {driverDirectory.trailers.map(trailer => <option key={trailer} value={trailer} />)}
+                </datalist>
+                <datalist id="known-driver-phones">
+                  {driverDirectory.drivers.filter(entry => entry.driverPhone).map(entry => (
+                    <option key={entry.driver} value={entry.driverPhone} label={entry.driver} />
+                  ))}
+                </datalist>
                 <div className="grid grid-cols-2 gap-4 mb-3">
                   <div>
                     <label htmlFor="assignment-driver" className="text-xs text-gray-400 block mb-1">Driver Name</label>
                     <div className="flex gap-1">
-                      <input id="assignment-driver" type="text" value={selectedOrder.driver || ''} onChange={(e) => handleFieldChange('driver', e.target.value)} placeholder="Enter driver name" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                      <input id="assignment-driver" type="text" list="known-drivers" autoComplete="off" value={selectedOrder.driver || ''} onChange={(e) => handleDriverChange(e.target.value)} placeholder="Type or pick a driver" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                       <button type="button" onClick={() => copyToClipboard(selectedOrder.driver || '', 'Driver Name')} title="Copy Driver Name" aria-label="Copy Driver Name" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
                     </div>
                   </div>
                   <div>
                     <label htmlFor="assignment-truck" className="text-xs text-gray-400 block mb-1">Truck Number</label>
                     <div className="flex gap-1">
-                      <input id="assignment-truck" type="text" value={selectedOrder.truck || ''} onChange={(e) => handleFieldChange('truck', e.target.value)} placeholder="Truck number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                      <input id="assignment-truck" type="text" list="known-trucks" autoComplete="off" value={selectedOrder.truck || ''} onChange={(e) => handleFieldChange('truck', e.target.value)} placeholder="Truck number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                       <button type="button" onClick={() => copyToClipboard(selectedOrder.truck || '', 'Truck Number')} title="Copy Truck Number" aria-label="Copy Truck Number" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
                     </div>
                   </div>
@@ -6084,7 +7263,7 @@ export default function App({ sharing = null } = {}) {
                   <div>
                     <label htmlFor="assignment-trailer" className="text-xs text-gray-400 block mb-1">Trailer Number</label>
                     <div className="flex gap-1">
-                      <input id="assignment-trailer" type="text" value={selectedOrder.trailer || ''} onChange={(e) => handleFieldChange('trailer', e.target.value)} placeholder="Trailer number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                      <input id="assignment-trailer" type="text" list="known-trailers" autoComplete="off" value={selectedOrder.trailer || ''} onChange={(e) => handleFieldChange('trailer', e.target.value)} placeholder="Trailer number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                       <button type="button" onClick={() => copyToClipboard(selectedOrder.trailer || '', 'Trailer Number')} title="Copy Trailer Number" aria-label="Copy Trailer Number" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
                     </div>
                   </div>
@@ -6096,7 +7275,7 @@ export default function App({ sharing = null } = {}) {
                 <div className="mt-3">
                   <label htmlFor="assignment-driver-phone" className="text-xs text-gray-400 block mb-1">Driver Cell Phone</label>
                   <div className="flex gap-1">
-                    <input id="assignment-driver-phone" type="tel" value={selectedOrder.driverPhone || ''} onChange={(e) => handleFieldChange('driverPhone', e.target.value)} placeholder="Enter cell phone number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <input id="assignment-driver-phone" type="tel" list="known-driver-phones" autoComplete="off" value={selectedOrder.driverPhone || ''} onChange={(e) => handleFieldChange('driverPhone', e.target.value)} placeholder="Enter cell phone number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
                     <button type="button" onClick={() => copyToClipboard(selectedOrder.driverPhone || '', 'Driver Cell Phone')} title="Copy Driver Cell Phone" aria-label="Copy Driver Cell Phone" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
                   </div>
                 </div>
@@ -6132,7 +7311,20 @@ export default function App({ sharing = null } = {}) {
               </div>
 
               <div className="flex justify-between items-center pt-4 border-t border-[#1c2541]">
-                <button onClick={handleSave} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded text-sm font-semibold w-full transition-colors shadow-lg cursor-pointer">Save Changes</button>
+                {selectedOrder.status === 'BOOKED' ? (
+                  <div className="w-full text-center bg-purple-900/50 border border-purple-500 text-purple-100 px-6 py-2 rounded text-sm font-semibold" role="status">
+                    ✓ Booked{selectedOrder.driver ? ` · ${selectedOrder.driver}` : ''} (in Booked Loads; use OPEN above to un-book)
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleBookLoad}
+                    title={String(selectedOrder.driver || '').trim() ? 'Book this load and move it to Booked Loads' : 'Enter the driver name to book this load'}
+                    className="bg-purple-600 hover:bg-purple-500 text-white px-6 py-2 rounded text-sm font-semibold w-full transition-colors shadow-lg cursor-pointer"
+                  >
+                    📦 Book Load
+                  </button>
+                )}
               </div>
             </div>
           </div>

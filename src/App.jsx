@@ -2110,8 +2110,12 @@ function getFuelSurchargeRate(rates, state) {
   return rate > 0 ? rate : null;
 }
 
+// Team comes from the Team switch when set; otherwise team equipment (VM/VT) means team.
 function isTeamLoad(load) {
-  return String(load?.team || '').trim().toLowerCase() === 'true' || isTeamEquipment(load?.eCode);
+  const team = String(load?.team || '').trim().toLowerCase();
+  if (team === 'true') return true;
+  if (team === 'false') return false;
+  return isTeamEquipment(load?.eCode);
 }
 
 // Team vans (VM/VT) are shown as a plain V; the Team flag carries the team part.
@@ -6873,8 +6877,8 @@ export default function App({ sharing = null } = {}) {
             </span>
           </div>
 
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex space-x-1">
+          <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
+            <div className="flex flex-wrap gap-1">
               {['ALL', 'OPEN', 'ON HOLD', 'ENT', 'BOOKED'].map(tab => (
                 <button
                   key={tab}
@@ -6895,7 +6899,7 @@ export default function App({ sharing = null } = {}) {
               ))}
             </div>
             {selectedIds.length > 0 && (
-              <div className="flex items-center gap-1">
+              <div className="flex flex-wrap items-center gap-1 w-full">
                 <span className="text-[10px] text-gray-400">Move to:</span>
                 {['OPEN', 'ON HOLD', 'ENT'].map(status => (
                   <button
@@ -7677,13 +7681,15 @@ export default function App({ sharing = null } = {}) {
                   </div>
                   <div>
                     <label htmlFor="load-team" className="text-xs text-gray-400 block mb-1">Team</label>
-                    <input
+                    <select
                       id="load-team"
-                      type="text"
                       value={isTeamLoad(selectedOrder) ? 'true' : 'false'}
-                      readOnly
-                      className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
-                    />
+                      onChange={event => handleFieldChange('team', event.target.value)}
+                      className={`w-full border rounded p-2 text-sm font-bold cursor-pointer ${isTeamLoad(selectedOrder) ? 'bg-emerald-900/60 border-emerald-500 text-emerald-200' : 'bg-[#0b132b] border-[#1c2541] text-white'}`}
+                    >
+                      <option value="false">false</option>
+                      <option value="true">true</option>
+                    </select>
                   </div>
                 </div>
               </div>

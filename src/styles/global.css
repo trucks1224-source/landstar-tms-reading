@@ -226,3 +226,329 @@
 .tms-shell button.tms-open:hover {
   background-color: #047857;
 }
+
+/* =====================================================================
+   FUTURISTIC THEME
+   Deep-space background with a faint grid, frosted-glass panels with
+   neon-cyan edges, Orbitron headings and monospace data fields.
+   Status colors (OPEN green, ON HOLD red, ENT yellow, BOOKED purple)
+   are unchanged so the meaning of each color stays the same.
+   ===================================================================== */
+:root {
+  --fx-bg: #050b17;
+  --fx-panel: rgba(9, 18, 36, 0.72);
+  --fx-panel-strong: rgba(6, 13, 28, 0.88);
+  --fx-edge: rgba(56, 189, 248, 0.28);
+  --fx-edge-strong: rgba(34, 211, 238, 0.65);
+  --fx-cyan: #22d3ee;
+  --fx-text: #e6f6ff;
+  --fx-muted: #8fb3c9;
+  --fx-glow: 0 0 0 1px rgba(34, 211, 238, 0.18), 0 0 18px rgba(34, 211, 238, 0.12);
+  --fx-font-display: 'Orbitron', 'Inter', system-ui, sans-serif;
+  --fx-font-body: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --fx-font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+body {
+  background: var(--fx-bg);
+}
+
+.tms-shell {
+  font-family: var(--fx-font-body);
+  color: var(--fx-text);
+  background-color: var(--fx-bg);
+  background-image:
+    radial-gradient(ellipse at 15% -10%, rgba(34, 211, 238, 0.16), transparent 55%),
+    radial-gradient(ellipse at 95% 110%, rgba(167, 139, 250, 0.14), transparent 55%),
+    linear-gradient(rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+    linear-gradient(rgba(5, 11, 23, 0.86), rgba(5, 11, 23, 0.86)),
+    url('/broski-background.png');
+  background-size: auto, auto, 44px 44px, 44px 44px, auto, contain;
+  background-position: center, center, -1px -1px, -1px -1px, center, center;
+  background-repeat: no-repeat, no-repeat, repeat, repeat, no-repeat, no-repeat;
+}
+
+/* ---- Sidebar ---- */
+.tms-sidebar {
+  background: linear-gradient(180deg, rgba(8, 16, 33, 0.9), rgba(6, 12, 26, 0.94));
+  border-color: var(--fx-edge);
+  box-shadow: inset -1px 0 0 rgba(34, 211, 238, 0.12), 8px 0 30px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(14px);
+}
+
+.tms-sidebar-header {
+  background: transparent;
+  border-color: var(--fx-edge);
+}
+
+.tms-top-controls,
+.tms-shell .tms-top-controls [class] {
+  color: var(--fx-muted);
+}
+
+.tms-top-controls > button {
+  font-family: var(--fx-font-display);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--fx-muted);
+}
+
+.tms-top-controls > button:hover {
+  color: var(--fx-cyan);
+}
+
+.tms-sidebar-logos {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: linear-gradient(120deg, rgba(255, 255, 255, 0.92), rgba(224, 242, 254, 0.86));
+  box-shadow: var(--fx-glow);
+}
+
+/* Toolbox: Import / Post / Data */
+.tms-toolbox {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.tms-tool-group {
+  border: 1px solid var(--fx-edge);
+  border-radius: 12px;
+  padding: 7px 8px 8px;
+  background: rgba(10, 22, 44, 0.55);
+}
+
+.tms-shell .tms-top-controls .tms-tool-label {
+  display: block;
+  margin-bottom: 6px;
+  font-family: var(--fx-font-display);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--fx-cyan);
+  text-shadow: 0 0 8px rgba(34, 211, 238, 0.45);
+}
+
+.tms-tool-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.tms-shell .tms-tool {
+  --accent: 56, 189, 248;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #fff;
+  background: rgba(var(--accent), 0.16);
+  border: 1px solid rgba(var(--accent), 0.55);
+  border-radius: 8px;
+  box-shadow: inset 0 0 12px rgba(var(--accent), 0.12);
+  transition: background 0.15s, box-shadow 0.15s, transform 0.15s;
+  cursor: pointer;
+}
+
+.tms-shell .tms-tool:hover {
+  background: rgba(var(--accent), 0.3);
+  box-shadow: 0 0 14px rgba(var(--accent), 0.45), inset 0 0 12px rgba(var(--accent), 0.2);
+  transform: translateY(-1px);
+}
+
+.tms-shell .tms-tool:disabled {
+  opacity: 0.55;
+  cursor: wait;
+  transform: none;
+}
+
+.tms-tool[data-accent='emerald'] { --accent: 16, 185, 129; }
+.tms-tool[data-accent='amber'] { --accent: 245, 158, 11; }
+.tms-tool[data-accent='indigo'] { --accent: 129, 140, 248; }
+.tms-tool[data-accent='sky'] { --accent: 56, 189, 248; }
+.tms-tool[data-accent='rose'] { --accent: 244, 63, 94; }
+.tms-tool[data-accent='violet'] { --accent: 167, 139, 250; }
+.tms-tool[data-accent='slate'] { --accent: 148, 163, 184; }
+
+.tms-shell .tms-tool--primary {
+  padding: 6px 14px;
+  font-family: var(--fx-font-display);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.55), rgba(14, 165, 233, 0.45));
+  border-color: rgba(167, 139, 250, 0.8);
+  box-shadow: 0 0 16px rgba(139, 92, 246, 0.35);
+}
+
+/* Customers */
+.tms-customer {
+  background: rgba(12, 26, 50, 0.7);
+  border-color: rgba(56, 189, 248, 0.2);
+  border-radius: 10px;
+  color: var(--fx-text);
+}
+
+.tms-customer:hover {
+  background: rgba(20, 44, 80, 0.85);
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.tms-customer[data-selected='true'] {
+  background: linear-gradient(100deg, rgba(8, 145, 178, 0.55), rgba(124, 58, 237, 0.35));
+  border-color: var(--fx-edge-strong);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.35), 0 0 22px rgba(34, 211, 238, 0.25), inset 3px 0 0 var(--fx-cyan);
+}
+
+/* Load cards */
+.tms-load-card {
+  border-radius: 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  transition: box-shadow 0.15s, transform 0.15s, border-color 0.15s;
+}
+
+.tms-load-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.35), 0 8px 26px rgba(0, 0, 0, 0.45), 0 0 18px rgba(34, 211, 238, 0.18);
+}
+
+/* ---- Workspace ---- */
+.tms-workspace .rounded-lg,
+.tms-load-details {
+  background: var(--fx-panel);
+  border-color: var(--fx-edge);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 30px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+}
+
+.tms-load-details .rounded-lg {
+  background: rgba(4, 10, 24, 0.45);
+  border-color: rgba(56, 189, 248, 0.2);
+}
+
+.tms-workspace label,
+.tms-workspace h2,
+.tms-workspace h3,
+.tms-sidebar-header .text-gray-400 {
+  text-shadow: none;
+}
+
+.tms-workspace h2,
+.tms-workspace h3 {
+  font-family: var(--fx-font-display);
+  letter-spacing: 0.08em;
+}
+
+.tms-workspace label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fx-muted);
+}
+
+.tms-brand {
+  font-family: var(--fx-font-display);
+  font-size: 13px;
+  letter-spacing: 0.28em;
+  color: #fff;
+  text-shadow: 0 0 12px rgba(34, 211, 238, 0.55);
+  border-left: 3px solid var(--fx-cyan);
+  border-radius: 0 14px 14px 0;
+  background:
+    linear-gradient(90deg, rgba(8, 145, 178, 0.45), rgba(124, 58, 237, 0.22) 60%, rgba(5, 11, 23, 0)),
+    rgba(6, 13, 28, 0.7);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.25), 0 0 26px rgba(34, 211, 238, 0.15);
+}
+
+.tms-brand-phone {
+  font-family: var(--fx-font-mono);
+  font-size: 16px;
+  letter-spacing: 0.06em;
+}
+
+.tms-shell .tms-action-bar {
+  background: var(--fx-panel-strong);
+  border-color: var(--fx-edge);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.12), 0 10px 26px rgba(0, 0, 0, 0.35);
+}
+
+/* Inputs: dark glass with a neon focus ring, monospace values */
+.tms-shell input:not([type='checkbox']):not([type='file']),
+.tms-shell textarea,
+.tms-shell select {
+  background-color: rgba(3, 9, 22, 0.82);
+  border-color: rgba(56, 189, 248, 0.28);
+  border-radius: 9px;
+  color: var(--fx-text);
+  font-family: var(--fx-font-mono);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.tms-workspace input:not([type='checkbox']):not([type='file']),
+.tms-workspace textarea {
+  background-color: rgba(3, 9, 22, 0.82);
+}
+
+.tms-shell input:not([type='checkbox']):not([type='file']):focus,
+.tms-shell textarea:focus,
+.tms-shell select:focus {
+  border-color: var(--fx-cyan);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.18), 0 0 16px rgba(34, 211, 238, 0.25);
+  outline: none;
+}
+
+.tms-shell input::placeholder,
+.tms-shell textarea::placeholder {
+  color: #5f7f96;
+}
+
+.tms-shell .text-gray-400,
+.tms-shell .text-gray-500 {
+  color: var(--fx-muted);
+}
+
+.tms-shell button:focus-visible,
+.tms-shell input:focus-visible,
+.tms-shell textarea:focus-visible,
+.tms-shell select:focus-visible,
+.tms-sidebar-header label:focus-within {
+  outline: 2px solid var(--fx-cyan);
+  outline-offset: 2px;
+}
+
+/* Thin neon scrollbars */
+.tms-shell * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(34, 211, 238, 0.45) transparent;
+}
+
+.tms-shell *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.tms-shell *::-webkit-scrollbar-thumb {
+  background: rgba(34, 211, 238, 0.35);
+  border-radius: 8px;
+}
+
+.tms-shell *::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tms-shell .tms-tool,
+  .tms-load-card {
+    transition: none;
+  }
+  .tms-shell .tms-tool:hover,
+  .tms-load-card:hover {
+    transform: none;
+  }
+}

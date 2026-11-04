@@ -162,6 +162,15 @@ const landstarCommentOptions = [
   'Truck may be subject to security inspection onsite'
 ];
 
+// The ZIP is the source of truth on export: when a valid US ZIP was entered, Landstar gets
+// that ZIP's postal city and state, whatever city/state is typed on the load.
+function getExportPlace(typedCity, typedState, zipLocation) {
+  if (zipLocation?.city) {
+    return { city: zipLocation.city, state: String(zipLocation.state || typedState || '').toUpperCase(), fromZip: true };
+  }
+  return { city: typedCity, state: typedState, fromZip: false };
+}
+
 function getStatusTag(status) {
   if (status === 'ENT') return 'ENT';
   if (status === 'ON HOLD') return 'HOLD';
@@ -5552,18 +5561,25 @@ export default function App({ sharing = null } = {}) {
         .replace(/[^A-Z0-9]/g, '');
       const cityMatchesPostalCity = (city, location) =>
         Boolean(location?.city) && normalizeCityName(city) === normalizeCityName(location.city);
+      // An entered ZIP always wins: export its postal city and state (see getExportPlace).
+      const originPlace = getExportPlace(ord.origCity, originState, enteredOriginLocation);
+      const destinationPlace = getExportPlace(ord.destCity, destinationState, enteredDestinationLocation);
       const originCity = toLandstarCity(
-        (!enteredOriginLocation && originLocation?.city) || cityMatchesPostalCity(ord.origCity, enteredOriginLocation)
-          ? originLocation.city
-          : getLandstarCity(ord.origCity, originLocation)
+        originPlace.fromZip
+          ? originPlace.city
+          : originLocation?.city || cityMatchesPostalCity(ord.origCity, originLocation)
+            ? originLocation.city
+            : getLandstarCity(ord.origCity, originLocation)
       );
       const destinationCity = toLandstarCity(
-        (!enteredDestinationLocation && destinationLocation?.city) || cityMatchesPostalCity(ord.destCity, enteredDestinationLocation)
-          ? destinationLocation.city
-          : getLandstarCity(ord.destCity, destinationLocation)
+        destinationPlace.fromZip
+          ? destinationPlace.city
+          : destinationLocation?.city || cityMatchesPostalCity(ord.destCity, destinationLocation)
+            ? destinationLocation.city
+            : getLandstarCity(ord.destCity, destinationLocation)
       );
-      const originStateMatchesZip = !ord.origSt || !originLocation || originState === originLocation.state;
-      const destinationStateMatchesZip = !ord.destSt || !destinationLocation || destinationState === destinationLocation.state;
+      const originStateMatchesZip = originPlace.fromZip || !ord.origSt || !originLocation || originState === originLocation.state;
+      const destinationStateMatchesZip = destinationPlace.fromZip || !ord.destSt || !destinationLocation || destinationState === destinationLocation.state;
       const originZipWasResolved = !enteredOriginLocation && Boolean(originLocation);
       const destinationZipWasResolved = !enteredDestinationLocation && Boolean(destinationLocation);
       if (originZipWasResolved) representativeZipCount += 1;
@@ -5590,20 +5606,14 @@ export default function App({ sharing = null } = {}) {
       const today = new Date();
       const todaySerial = (Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - Date.UTC(1899, 11, 30)) / 86400000;
 
-      if (!ord.origCity) rowErrors.push('origin city');
-      if (!originState || !stateCodes.has(originState)) rowErrors.push('origin state/province');
+      if (!ord.origCity && !originPlace.fromZip) rowErrors.push('origin city');
+      if (!originPlace.fromZip && (!originState || !stateCodes.has(originState))) rowErrors.push('origin state/province');
       if (originCountry === 'CA' && !originZip) rowErrors.push('valid Canadian origin postal code');
       if (!originStateMatchesZip) rowErrors.push(`origin state must match ZIP ${originZip} (${originLocation.state})`);
-      if (enteredOriginLocation && !cityMatchesPostalCity(ord.origCity, enteredOriginLocation)) {
-        rowErrors.push(`origin city "${ord.origCity}" does not match ZIP ${enteredOriginZip} (postal city: ${enteredOriginLocation.city}) — correct the city or ZIP`);
-      }
-      if (!ord.destCity) rowErrors.push('destination city');
-      if (!destinationState || !stateCodes.has(destinationState)) rowErrors.push('destination state/province');
+      if (!ord.destCity && !destinationPlace.fromZip) rowErrors.push('destination city');
+      if (!destinationPlace.fromZip && (!destinationState || !stateCodes.has(destinationState))) rowErrors.push('destination state/province');
       if (destinationCountry === 'CA' && !destinationZip) rowErrors.push('valid Canadian destination postal code');
       if (!destinationStateMatchesZip) rowErrors.push(`destination state must match ZIP ${destinationZip} (${destinationLocation.state})`);
-      if (enteredDestinationLocation && !cityMatchesPostalCity(ord.destCity, enteredDestinationLocation)) {
-        rowErrors.push(`destination city "${ord.destCity}" does not match ZIP ${enteredDestinationZip} (postal city: ${enteredDestinationLocation.city}) — correct the city or ZIP`);
-      }
       if (pickupFrom === null || pickupThru === null) {
         rowErrors.push(`pickup date/time (current value "${ord.pickupTime || ''}" — use MM/DD/YYYY HHMM - HHMM)`);
       }
@@ -5635,11 +5645,11 @@ export default function App({ sharing = null } = {}) {
         "Posting Call Back 10 Digits Phone Number": exportPhone,
         "Origin City": originCity,
         "Origin Zipcode(Required)": originZip,
-        "Origin State": originState,
+        "Origin State": originPlace.state,
         "Origin Country(Required)": originCountry,
         "Destination City": destinationCity,
         "Destination Zipcode(Required)": destinationZip,
-        "Destination State": destinationState,
+        "Destination State": destinationPlace.state,
         "Destination Country(Required)": destinationCountry,
         "Pickup Date (From)(Required)": pickupFrom,
         "Pickup Date (Thru)(Required)": pickupThru,

@@ -28,7 +28,8 @@ export {
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity,
+  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -2145,4 +2146,37 @@ test('a booked load shows Remove capacity, keeps its rate editable, and goes bac
   assert.equal(app.states[6].driver, '');
   assert.equal(app.states[6].rateInput, '3300');
   assert.equal(app.find(node => node.type === 'button' && textOf(node).includes('Remove capacity')), null);
+});
+
+test('exported posting details use the Landstar board time format', () => {
+  assert.equal(policy.excelSerialToBoardTime(policy.toExcelDateTime('11/06/2026 1300')), '11/06/26 13:00');
+  assert.deepEqual({ ...policy.buildLandstarPosting({
+    'Origin Zipcode(Required)': '60007', 'Destination Zipcode(Required)': '76063',
+    'Pickup Date (Thru)(Required)': policy.toExcelDateTime('11/06/2026 1300'),
+    'Delivery Date (Thru)(Required)': policy.toExcelDateTime('11/08/2026 0700'),
+    'Weight(Required)': 42000
+  }) }, { originZip: '60007', destZip: '76063', pickupThru: '11/06/26 13:00', deliveryThru: '11/08/26 07:00', weight: 42000 });
+});
+
+test('posted loads missing from a full list are handed to the bot once; Nolan and DAT screenshots never are', () => {
+  const posting = { originZip: '60007', destZip: '76063', pickupThru: '11/06/26 13:00', deliveryThru: '11/08/26 07:00', weight: 42000 };
+  const existing = [
+    { ...load, id: '111111', status: 'ENT', tag: 'ENT', landstarExportedAt: new Date().toISOString(), landstarPosting: posting },
+    { ...load, id: '222222', origCity: 'Denver', origSt: 'CO', status: 'ENT', tag: 'ENT', landstarExportedAt: new Date().toISOString(), landstarPosting: { ...posting, originZip: '80202' } },
+    { ...load, id: '333333', origCity: 'Austin', origSt: 'TX' }
+  ];
+  const imported = [{ ...load, id: '111111' }];
+
+  const result = policy.replaceImportedCustomerLoads(customers[0], imported, existing);
+  assert.deepEqual(Array.from(result.droppedPostings, item => item.loadId), ['222222']);
+  assert.equal(result.droppedPostings[0].posting.originZip, '80202');
+  assert.equal(result.droppedPostings[0].customer, customers[0]);
+  const kept = result.loads.find(item => item.id === '222222');
+  assert.ok(kept, 'the dropped ENT load stays in the 30-day archive');
+  assert.equal(kept.landstarPosting, undefined, 'and is not handed over again next import');
+  assert.ok(result.loads.find(item => item.id === '111111').landstarPosting, 'loads still on the list keep their posting');
+
+  assert.equal(policy.replaceImportedCustomerLoads(customers[2], imported, existing).droppedPostings.length, 0, 'Nolan lists are partial');
+  assert.equal(policy.replaceImportedCustomerLoads(customers[0], imported, existing, { reportDroppedPostings: false }).droppedPostings.length, 0);
+  assert.equal(policy.findDroppedPostings(customers[1], [], existing).length, 0, 'an empty list never drops everything');
 });

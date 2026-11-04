@@ -1911,6 +1911,36 @@ function getEarliestPickupSerial(now = new Date(), leadMinutes = 30) {
   return (Math.ceil(wallClock / quarterHour) * quarterHour - Date.UTC(1899, 11, 30)) / 86400000;
 }
 
+// Excel serial (local clock) -> "MM/DD/YY HH:MM", the way the Landstar board shows times.
+function excelSerialToBoardTime(serial) {
+  if (typeof serial !== 'number' || !Number.isFinite(serial)) return '';
+  const date = new Date(Math.round(serial * 86400000) + Date.UTC(1899, 11, 30));
+  const pad = value => String(value).padStart(2, '0');
+  return `${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())}/${pad(date.getUTCFullYear() % 100)} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
+}
+
+// What identifies a load's posting on Landstar (Landstar postings carry no customer
+// load number): both ZIPs, pickup and delivery END times, and weight, exactly as exported.
+// End times are used because the export may move a past pickup START up to now.
+function buildLandstarPosting(record) {
+  return {
+    originZip: String(record['Origin Zipcode(Required)'] || '').trim().toUpperCase(),
+    destZip: String(record['Destination Zipcode(Required)'] || '').trim().toUpperCase(),
+    pickupThru: excelSerialToBoardTime(record['Pickup Date (Thru)(Required)']),
+    deliveryThru: excelSerialToBoardTime(record['Delivery Date (Thru)(Required)']),
+    weight: Number(record['Weight(Required)']) || 0
+  };
+}
+
+// Loads that were posted to Landstar and are missing from a customer's new full list.
+// Nolan's imports are partial (screenshots of part of their board), so they never count.
+function findDroppedPostings(customer, importedLoads, existingLoads) {
+  if (normalizeCustomerName(customer) === ntgCustomerName) return [];
+  const importedIds = new Set(importedLoads.map(load => normalizeLoadId(getBaseLoadId(load))).filter(Boolean));
+  if (!importedIds.size) return [];
+  return existingLoads.filter(load => load.landstarPosting && !importedIds.has(normalizeLoadId(getBaseLoadId(load))));
+}
+
 // A pickup window that already started but is still open is posted from the earliest
 // allowed start (its end stays the same); a window that is over can't be posted.
 function adjustPickupWindow(pickupFrom, pickupThru, earliestStart) {
@@ -2562,7 +2592,9 @@ function deduplicateDatImports(importedLoads, existingLoads) {
 }
 
 function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
-  additive = !preservesImportedLoadStatus(customer), allowGeneratedIds = additive, now = Date.now(), keepManualEnt = false
+  additive = !preservesImportedLoadStatus(customer), allowGeneratedIds = additive, now = Date.now(), keepManualEnt = false,
+  // false for partial lists (DAT rate screenshots, screenshots with unreadable rows)
+  reportDroppedPostings = true
 } = {}) {
   if (!importedLoads.length) {
     throw new Error('The imported load list is empty. Existing loads were not deleted.');
@@ -2653,9 +2685,18 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
     return retainedArchive || (additive && !(load.status === 'ENT' && Number.isFinite(exportedAt)
       && now - exportedAt >= exportedLoadRetentionMs));
   });
-  const loads = [...mergedLoads, ...retained];
+  // Posted loads missing from this (full) list: the upload bot removes their Landstar
+  // postings. Each is handed over once, so its saved posting details are cleared here.
+  const dropped = reportDroppedPostings ? findDroppedPostings(customer, importedLoads, existingLoads) : [];
+  const droppedIds = new Set(dropped.map(load => String(load.id)));
+  const droppedPostings = dropped.map(load => ({ customer, loadId: String(load.id), posting: load.landstarPosting }));
+  const loads = [...mergedLoads, ...retained].map(load => {
+    if (!droppedIds.has(String(load.id))) return load;
+    const { landstarPosting, ...rest } = load;
+    return rest;
+  });
   return {
-    loads, additive, processedLoads: mergedLoads,
+    loads, additive, processedLoads: mergedLoads, droppedPostings,
     laneDayDuplicateCount,
     usesScreenshotStatus: isParaCustomer(customer)
       && importedLoads.some(load => ['ON HOLD', 'OPEN'].includes(load.screenshotStatus)),
@@ -2669,6 +2710,7 @@ function getImportReplacementMessage(replacement) {
     ? `• ${replacement.additive ? 'Imported list merged' : 'Full list replaced'}; removed loads: ${replacement.removedCount}. Exported ENT loads retained for 30 days unless re-imported.\n` +
       `• Duplicate load/day rows skipped: ${replacement.duplicateCount}; ${replacement.usesScreenshotStatus ? 'Para screenshot: red = ON HOLD, non-red = OPEN' : 'imported loads set to OPEN'}.\n`
       + (replacement.laneDayDuplicateCount ? `• Same-lane/pickup-day duplicates skipped: ${replacement.laneDayDuplicateCount} (first load kept).\n` : '')
+      + (replacement.droppedPostings?.length ? `• No longer on the list: ${replacement.droppedPostings.length} posted load(s); the upload bot will remove them from Landstar.\n` : '')
     : '';
 }
 
@@ -3502,6 +3544,61 @@ function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
 // The Landstar upload bot (bot/status-server.js) reports its login status on
 // this computer while it runs. No answer means the bot is not running.
 const BOT_STATUS_URL = 'http://127.0.0.1:47615/status';
+const BOT_UNPOST_URL = 'http://127.0.0.1:47615/unpost';
+
+// Postings waiting to be removed from Landstar by the upload bot (loads that dropped
+// off a customer's list). Kept in this browser until the bot confirms it has them.
+const unpostQueueKey = 'landstar_unpostQueue';
+function readUnpostQueue() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(unpostQueueKey));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function writeUnpostQueue(queue) {
+  try {
+    localStorage.setItem(unpostQueueKey, JSON.stringify(queue));
+  } catch (error) {
+    console.error('Could not save the Landstar removal queue:', error);
+  }
+}
+function addToUnpostQueue(droppedPostings) {
+  const queue = readUnpostQueue();
+  const seen = new Set(queue.map(item => `${item.customer}|${item.loadId}`));
+  droppedPostings.forEach(item => {
+    if (item?.posting && !seen.has(`${item.customer}|${item.loadId}`)) {
+      queue.push({ ...item, queuedAt: new Date().toISOString() });
+      seen.add(`${item.customer}|${item.loadId}`);
+    }
+  });
+  writeUnpostQueue(queue);
+  return queue.length;
+}
+// Hands the queue to the bot; returns how many it accepted (0 if the bot is off).
+async function sendUnpostQueueToBot() {
+  const queue = readUnpostQueue();
+  if (!queue.length) return 0;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(BOT_UNPOST_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ postings: queue }),
+      signal: controller.signal
+    });
+    if (!response.ok) return 0;
+    const sent = new Set(queue.map(item => `${item.customer}|${item.loadId}`));
+    writeUnpostQueue(readUnpostQueue().filter(item => !sent.has(`${item.customer}|${item.loadId}`)));
+    return queue.length;
+  } catch {
+    return 0;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const botStatusStyles = {
   'logged-in': { label: 'Bot logged in', dot: '#22c55e', glow: '0 0 8px #22c55e' },
   uploading: { label: 'Bot uploading', dot: '#22c55e', glow: '0 0 8px #22c55e' },
@@ -3766,7 +3863,10 @@ export default function App({ sharing = null } = {}) {
         setCustomerOrdersMap(current => {
           const next = { ...current };
           fullLists.forEach((loads, customer) => {
-            next[customer] = replaceImportedCustomerLoads(customer, loads, current[customer] || []).loads;
+            const replacement = replaceImportedCustomerLoads(customer, loads, current[customer] || []);
+            next[customer] = replacement.loads;
+            // Background import: never asks, so an unusually large drop is skipped instead.
+            queueDroppedPostings(replacement, current[customer] || [], { interactive: false });
           });
           return next;
         });
@@ -4498,6 +4598,7 @@ export default function App({ sharing = null } = {}) {
         ? removeDuplicateLoadImports(mergedList)
         : { loads: mergedList, duplicateCount: 0 };
       const replacement = replaceImportedCustomerLoads(selectedBroker, payerLoads, existingOrders);
+      queueDroppedPostings(replacement, existingOrders);
       const finalLoads = replacement ? replacement.loads : mergedFinalLoads;
       const nextOrders = { ...customerOrdersMap, [selectedBroker]: finalLoads };
       const saved = persistAppData(brokers, nextOrders);
@@ -4736,6 +4837,7 @@ export default function App({ sharing = null } = {}) {
           ? removeDuplicateLoadImports(mergedLoadList)
           : { loads: mergedLoadList, duplicateCount: 0 };
         const replacement = replaceImportedCustomerLoads(selectedBroker, importedRows, existingLoads);
+        queueDroppedPostings(replacement, existingLoads);
         const finalLoads = replacement ? replacement.loads : mergedFinalLoads;
         const nextOrders = { ...customerOrdersMap, [selectedBroker]: finalLoads };
         const saved = persistAppData(brokers, nextOrders);
@@ -5279,8 +5381,11 @@ export default function App({ sharing = null } = {}) {
       const mergedOrders = new Map(existingOrders.map(order => [order.id, order]));
       mergedImportedLoads.forEach(order => mergedOrders.set(order.id, order));
       const replacement = replaceImportedCustomerLoads(brokerName, isDatImport ? importedLoads : recognizedLoads, existingOrders,
-        isDatImport ? { additive: true, allowGeneratedIds: true }
-          : gridSkippedRows.length ? { additive: true, allowGeneratedIds: !preservesImportedLoadStatus(brokerName) } : { keepManualEnt: true });
+        isDatImport ? { additive: true, allowGeneratedIds: true, reportDroppedPostings: false }
+          : gridSkippedRows.length
+            ? { additive: true, allowGeneratedIds: !preservesImportedLoadStatus(brokerName), reportDroppedPostings: false }
+            : { keepManualEnt: true });
+      queueDroppedPostings(replacement, existingOrders);
       const finalLoads = replacement ? replacement.loads : Array.from(mergedOrders.values());
       const nextOrders = {
         ...customerOrdersMap,
@@ -5422,6 +5527,33 @@ export default function App({ sharing = null } = {}) {
     const timer = setInterval(loadInquiries, 60 * 1000);
     return () => { cancelled = true; clearInterval(timer); };
   }, []);
+
+  // Hands loads that dropped off a customer's list to the upload bot, which removes
+  // their Landstar postings. Retries every 30 seconds while the bot is off.
+  // Keep this the last effect: tests address earlier effects by position.
+  useEffect(() => {
+    const timer = setInterval(() => { void sendUnpostQueueToBot(); }, 30 * 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Queues a full-list import's dropped loads for removal from Landstar. If an import
+  // would drop more than half of a customer's posted loads, ask first: the file may be
+  // cut off or misread.
+  const queueDroppedPostings = (replacement, existingLoads, { interactive = true } = {}) => {
+    const dropped = replacement?.droppedPostings || [];
+    if (!dropped.length) return 0;
+    const posted = (existingLoads || []).filter(load => load.landstarPosting).length;
+    if (dropped.length > 20 && dropped.length > posted / 2) {
+      const ok = interactive && window.confirm(
+        `${dropped.length} of ${posted} loads posted on Landstar for this customer are not on the new list.\n\n`
+        + 'Remove all of them from Landstar? Choose Cancel if the file may be incomplete.'
+      );
+      if (!ok) return 0;
+    }
+    addToUnpostQueue(dropped);
+    void sendUnpostQueueToBot();
+    return dropped.length;
+  };
 
   const unseenInquiryCount = inquiries.filter(inquiry => !inquiry.seen).length;
 
@@ -6070,11 +6202,16 @@ export default function App({ sharing = null } = {}) {
       exportedRegistrySaved = false;
       console.error('Could not save exported load records:', error);
     }
+    // Remember exactly what was posted, so the bot can find and remove the posting
+    // later if the load drops off the customer's list.
+    const postingsById = new Map(readyEntries.map(({ ord, record }) => [String(ord.id), buildLandstarPosting(record)]));
     const nextOrders = {
       ...customerOrdersMap,
-      [selectedBroker]: markLoadsExported(orders, exportedIds, exportedAt).map(load => (
-        inquiryTokens.has(String(load.id)) ? { ...load, inquiryToken: inquiryTokens.get(String(load.id)) } : load
-      ))
+      [selectedBroker]: markLoadsExported(orders, exportedIds, exportedAt).map(load => {
+        const posting = postingsById.get(String(load.id));
+        const withPosting = posting ? { ...load, landstarPosting: posting } : load;
+        return inquiryTokens.has(String(load.id)) ? { ...withPosting, inquiryToken: inquiryTokens.get(String(load.id)) } : withPosting;
+      })
     };
     const saved = persistAppData(brokers, nextOrders);
     setRateHistory(recordExportedRates(selectedBroker, readyEntries.map(({ ord }) => ord)));

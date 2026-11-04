@@ -2102,6 +2102,10 @@ test('long military base names are shortened the way Landstar lists them', () =>
   assert.equal(policy.toLandstarCity('Little Rock Air Force Base'), 'Little Rock AFB');
   assert.equal(policy.toLandstarCity('Washington Court House'), 'Washington CH');
   assert.equal(policy.toLandstarCity('Air Force Base'), 'Air Force Base');
+  // Spellings Landstar rejected, mapped to the names on its board.
+  assert.equal(policy.toLandstarCity('Hot Springs National Park'), 'Hot Sprs');
+  assert.equal(policy.toLandstarCity('Feasterville Trevose'), 'Fstrvl Trvose');
+  assert.equal(policy.toLandstarCity('Mc Cordsville'), 'McCordsville');
   assert.equal(policy.toLandstarCity('Elk Grove Village'), 'Elk Grove Village');
 });
 

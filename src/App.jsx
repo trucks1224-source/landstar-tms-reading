@@ -2256,9 +2256,21 @@ function getLandstarCity(value, location) {
 const landstarCityAbbreviations = {
   'WASHINGTON COURT HOUSE': 'Washington CH'
 };
+// Landstar shortens military-base names (e.g. its city list has "MARCH ARB, CA" for
+// ZIP 92518 "March Air Reserve Base"); cutting them at 18 characters instead gives a
+// name Landstar rejects as "Invalid Origin".
+const landstarCityPhrases = [
+  [/\bAir Reserve Base\b/i, 'ARB'],
+  [/\bAir Force Base\b/i, 'AFB'],
+  [/\bNaval Air Station\b/i, 'NAS'],
+  [/\bMarine Corps Air Station\b/i, 'MCAS']
+];
 function toLandstarCity(value) {
   const city = String(value || '').trim();
-  const abbreviated = landstarCityAbbreviations[city.toUpperCase()] || city;
+  let abbreviated = landstarCityAbbreviations[city.toUpperCase()] || city;
+  if (abbreviated.length > 18) {
+    landstarCityPhrases.forEach(([phrase, short]) => { abbreviated = abbreviated.replace(phrase, short); });
+  }
   return abbreviated.length > 18 ? abbreviated.slice(0, 18).trim() : abbreviated;
 }
 

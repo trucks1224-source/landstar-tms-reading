@@ -2075,3 +2075,11 @@ test('comment box warns when a comment is not a Landstar comment code', () => {
   const standard = createAppHarness(customers[0], [{ ...load, id: '1', landstarComment: 'load ready now' }]);
   assert.equal(standard.find(node => node.props?.id === 'landstar-comment-warning'), null);
 });
+
+test('long military base names are shortened the way Landstar lists them', () => {
+  assert.equal(policy.toLandstarCity('March Air Reserve Base'), 'March ARB');
+  assert.equal(policy.toLandstarCity('Little Rock Air Force Base'), 'Little Rock AFB');
+  assert.equal(policy.toLandstarCity('Washington Court House'), 'Washington CH');
+  assert.equal(policy.toLandstarCity('Air Force Base'), 'Air Force Base');
+  assert.equal(policy.toLandstarCity('Elk Grove Village'), 'Elk Grove Village');
+});

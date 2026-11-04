@@ -59,3 +59,32 @@ export async function getAccessToken(refreshToken) {
   }
   return result.access_token;
 }
+
+// Header values must stay on one line so nothing can inject extra headers.
+const oneLine = value => String(value || '').replace(/[\r\n]+/g, ' ').trim();
+
+// Sends a plain-text email through the connected Gmail account (needs gmail.send scope).
+export async function sendGmail(accessToken, { to, subject, text, replyTo }) {
+  const encodedSubject = `=?UTF-8?B?${Buffer.from(oneLine(subject), 'utf8').toString('base64')}?=`;
+  const headers = [
+    `To: ${oneLine(to)}`,
+    `Subject: ${encodedSubject}`,
+    replyTo ? `Reply-To: ${oneLine(replyTo)}` : null,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64'
+  ].filter(Boolean);
+  const raw = `${headers.join('\r\n')}\r\n\r\n${Buffer.from(String(text || ''), 'utf8').toString('base64')}`;
+  const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ raw: Buffer.from(raw, 'utf8').toString('base64url') })
+  });
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    const reason = result.error?.message || `Gmail send failed (HTTP ${response.status})`;
+    throw new Error(/insufficient|scope/i.test(reason)
+      ? 'Gmail is not allowed to send yet. Reconnect Gmail once at /api/gmail-connect to add send permission.'
+      : reason);
+  }
+}

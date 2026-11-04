@@ -5,8 +5,10 @@ export const syncedKeys = [
   'landstar_brokers',
   'landstar_customerOrdersMap',
   'landstar_laneRates',
+  'landstar_rateHistory',
   'landstar_exportedLoads',
-  'landstar_profile'
+  'landstar_profile',
+  'landstar_dataVersion'
 ];
 
 const brokersKey = 'landstar_brokers';

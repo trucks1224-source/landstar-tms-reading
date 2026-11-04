@@ -4,5 +4,8 @@
       "path": "/api/gmail-poll",
       "schedule": "0 12 * * *"
     }
+  ],
+  "rewrites": [
+    { "source": "/i/:token", "destination": "/inquire.html" }
   ]
 }

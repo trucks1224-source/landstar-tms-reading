@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Load Inquiry · Landstar</title>
+  <style>
+    :root { --bg: #0b132b; --card: #121829; --line: #2a3557; --text: #f1f5f9; --muted: #a8b6cc; --accent: #7c3aed; --ok: #16a34a; --err: #dc2626; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    main { max-width: 560px; margin: 0 auto; padding: 20px 16px 40px; }
+    h1 { margin: 0 0 10px; }
+    .brand { display: flex; align-items: center; justify-content: center; background: #fff; border-radius: 12px; padding: 14px 16px; }
+    .brand img { display: block; width: 100%; max-width: 260px; height: auto; }
+    .muted { color: var(--muted); font-size: 14px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 16px; }
+    .lane { font-size: 18px; font-weight: 700; }
+    dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 12px 0 0; }
+    dt { color: var(--muted); font-size: 14px; }
+    dd { margin: 0; font-weight: 600; }
+    .rate { font-size: 22px; color: #4ade80; font-weight: 800; }
+    label { display: block; font-size: 14px; color: var(--muted); margin: 12px 0 4px; }
+    input, textarea { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; }
+    textarea { min-height: 90px; resize: vertical; }
+    button { width: 100%; margin-top: 16px; padding: 14px; border: 0; border-radius: 10px; background: var(--accent); color: #fff; font: 700 17px/1 inherit; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+    .msg { margin-top: 12px; padding: 12px; border-radius: 8px; font-weight: 600; }
+    .msg.ok { background: rgba(22,163,74,.18); border: 1px solid var(--ok); }
+    .msg.err { background: rgba(220,38,38,.18); border: 1px solid var(--err); }
+    .hidden { display: none; }
+    .trap { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+    a { color: #c4b5fd; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 class="brand"><img src="/landstar-logo-transparent.png" alt="Landstar" width="246" height="64"></h1>
+    <p class="muted" id="callback"></p>
+
+    <section class="card" id="load-card" aria-live="polite">
+      <p class="muted" id="status">Loading load details…</p>
+      <div id="load" class="hidden">
+        <div class="lane" id="lane"></div>
+        <dl id="details"></dl>
+      </div>
+    </section>
+
+    <section class="card hidden" id="form-card">
+      <h2 style="font-size:17px;margin:0">Interested? Send your info</h2>
+      <p class="muted" style="margin:4px 0 0">We'll call you back.</p>
+      <form id="form" novalidate>
+        <label for="name">Your name *</label>
+        <input id="name" name="name" autocomplete="name" maxlength="80" required>
+        <label for="phone">Cell phone *</label>
+        <input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="30" required>
+        <label for="mcOrTruck">MC # or truck # (optional)</label>
+        <input id="mcOrTruck" name="mcOrTruck" maxlength="60">
+        <label for="email">Email (optional)</label>
+        <input id="email" name="email" type="email" autocomplete="email" maxlength="120">
+        <label for="message">Message (optional)</label>
+        <textarea id="message" name="message" maxlength="1000" placeholder="Where are you now? When can you pick up?"></textarea>
+        <div class="trap" aria-hidden="true">
+          <label for="website">Leave this empty</label>
+          <input id="website" name="website" tabindex="-1" autocomplete="off">
+        </div>
+        <button type="submit" id="submit">Send inquiry</button>
+      </form>
+      <div id="result" class="msg hidden" role="status"></div>
+    </section>
+  </main>
+  <script>
+    (function () {
+      // Short links look like /i/<code>; older ones use ?t=<code>.
+      var token = new URLSearchParams(location.search).get('t') || (location.pathname.match(/^\/i\/([A-Za-z0-9_-]{20,64})\/?$/) || [])[1] || '';
+      var $ = function (id) { return document.getElementById(id); };
+      function show(el, on) { el.classList.toggle('hidden', !on); }
+      function fail(text) { $('status').textContent = text; show($('load'), false); show($('form-card'), false); }
+
+      if (!token) { fail('This link is missing its load code. Ask for a new link.'); return; }
+
+      fetch('/api/load-inquiry?t=' + encodeURIComponent(token))
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+        .then(function (res) {
+          if (!res.ok) { fail(res.body.error || 'This load link is no longer available.'); return; }
+          var d = res.body.load;
+          if (d.callbackPhone) {
+            var call = document.createElement('a');
+            call.href = 'tel:' + d.callbackPhone.replace(/[^\d+]/g, '');
+            call.textContent = d.callbackPhone;
+            $('callback').textContent = 'Questions? Call ';
+            $('callback').appendChild(call);
+          }
+          $('lane').textContent = d.origin + ' → ' + d.destination;
+          var rows = [
+            ['Load #', d.ref], ['Pickup', d.pickup], ['Delivery', d.delivery], ['Equipment', d.equipment],
+            ['Weight', d.weight], ['Miles', d.miles], ['Rate', d.rate]
+          ];
+          rows.forEach(function (row) {
+            if (!row[1]) return;
+            var dt = document.createElement('dt'); dt.textContent = row[0];
+            var dd = document.createElement('dd'); dd.textContent = row[1];
+            if (row[0] === 'Rate') dd.className = 'rate';
+            $('details').appendChild(dt); $('details').appendChild(dd);
+          });
+          show($('status'), false); show($('load'), true); show($('form-card'), true);
+        })
+        .catch(function () { fail('Could not load this load. Check your connection and try again.'); });
+
+      $('form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        var form = event.currentTarget;
+        var result = $('result');
+        var data = { t: token };
+        ['name', 'phone', 'mcOrTruck', 'email', 'message', 'website'].forEach(function (k) { data[k] = form.elements[k].value; });
+        if (!data.name.trim() || data.phone.replace(/\D/g, '').length < 10) {
+          result.className = 'msg err'; result.textContent = 'Please enter your name and a 10-digit phone number.'; return;
+        }
+        $('submit').disabled = true; $('submit').textContent = 'Sending…';
+        fetch('/api/load-inquiry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+          .then(function (res) {
+            if (!res.ok) throw new Error(res.body.error || 'Could not send. Please call instead.');
+            form.classList.add('hidden');
+            result.className = 'msg ok';
+            result.textContent = 'Thanks! Your inquiry was sent. We’ll call you back shortly.';
+          })
+          .catch(function (error) {
+            result.className = 'msg err'; result.textContent = error.message;
+            $('submit').disabled = false; $('submit').textContent = 'Send inquiry';
+          });
+      });
+    })();
+  </script>
+</body>
+</html>

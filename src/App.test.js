@@ -16,13 +16,18 @@ export {
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
-  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription, normalizeEquipmentCode,
+  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
   getPastedImage, readClipboardImage, getImportedLoadSelection,
-  getFuelSurchargeRegion, getFuelSurchargeRate, normalizeFuelSurchargeRates
+  getFuelSurchargeRegion, getFuelSurchargeRate, normalizeFuelSurchargeRates,
+  writeSyncedKey, initSyncGuardFromStorage, readDataVersions, getChangedSyncedKeys,
+  isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted,
+  getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
+  getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
+  buildInquiryDetails, getInquiryUrl, getLandstarExportComment
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -951,6 +956,75 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
   };
 }
 
+// Runs the module in a fresh context sharing one storage map, simulating two tabs.
+function createSyncContext(storage) {
+  const ctx = {
+    module: { exports: {} },
+    console,
+    localStorage: {
+      getItem: key => (storage.has(key) ? storage.get(key) : null),
+      setItem: (key, value) => storage.set(key, String(value))
+    },
+    require(name) {
+      if (name === './lib/screenshotTable.js') return screenshotTable;
+      if (name === './lib/ntgCards.js') return ntgCards;
+      if (['react', 'xlsx', './lib/supabase'].includes(name)) return {};
+      throw new Error(`Unexpected dependency: ${name}`);
+    }
+  };
+  vm.runInNewContext(code, ctx);
+  return ctx.module.exports;
+}
+
+test('a stale tab cannot overwrite newer data saved from another tab', () => {
+  const storage = new Map();
+  const tabA = createSyncContext(storage);
+  const tabB = createSyncContext(storage);
+  assert.equal(tabA.writeSyncedKey('landstar_customerOrdersMap', '{"rxo":[1]}'), true);
+  tabB.initSyncGuardFromStorage();
+  // Tab A imports and saves a newer list.
+  assert.equal(tabA.writeSyncedKey('landstar_customerOrdersMap', '{"rxo":[1,2]}'), true);
+  // Tab B's state is now stale; its save must be refused so the import survives.
+  assert.equal(tabB.writeSyncedKey('landstar_customerOrdersMap', '{"rxo":[9]}'), false);
+  assert.equal(storage.get('landstar_customerOrdersMap'), '{"rxo":[1,2]}');
+  // After tab B adopts the newer data, it may write again.
+  tabB.markStorageAdopted({ landstar_customerOrdersMap: storage.get('landstar_customerOrdersMap') });
+  assert.equal(tabB.writeSyncedKey('landstar_customerOrdersMap', '{"rxo":[1,2,3]}'), true);
+  assert.equal(storage.get('landstar_customerOrdersMap'), '{"rxo":[1,2,3]}');
+});
+
+test('unversioned load-list changes are detected and reverted to the last known good', () => {
+  const storage = new Map();
+  const tabA = createSyncContext(storage);
+  tabA.writeSyncedKey('landstar_customerOrdersMap', '{"rxo":[1,2]}');
+  // An outdated app version writes without bumping the version.
+  storage.set('landstar_customerOrdersMap', '{"rxo":[]}');
+  assert.equal(tabA.isUnversionedExternalChange('landstar_customerOrdersMap'), true);
+  assert.equal(tabA.restoreLastSavedKey('landstar_customerOrdersMap'), true);
+  assert.equal(storage.get('landstar_customerOrdersMap'), '{"rxo":[1,2]}');
+  // A versioned change from another up-to-date tab is adopted, not reverted.
+  const tabB = createSyncContext(storage);
+  tabB.initSyncGuardFromStorage();
+  assert.equal(tabB.writeSyncedKey('landstar_customerOrdersMap', '{"rxo":[5]}'), true);
+  assert.equal(tabA.isUnversionedExternalChange('landstar_customerOrdersMap'), false);
+  assert.deepEqual([...tabA.getChangedSyncedKeys({
+    landstar_customerOrdersMap: storage.get('landstar_customerOrdersMap')
+  })], ['landstar_customerOrdersMap']);
+});
+
+test('version bumps for unrelated keys do not mark the load list as externally changed', () => {
+  const storage = new Map();
+  const tabA = createSyncContext(storage);
+  tabA.writeSyncedKey('landstar_customerOrdersMap', '{"rxo":[1]}');
+  tabA.writeSyncedKey('landstar_laneRates', '{"lane":2200}');
+  // Only the rates key reports a change after the orders value is re-read.
+  assert.deepEqual([...tabA.getChangedSyncedKeys({
+    landstar_customerOrdersMap: storage.get('landstar_customerOrdersMap'),
+    landstar_laneRates: storage.get('landstar_laneRates')
+  })], []);
+  assert.equal(tabA.isUnversionedExternalChange('landstar_customerOrdersMap'), false);
+});
+
 test('VM and VT vans display Team true while ordinary vans display false', () => {
   for (const [extra, expected] of [[{ eCode: 'VM' }, 'true'], [{ eCode: 'VT' }, 'true'], [{ eCode: 'V', team: 'true' }, 'true'], [{ eCode: 'V' }, 'false'], [{ eCode: 'VZ' }, 'false']]) {
     const app = createAppHarness(customers[0], [{ ...load, ...extra }]);
@@ -1004,7 +1078,7 @@ test('Select All then Move to ENT moves every selected load to ENT', () => {
   assert.ok(moveButton, 'Move to ENT button exists');
   moveButton.props.onClick();
   app.render();
-  app.effects[0]();
+  app.effects[1]();
   const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[0]];
   for (const order of saved) {
     assert.equal(order.status, 'ENT', order.id);
@@ -1118,7 +1192,8 @@ test('hazmat and tanker tags carry through to commodity and flags', () => {
   assert.equal(policy.isTankerLoad({}), false);
 });
 
-test('flatbed loads map to F,SD and export as FLAT', () => {
+test('flatbed loads map to F and export as FLAT', () => {
+  assert.equal(policy.getLandstarEquipmentCode('F'), 'FLAT');
   assert.equal(policy.getLandstarEquipmentCode('F,SD'), 'FLAT');
   assert.equal(policy.getLandstarEquipmentCode('FH'), 'FH');
   assert.equal(policy.getLandstarEquipmentCode('D-LG'), 'D-LG');
@@ -1126,20 +1201,42 @@ test('flatbed loads map to F,SD and export as FLAT', () => {
   assert.equal(policy.getEquipmentDescription('FLCS'), 'FLCS');
   assert.equal(policy.isHazmatLoad({ eCode: 'FH' }), false);
   assert.equal(policy.getLoadCommodity({ eCode: 'FH' }), 'CGAPP');
-  assert.match(policy.getEquipmentDescription('F,SD'), /STEP/);
+  assert.match(policy.getEquipmentDescription('F'), /53FL/);
 });
 
 test('Excel equipment text normalizes to TMS equipment codes', () => {
   assert.equal(policy.normalizeEquipmentCode('Reefer - 53'), 'R');
   assert.equal(policy.normalizeEquipmentCode('Reefer'), 'R');
   assert.equal(policy.normalizeEquipmentCode('Van - 53'), 'V');
-  assert.equal(policy.normalizeEquipmentCode('Flatbed - 48'), 'F,SD');
+  assert.equal(policy.normalizeEquipmentCode('Flatbed'), 'F');
+  assert.equal(policy.normalizeEquipmentCode('Flatbed - 48'), 'F');
+  assert.equal(policy.normalizeEquipmentCode('Flatbed - 53'), 'F');
+  assert.equal(policy.normalizeEquipmentCode('Flatbed w/Tarps'), 'F');
+  assert.equal(policy.normalizeEquipmentCode('Flatbed or Step Deck'), 'SD');
+  assert.equal(policy.normalizeEquipmentCode('Flatbed or Conestoga'), 'FLCS');
   assert.equal(policy.normalizeEquipmentCode('Straight Truck - Large'), 'D-LG,D-ST');
   assert.equal(policy.normalizeEquipmentCode('Conestoga'), 'FLCS');
   assert.equal(policy.normalizeEquipmentCode('Step Deck'), 'SD');
+  assert.equal(policy.normalizeEquipmentCode('Stepdeck'), 'SD');
   assert.equal(policy.normalizeEquipmentCode('FH'), 'FH');
   assert.equal(policy.normalizeEquipmentCode(''), '');
   assert.equal(policy.getLandstarEquipmentCode(policy.normalizeEquipmentCode('Reefer - 53')), 'REFR');
+  assert.equal(policy.getLandstarEquipmentCode(policy.normalizeEquipmentCode('Flatbed - 53')), 'FLAT');
+  assert.equal(policy.getLandstarEquipmentCode(policy.normalizeEquipmentCode('Conestoga')), 'FLCS');
+  assert.equal(policy.getLandstarEquipmentCode(policy.normalizeEquipmentCode('Step Deck')), 'STEP');
+});
+
+test('oversized and specialized equipment is flagged to skip on import', () => {
+  assert.equal(policy.isSkippableEquipment('Over Dimensional'), true);
+  assert.equal(policy.isSkippableEquipment('Removable GooseNeck'), true);
+  assert.equal(policy.isSkippableEquipment('RGN Extendable'), true);
+  assert.equal(policy.isSkippableEquipment('RGN'), true);
+  assert.equal(policy.isSkippableEquipment('Lowboy'), true);
+  assert.equal(policy.isSkippableEquipment('Flatbed'), false);
+  assert.equal(policy.isSkippableEquipment('Step Deck'), false);
+  assert.equal(policy.isSkippableEquipment('Conestoga'), false);
+  assert.equal(policy.isSkippableEquipment('Van'), false);
+  assert.equal(policy.isSkippableEquipment(''), false);
 });
 
 test('RXO Excel import maps reefer equipment to REFR instead of VAN', async () => {
@@ -1358,7 +1455,7 @@ test('sort controls order loads independently by pickup/delivery city or state i
         .filter(node => node?.props?.className?.includes('tms-load-card'));
       const actual = cards.map(card => {
         card.props.onClick();
-        return app.states[5].id;
+        return app.states[6].id;
       });
       assert.deepEqual(actual, direction === 'asc' ? ids : [...ids].reverse(), value);
     }
@@ -1547,7 +1644,7 @@ test('assignment fields save with the load and survive reload and re-import', ()
     app.render();
     assert.equal(app.states[2][customers[0]][0][field], value);
   }
-  app.effects[0]();
+  app.effects[1]();
   const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[0]];
   const reloaded = createAppHarness(customers[0], saved);
   const replaced = policy.replaceImportedCustomerLoads(customers[0], [
@@ -1571,15 +1668,16 @@ test('global search opens the owning customer and keeps bulk selection customer-
   assert.ok(card);
   const checkbox = app.find(node => node.type === 'input' && node.props.title === 'Open this load to select its customer first');
   assert.equal(checkbox.props.disabled, true);
-  app.find(node => node.type === 'button' && node.props.children.includes('Select First 25')).props.onClick();
-  assert.equal(app.states[17].length, 0);
+  const selectAll = () => app.find(node => node.type === 'input' && node.props.className === 'cursor-pointer accent-blue-600');
+  selectAll().props.onChange();
+  assert.equal(app.states[18].length, 0);
   card.props.onClick();
   app.render();
   assert.equal(app.states[1], customers[1]);
-  assert.equal(app.states[5], foreign);
+  assert.equal(app.states[6], foreign);
   assert.equal(app.find(node => node.type === 'input' && node.props.title === 'Select load').props.disabled, false);
-  app.find(node => node.type === 'button' && node.props.children.includes('Select First 25')).props.onClick();
-  assert.deepEqual(Array.from(app.states[17]), [foreign.id]);
+  selectAll().props.onChange();
+  assert.deepEqual(Array.from(app.states[18]), [foreign.id]);
 });
 
 test('manual rate persists and auto-fills a future Excel load with different ZIPs after reload', async () => {
@@ -1597,6 +1695,37 @@ test('manual rate persists and auto-fills a future Excel load with different ZIP
   assert.equal(saved[customers[0]][0].rateInput, '2500');
   assert.equal(saved[customers[0]][0].rateSource, 'user-entered');
   assert.equal(reloaded.errors.length, 0);
+});
+
+test('DAT-fetched rate is remembered and reused for the next load in the same lane', async () => {
+  const app = createAppHarness(customers[0], []);
+  await app.importExcel([
+    ['Load ID', 'Equipment', 'Origin City', 'Origin State', 'Origin Zip', 'Destination City', 'Destination State', 'Destination Zip'],
+    ['7654321', 'VZ', 'Chicago', 'IL', '60601', 'Dallas', 'TX', '75201']
+  ]);
+  const first = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[0]][0];
+  assert.equal(first.rateInput, '2000');
+  assert.equal(first.rateSource, 'dat-api');
+  const savedRates = JSON.parse(app.storage.get('landstar_laneRates'));
+  assert.equal(savedRates[policy.createLaneRateKey(customers[0], first)], '2000');
+
+  // A later import of the same lane reuses the remembered rate without calling DAT again.
+  let datCalls = 0;
+  const reloaded = createAppHarness(customers[0], [], null, savedRates, {
+    fetch: async url => {
+      if (url === '/api/road-miles') return { ok: true, json: async () => ({ miles: 500 }) };
+      if (url === '/api/dat-rate') { datCalls += 1; return { json: async () => ({ rate: 9999 }) }; }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }
+  });
+  await reloaded.importExcel([
+    ['Load ID', 'Equipment', 'Origin City', 'Origin State', 'Origin Zip', 'Destination City', 'Destination State', 'Destination Zip'],
+    ['7659999', 'VZ', 'Chicago', 'IL', '60602', 'Dallas', 'TX', '75202']
+  ]);
+  const second = JSON.parse(reloaded.storage.get('landstar_customerOrdersMap'))[customers[0]][0];
+  assert.equal(second.rateInput, '2000');
+  assert.equal(second.rateSource, 'user-entered');
+  assert.equal(datCalls, 0);
 });
 
 for (const customer of [customers[0], customers[1]]) {
@@ -1706,7 +1835,7 @@ test('automated email imports replace per-customer lists only after loading ever
     { ...load, id: '100000', status: 'ENT', tag: 'ENT' },
     { ...load, id: '999999', status: 'ENT', tag: 'ENT' }
   ], supabase);
-  app.effects[1]();
+  app.effects[2]();
   await new Promise(resolve => setImmediate(resolve));
   const saved = app.states[2];
   assert.deepEqual(pages, [100, 8]);
@@ -1718,4 +1847,210 @@ test('automated email imports replace per-customer lists only after loading ever
   assert.equal(saved['Unrelated customer'][0].id, '777777');
   assert.equal(acknowledged.length, 108);
   assert.equal(app.errors.length, 0);
+});
+
+const textOf = node => (node?.props?.children || []).flat(Infinity)
+  .map(child => (typeof child === 'string' || typeof child === 'number' ? String(child) : textOf(child))).join('');
+
+test('booking needs a driver and moves the load to BOOKED', () => {
+  assert.throws(() => policy.bookLoad({ ...load, driver: '  ' }), /driver name/);
+  const booked = policy.bookLoad({ ...load, driver: 'Alex Driver' }, '2026-11-03T12:00:00.000Z');
+  assert.equal(booked.status, 'BOOKED');
+  assert.equal(booked.tag, 'BOOKED');
+  assert.equal(booked.bookedAt, '2026-11-03T12:00:00.000Z');
+  assert.equal(policy.getStatusTag('BOOKED'), 'BOOKED');
+  assert.equal(policy.getStatusTag('ON HOLD'), 'HOLD');
+});
+
+test('driver directory lists known drivers, trucks and trailers across customers', () => {
+  const directory = policy.buildDriverDirectory({
+    A: [
+      { ...load, id: '1', driver: 'Alex Driver', driverPhone: '555-1111', truck: 'T-100', trailer: '', bookedAt: '2026-11-01T00:00:00Z' },
+      { ...load, id: '2', driver: 'alex driver', truck: 'T-102', trailer: 'TR-208', bookedAt: '2026-11-02T00:00:00Z' }
+    ],
+    B: [{ ...load, id: '3', driver: 'Bea Smith', truck: 'T-9', trailer: 'TR-1' }, { ...load, id: '4' }]
+  });
+  assert.deepEqual(Array.from(directory.drivers, d => d.driver), ['alex driver', 'Bea Smith']);
+  // Newest booking wins; missing phone is filled from the driver's older load.
+  assert.deepEqual({ ...policy.findKnownDriver(directory, 'ALEX DRIVER') },
+    { driver: 'alex driver', driverPhone: '555-1111', truck: 'T-102', trailer: 'TR-208', at: Date.parse('2026-11-02T00:00:00Z') });
+  assert.deepEqual(Array.from(directory.trucks), ['T-9', 'T-100', 'T-102']);
+  assert.deepEqual(Array.from(directory.trailers), ['TR-1', 'TR-208']);
+  assert.equal(policy.findKnownDriver(directory, 'Nobody'), null);
+});
+
+test('picking a known driver fills phone, truck and trailer; Book Load moves the load to Booked Loads', () => {
+  const app = createAppHarness(customers[0], [
+    { ...load, id: '1', status: 'BOOKED', tag: 'BOOKED', driver: 'Alex Driver', driverPhone: '555-1111', truck: 'T-102', trailer: 'TR-208' },
+    { ...load, id: '2', origCity: 'Denver', origSt: 'CO' }
+  ]);
+  app.find(node => node.props?.id === 'load-card-2').props.onClick();
+  app.render();
+  assert.equal(app.states[6].id, '2');
+  const driverInput = app.find(node => node.props?.id === 'assignment-driver');
+  assert.equal(driverInput.props.list, 'known-drivers');
+  const options = app.find(node => node.type === 'datalist' && node.props.id === 'known-drivers');
+  assert.deepEqual(options.props.children.flat(Infinity).map(o => o.props.value), ['Alex Driver']);
+
+  driverInput.props.onChange({ target: { value: 'alex driver' } });
+  app.render();
+  assert.equal(app.states[6].driverPhone, '555-1111');
+  assert.equal(app.states[6].truck, 'T-102');
+  assert.equal(app.states[6].trailer, 'TR-208');
+
+  const bookButton = app.find(node => node.type === 'button' && textOf(node).includes('Book Load'));
+  assert.ok(bookButton, 'Book Load button replaces Save Changes');
+  assert.equal(app.find(node => node.type === 'button' && textOf(node).includes('Save Changes')), null);
+  bookButton.props.onClick();
+  app.render();
+  app.effects[1]();
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[0]];
+  assert.equal(saved.find(o => o.id === '2').status, 'BOOKED');
+  assert.ok(app.find(node => node.props?.role === 'status' && textOf(node).includes('Booked')));
+
+  const bookedTab = app.find(node => node.type === 'button' && textOf(node) === 'BOOKED (2)');
+  assert.ok(bookedTab, 'Booked Loads tab shows the count');
+  assert.equal(app.alerts.length, 0);
+});
+
+test('Book Load without a driver warns and keeps the load open', () => {
+  const app = createAppHarness(customers[0], [{ ...load, id: '1' }]);
+  app.find(node => node.type === 'button' && textOf(node).includes('Book Load')).props.onClick();
+  app.render();
+  assert.match(app.alerts[0], /driver name/);
+  assert.equal(app.states[6].status, 'OPEN');
+});
+
+test('re-imports keep booked loads booked, even when the customer list drops them', () => {
+  const now = Date.parse('2026-10-20T00:00:00Z');
+  const existing = [
+    { ...load, id: '111111', status: 'BOOKED', tag: 'BOOKED', driver: 'Alex Driver', bookedAt: '2026-10-19T00:00:00Z' },
+    { ...load, id: '222222', origCity: 'Denver', origSt: 'CO', status: 'BOOKED', tag: 'BOOKED', driver: 'Bea Smith' },
+    { ...load, id: '333333', origCity: 'Austin', origSt: 'TX' }
+  ];
+  const { loads } = policy.replaceImportedCustomerLoads(customers[0], [
+    { ...load, id: '111111' },
+    { ...load, id: '444444', origCity: 'Reno', origSt: 'NV', pickupTime: '12/01/2099 0800 - 1200', deliveryTime: '12/02/2099 0800 - 1600' }
+  ], existing, { now });
+  const byId = Object.fromEntries(loads.map(l => [l.id, l]));
+  assert.equal(byId['111111'].status, 'BOOKED');
+  assert.equal(byId['111111'].driver, 'Alex Driver');
+  assert.equal(byId['222222'].status, 'BOOKED', 'booked load missing from the new list is kept');
+  assert.equal(byId['333333'], undefined, 'unbooked missing load is still removed');
+  assert.equal(byId['444444'].status, 'OPEN');
+});
+
+test('tracking alerts flag late pickups and overdue check calls', () => {
+  const pickupAt = policy.parseScheduleStart('11/06/2026 1100 - 1300');
+  assert.equal(pickupAt, new Date(2026, 10, 6, 11, 0).getTime());
+  const booked = {
+    ...load, status: 'BOOKED', pickupTime: '11/06/2026 1100 - 1300', deliveryTime: '11/08/2026 0700',
+    bookedAt: new Date(2026, 10, 6, 8, 0).toISOString()
+  };
+  assert.equal(policy.getTrackingAlert(booked, new Date(2026, 10, 6, 9, 0).getTime()), null);
+  assert.equal(policy.getTrackingAlert(booked, new Date(2026, 10, 6, 10, 30).getTime()), null);
+  assert.equal(policy.getTrackingAlert(booked, new Date(2026, 10, 6, 11, 30).getTime()).level, 'late');
+  const loaded = policy.logCheckCall(booked, { stage: 'Loaded', note: 'Loaded, rolling' }, new Date(2026, 10, 6, 12, 0).toISOString());
+  assert.equal(policy.getTrackingAlert(loaded, new Date(2026, 10, 6, 13, 0).getTime()), null);
+  assert.match(policy.getTrackingAlert(loaded, new Date(2026, 10, 6, 17, 0).getTime()).text, /Check call due \(5h/);
+  assert.equal(policy.getTrackingAlert(loaded, new Date(2026, 10, 8, 8, 0).getTime()).level, 'late');
+  const delivered = policy.logCheckCall(loaded, { stage: 'Delivered' });
+  assert.equal(policy.getTrackingAlert(delivered, new Date(2026, 11, 1).getTime()), null);
+});
+
+test('check calls record stage and note and keep the last 20', () => {
+  let tracked = { ...load, status: 'BOOKED' };
+  for (let i = 0; i < 25; i += 1) tracked = policy.logCheckCall(tracked, { stage: 'In Transit', note: ` call ${i} ` }, `2026-11-06T0${i % 10}:00:00.000Z`);
+  assert.equal(tracked.trackingStage, 'In Transit');
+  assert.equal(tracked.checkCalls.length, 20);
+  assert.equal(tracked.checkCalls[19].note, 'call 24');
+  assert.equal(policy.logCheckCall(tracked, { stage: 'Nonsense' }).trackingStage, 'In Transit');
+});
+
+test('booked loads from every customer are listed by pickup, delivered last', () => {
+  const entries = policy.getBookedLoads({
+    A: [
+      { ...load, id: 'a1', status: 'BOOKED', pickupTime: '11/07/2026 0800' },
+      { ...load, id: 'a2', status: 'OPEN' },
+      { ...load, id: 'a3', status: 'BOOKED', pickupTime: '11/01/2026 0800', trackingStage: 'Delivered' }
+    ],
+    B: [{ ...load, id: 'b1', status: 'BOOKED', pickupTime: '11/05/2026 0800' }]
+  });
+  assert.deepEqual(Array.from(entries, e => `${e.customer}:${e.load.id}`), ['B:b1', 'A:a1', 'A:a3']);
+});
+
+test('BOOKED tab opens the Booked Loads page; stage changes save and Open returns to the load', () => {
+  const app = createAppHarness(customers[0], [
+    { ...load, id: '1', origCity: 'Denver', origSt: 'CO' },
+    { ...load, id: '2', status: 'BOOKED', tag: 'BOOKED', driver: 'Alex Driver', driverPhone: '(555) 123-4567', truck: 'T-102', trailer: 'TR-208' }
+  ]);
+  const pageElement = () => app.find(node => typeof node.type === 'function' && node.type.name === 'BookedLoadsPage');
+  assert.equal(pageElement(), null);
+  app.find(node => node.type === 'button' && textOf(node) === 'BOOKED (1)').props.onClick();
+  app.render();
+  const element = pageElement();
+  assert.ok(element, 'Booked Loads page is shown');
+  assert.deepEqual(Array.from(element.props.entries, e => e.load.id), ['2']);
+
+  const page = element.type(element.props);
+  const findIn = (node, predicate) => {
+    if (!node || typeof node !== 'object') return null;
+    if (predicate(node)) return node;
+    for (const child of (node.props?.children || []).flat(Infinity)) {
+      const found = findIn(child, predicate);
+      if (found) return found;
+    }
+    return null;
+  };
+  assert.ok(findIn(page, node => node.type === 'a' && node.props.href === 'tel:5551234567'), 'Call link');
+  assert.ok(findIn(page, node => node.type === 'a' && node.props.href === 'sms:5551234567'), 'Text link');
+  const stage = findIn(page, node => node.type === 'select' && String(node.props.id).startsWith('stage-'));
+  stage.props.onChange({ target: { value: 'Loaded' } });
+  app.render();
+  app.effects[1]();
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[0]].find(o => o.id === '2');
+  assert.equal(saved.trackingStage, 'Loaded');
+  assert.equal(saved.checkCalls.length, 1);
+
+  pageElement().props.onOpen(customers[0], '2');
+  app.render();
+  assert.equal(pageElement(), null, 'Open returns to the load view');
+  assert.equal(app.states[6].id, '2');
+});
+
+test('Landstar comment box saves on the load, suggests Landstar comments, and survives re-import', () => {
+  const app = createAppHarness(customers[0], [{ ...load, id: '1' }]);
+  const input = app.find(node => node.props?.id === 'landstar-comment');
+  assert.ok(input, 'comment box exists');
+  assert.equal(input.props.list, 'landstar-comment-options');
+  const options = app.find(node => node.type === 'datalist' && node.props.id === 'landstar-comment-options');
+  assert.ok(options.props.children.flat(Infinity).some(option => option.props.value === 'Tracking Required'));
+  input.props.onChange({ target: { value: 'Load Ready now' } });
+  app.render();
+  assert.equal(app.states[2][customers[0]][0].landstarComment, 'Load Ready now');
+
+  const { loads } = policy.replaceImportedCustomerLoads(customers[0], [{ ...load, id: '1', landstarComment: '' }],
+    [{ ...load, id: '1', landstarComment: 'Load Ready now' }]);
+  assert.equal(loads[0].landstarComment, 'Load Ready now');
+});
+
+test('driver links share only public load details and go after the comment in column AA', () => {
+  const details = policy.buildInquiryDetails({
+    ...load, id: '24552929', origCity: 'ELK GROVE VILLAGE', origSt: 'IL', destCity: 'MANSFIELD', destSt: 'TX',
+    eCode: 'VAN', weight: '42000lbs', miles: '965', rateInput: '3175', planningComment: 'internal', driver: 'Alex'
+  }, { phone: '4845756486' });
+  assert.deepEqual(Object.keys(details).sort(),
+    ['callbackPhone', 'company', 'delivery', 'destination', 'equipment', 'miles', 'origin', 'pickup', 'rate', 'ref', 'weight']);
+  assert.equal(details.origin, 'ELK GROVE VILLAGE, IL');
+  assert.equal(details.rate, '$3,175');
+  assert.equal(details.weight, '42,000 lbs');
+  assert.equal(details.miles, '965 mi');
+  assert.equal(details.callbackPhone, '(484) 575-6486');
+  assert.ok(!JSON.stringify(details).includes('internal'));
+
+  assert.equal(policy.getInquiryUrl('abcDEF1234567890abcdef', 'https://tms.example.com'), 'https://tms.example.com/i/abcDEF1234567890abcdef');
+  assert.equal(policy.getInquiryUrl('abcDEF1234567890abcdef', 'http://localhost:5173'), 'http://localhost:5173/inquire.html?t=abcDEF1234567890abcdef');
+  assert.equal(policy.getLandstarExportComment({ landstarComment: ' Load Ready now ' }, 'https://x/i/T'), 'Load Ready now · Inquire: https://x/i/T');
+  assert.equal(policy.getLandstarExportComment({}, 'https://x/i/T'), 'Inquire: https://x/i/T');
+  assert.equal(policy.getLandstarExportComment({ landstarComment: 'No touch' }, ''), 'No touch');
 });

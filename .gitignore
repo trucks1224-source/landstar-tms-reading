@@ -5,3 +5,7 @@
 node_modules
 dist
 eng.traineddata
+
+# Upload bot: Landstar login session and browser profile (never commit)
+bot/auth.json
+bot/browser-profile/

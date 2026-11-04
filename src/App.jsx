@@ -2992,6 +2992,22 @@ function restoreLastSavedKey(key) {
   return writeSyncedKey(key, value);
 }
 
+// Splits changed synced keys into ones to adopt and a load-list change to treat as a
+// regression. Only same-browser writes (the storage event) can be regressions: data
+// that arrived from the cloud was saved by one of the user's own signed-in browsers,
+// and its version row can be held back or arrive separately, so reverting it would
+// push this browser's older list back over a fresh import on the other device.
+function classifyChangedSyncedKeys(changedKeys, versions, fromCloud) {
+  const adopt = [];
+  let heal = false;
+  changedKeys.forEach(key => {
+    const versioned = (versions[key] || 0) > (lastSavedVersions[key] || 0);
+    if (key === 'landstar_customerOrdersMap' && !versioned && !fromCloud) heal = true;
+    else adopt.push(key);
+  });
+  return { adopt, heal };
+}
+
 // Gives a version bump a short window to arrive before treating a load-list change as
 // a regression from an outdated app version; realtime echoes of the data and its
 // version can arrive in either order.
@@ -4192,7 +4208,8 @@ export default function App({ sharing = null } = {}) {
   // event (e.g. a lane-rate update) never replaces the load list being worked on.
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
-    const reloadSavedData = () => {
+    const reloadSavedData = event => {
+      const fromCloud = event?.type === 'landstar-data-changed';
       let values;
       try {
         values = {
@@ -4211,16 +4228,11 @@ export default function App({ sharing = null } = {}) {
       const versions = readDataVersions();
       const changedKeys = getChangedSyncedKeys(values);
       const adopted = {};
-      changedKeys.forEach(key => {
-        const versioned = (versions[key] || 0) > (lastSavedVersions[key] || 0);
-        // A load-list change without a version bump came from an outdated app version
-        // or a stale tab; keep this tab's newer list and restore it instead.
-        if (key === 'landstar_customerOrdersMap' && !versioned) {
-          scheduleUnversionedLoadListHeal();
-          return;
-        }
-        adopted[key] = values[key];
-      });
+      const { adopt, heal } = classifyChangedSyncedKeys(changedKeys, versions, fromCloud);
+      // A same-browser load-list change without a version bump came from an outdated
+      // app version or a stale tab; keep this tab's newer list and restore it instead.
+      if (heal) scheduleUnversionedLoadListHeal();
+      adopt.forEach(key => { adopted[key] = values[key]; });
       // Track version bumps that arrived without content changes.
       markStorageAdopted({});
       if (!Object.keys(adopted).length) return;

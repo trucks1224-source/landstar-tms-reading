@@ -2359,6 +2359,19 @@ function isRxoCustomer(name) {
   return normalized === rxoCustomerName || normalized === rxoPayerCustomerName;
 }
 
+// R X O 2429200 - ATZ only (not ATZ P): van freight picking up in these states is
+// skipped on import and never exported. Reefer and other equipment are unaffected.
+const rxoSkippedVanOriginStates = new Set(['WI', 'IN', 'OH', 'MI', 'MN', 'SD', 'ND', 'UT', 'ID']);
+const vanEquipmentCodes = new Set(['VAN', '24VN', '28VN', '48VN', '53VN']);
+
+function isRxoSkippedVanLoad(customer, load) {
+  if (normalizeCustomerName(customer) !== rxoCustomerName) return false;
+  const originState = String(load?.origSt || '').trim().toUpperCase();
+  if (!rxoSkippedVanOriginStates.has(originState)) return false;
+  // getLandstarEquipmentCode maps V, VZ, VT and Van-or-Reefer (VR) to VAN.
+  return vanEquipmentCodes.has(getLandstarEquipmentCode(load?.eCode));
+}
+
 function isParaCustomer(name) {
   return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === 'PARA1522166ATZ';
 }
@@ -2599,6 +2612,9 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
   if (!importedLoads.length) {
     throw new Error('The imported load list is empty. Existing loads were not deleted.');
   }
+  // RXO ATZ van loads picking up in skipped states are not imported (see isRxoSkippedVanLoad).
+  const skippedRxoVanCount = importedLoads.filter(load => isRxoSkippedVanLoad(customer, load)).length;
+  importedLoads = importedLoads.filter(load => !isRxoSkippedVanLoad(customer, load));
   const loadKey = load => normalizeLoadId(getBaseLoadId(load));
   const importedById = new Map();
   let duplicateCount = 0;
@@ -2675,6 +2691,8 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
     if (matchedIds.has(String(load.id))) return false;
     // Booked loads are covered; keep them even when the customer drops them from the list.
     if (load.status === 'BOOKED') return true;
+    // Loads from before the RXO van state rule was added are cleared out on the next import.
+    if (isRxoSkippedVanLoad(customer, load)) return false;
     const exportedAt = Date.parse(load.landstarExportedAt);
     // Screenshot imports also keep loads moved to ENT by hand (no export date).
     const retainedArchive = load.status === 'ENT' && (Number.isFinite(exportedAt)
@@ -2696,7 +2714,7 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
     return rest;
   });
   return {
-    loads, additive, processedLoads: mergedLoads, droppedPostings,
+    loads, additive, processedLoads: mergedLoads, droppedPostings, skippedRxoVanCount,
     laneDayDuplicateCount,
     usesScreenshotStatus: isParaCustomer(customer)
       && importedLoads.some(load => ['ON HOLD', 'OPEN'].includes(load.screenshotStatus)),
@@ -2710,6 +2728,7 @@ function getImportReplacementMessage(replacement) {
     ? `• ${replacement.additive ? 'Imported list merged' : 'Full list replaced'}; removed loads: ${replacement.removedCount}. Exported ENT loads retained for 30 days unless re-imported.\n` +
       `• Duplicate load/day rows skipped: ${replacement.duplicateCount}; ${replacement.usesScreenshotStatus ? 'Para screenshot: red = ON HOLD, non-red = OPEN' : 'imported loads set to OPEN'}.\n`
       + (replacement.laneDayDuplicateCount ? `• Same-lane/pickup-day duplicates skipped: ${replacement.laneDayDuplicateCount} (first load kept).\n` : '')
+      + (replacement.skippedRxoVanCount ? `• Skipped ${replacement.skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID.\n` : '')
       + (replacement.droppedPostings?.length ? `• No longer on the list: ${replacement.droppedPostings.length} posted load(s); the upload bot will remove them from Landstar.\n` : '')
     : '';
 }
@@ -5641,12 +5660,18 @@ export default function App({ sharing = null } = {}) {
       ? orders.filter(o => selectedIds.includes(o.id))
       : filteredOrders;
     // Booked loads already have a truck; never post them to the Landstar board.
-    const loadsToExport = candidateLoads.filter(o => o.status !== 'BOOKED');
-    const skippedBookedCount = candidateLoads.length - loadsToExport.length;
+    const unbookedLoads = candidateLoads.filter(o => o.status !== 'BOOKED');
+    const skippedBookedCount = candidateLoads.length - unbookedLoads.length;
+    // RXO ATZ van loads picking up in skipped states are never posted.
+    const loadsToExport = unbookedLoads.filter(o => !isRxoSkippedVanLoad(selectedBroker, o));
+    const skippedRxoVanCount = unbookedLoads.length - loadsToExport.length;
 
     if (loadsToExport.length === 0) {
-      alert(skippedBookedCount
-        ? `Booked loads are not exported to Landstar (${skippedBookedCount} booked load${skippedBookedCount === 1 ? '' : 's'} skipped).`
+      alert(skippedBookedCount || skippedRxoVanCount
+        ? `Nothing to export: ${[
+          skippedBookedCount && `${skippedBookedCount} booked load(s)`,
+          skippedRxoVanCount && `${skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID`
+        ].filter(Boolean).join(' and ')} are not exported to Landstar.`
         : 'No loads selected for export!');
       return;
     }
@@ -6225,6 +6250,9 @@ export default function App({ sharing = null } = {}) {
     );
 
     const skippedNotes = [];
+    if (skippedRxoVanCount) {
+      skippedNotes.push(`Left out ${skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID (not posted for RXO).`);
+    }
     if (movedPickupStarts.length) {
       skippedNotes.push(`Moved the pickup start to now for ${movedPickupStarts.length} load(s) whose pickup window had already started (Landstar rejects a past pickup start). The pickup end time is unchanged.`);
     }

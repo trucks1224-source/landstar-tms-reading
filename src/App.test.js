@@ -29,7 +29,7 @@ export {
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity,
-  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings
+  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, isRxoSkippedVanLoad
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -2179,4 +2179,33 @@ test('posted loads missing from a full list are handed to the bot once; Nolan an
   assert.equal(policy.replaceImportedCustomerLoads(customers[2], imported, existing).droppedPostings.length, 0, 'Nolan lists are partial');
   assert.equal(policy.replaceImportedCustomerLoads(customers[0], imported, existing, { reportDroppedPostings: false }).droppedPostings.length, 0);
   assert.equal(policy.findDroppedPostings(customers[1], [], existing).length, 0, 'an empty list never drops everything');
+});
+
+test('RXO ATZ van loads picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID are skipped; nothing else is', () => {
+  const rxo = 'R X O 2429200 - ATZ';
+  const van = (origSt, eCode = 'V') => ({ ...load, origSt, eCode });
+  for (const state of ['WI', 'IN', 'OH', 'MI', 'MN', 'SD', 'ND', 'UT', 'ID']) {
+    assert.equal(policy.isRxoSkippedVanLoad(rxo, van(state)), true, state);
+  }
+  for (const eCode of ['V', 'VZ', 'VAN', 'VR', 'VT', '53 FT VAN']) assert.equal(policy.isRxoSkippedVanLoad(rxo, van('OH', eCode)), true, eCode);
+  assert.equal(policy.isRxoSkippedVanLoad(rxo, van('OH', 'R')), false, 'reefer is not skipped');
+  assert.equal(policy.isRxoSkippedVanLoad(rxo, van('OH', 'F')), false, 'flatbed is not skipped');
+  assert.equal(policy.isRxoSkippedVanLoad(rxo, { ...van('IL'), destSt: 'OH' }), false, 'only the pickup state counts');
+  assert.equal(policy.isRxoSkippedVanLoad('R X O 2429200 - ATZ P', van('OH')), false, 'ATZ P is not affected');
+  assert.equal(policy.isRxoSkippedVanLoad(customers[0], van('OH')), false, 'other customers are not affected');
+});
+
+test('RXO ATZ imports leave out skipped-state van loads and clear older ones', () => {
+  const rxo = 'R X O 2429200 - ATZ';
+  const result = policy.replaceImportedCustomerLoads(rxo, [
+    { ...load, id: '24590001', origCity: 'Columbus', origSt: 'OH', eCode: 'VZ' },
+    { ...load, id: '24590002', origCity: 'Columbus', origSt: 'OH', eCode: 'R' },
+    { ...load, id: '24590003', origCity: 'Atlanta', origSt: 'GA', eCode: 'VZ' }
+  ], [
+    { ...load, id: '24580000', origCity: 'Detroit', origSt: 'MI', eCode: 'V' },
+    { ...load, id: '24580001', origCity: 'Detroit', origSt: 'MI', eCode: 'V', status: 'BOOKED', tag: 'BOOKED', driver: 'Alex' }
+  ]);
+  const ids = Array.from(result.loads, l => l.id).sort();
+  assert.deepEqual(ids, ['24580001', '24590002', '24590003'], 'OH van skipped, OH reefer kept, old MI van cleared, booked kept');
+  assert.equal(result.skippedRxoVanCount, 1);
 });

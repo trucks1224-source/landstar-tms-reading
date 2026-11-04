@@ -19,7 +19,10 @@ export const dataChangedEvent = 'landstar-data-changed';
 
 const pushDelayMs = 800;
 const pageSize = 1000;
-const nativeSetItem = Storage.prototype.setItem;
+// The browser's own setItem, even when an earlier copy of this module already patched it.
+const nativeSetItem = Storage.prototype.setItem.__native || Storage.prototype.setItem;
+// Shared by every copy of this module, so the localStorage patch always reaches the live one.
+const mirrorOwner = window.__landstarCloudMirror || (window.__landstarCloudMirror = {});
 
 // Personal values as last saved in app_data, and personal values waiting to upload.
 const lastSynced = {};
@@ -256,13 +259,18 @@ function handleLocalWrite(key, value) {
 
 // The app saves through localStorage in several places, so mirroring there covers
 // every save path (loads, rates, exported history, backup restore) without changing them.
+// The patch calls whichever copy of this module installed it last: when the module is
+// reloaded in place (a code update in the dev server), the new copy takes over saving
+// instead of the old, stopped copy silently swallowing every save.
 function installMirror() {
+  mirrorOwner.handleLocalWrite = handleLocalWrite;
   if (Storage.prototype.setItem.__cloudMirror) return;
   const patched = function setItem(key, value) {
     nativeSetItem.call(this, key, value);
-    if (this === window.localStorage && syncedKeys.includes(key)) handleLocalWrite(key, String(value));
+    if (this === window.localStorage && syncedKeys.includes(key)) mirrorOwner.handleLocalWrite?.(key, String(value));
   };
   patched.__cloudMirror = true;
+  patched.__native = nativeSetItem;
   Storage.prototype.setItem = patched;
 }
 

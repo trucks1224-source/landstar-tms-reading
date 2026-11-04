@@ -5,7 +5,11 @@ import vm from 'node:vm';
 import { transform } from 'esbuild';
 
 const source = await readFile(new URL('./cloudSync.js', import.meta.url), 'utf8');
-const { code } = await transform(source, { loader: 'js', format: 'cjs' });
+const { code: moduleCode } = await transform(source, { loader: 'js', format: 'cjs' });
+// Each run gets its own scope, so the module can be loaded twice into one page.
+const code = `(function (module, exports) {
+${moduleCode}
+})(module, module.exports);`;
 
 // Loads cloudSync.js against an in-memory browser and app_data table.
 function setup(appData) {
@@ -63,8 +67,15 @@ function setup(appData) {
       throw new Error(`Unexpected dependency: ${name}`);
     }
   };
-  vm.runInNewContext(code, ctx);
-  return { sync: ctx.module.exports, localStorage, events, handlers, appData };
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx);
+  // Loads a fresh copy of the module into the same page, like a dev-server code update.
+  const reload = () => {
+    ctx.module = { exports: {} };
+    vm.runInContext(code, ctx);
+    return ctx.module.exports;
+  };
+  return { sync: ctx.module.exports, localStorage, events, handlers, appData, reload };
 }
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -100,4 +111,17 @@ test('echoes of this browser\'s own saves never roll back a newer local list', a
   assert.equal(sync.applyRemoteValue(ordersKey, '{"RXO":[{"id":"9"}]}'), true);
   assert.equal(localStorage.getItem(ordersKey), '{"RXO":[{"id":"9"}]}');
   assert.deepEqual(events, ['landstar-data-changed']);
+});
+
+test('after the sync code is reloaded in place, saves still reach the cloud', async () => {
+  const appData = [{ user_id: 'u1', key: ordersKey, value: '{"RXO":[]}' }];
+  const { sync, localStorage, reload } = setup(appData);
+  await sync.startCloudSync('u1');
+  // A code update replaces the module: the old copy stops, the new one starts.
+  sync.stopCloudSync();
+  const fresh = reload();
+  await fresh.startCloudSync('u1');
+  localStorage.setItem(ordersKey, '{"RXO":[{"id":"1"}]}');
+  await fresh.flushCloudSyncNow();
+  assert.equal(appData[0].value, '{"RXO":[{"id":"1"}]}');
 });

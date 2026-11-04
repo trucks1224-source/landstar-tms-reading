@@ -2372,6 +2372,21 @@ function isRxoSkippedVanLoad(customer, load) {
   return vanEquipmentCodes.has(getLandstarEquipmentCode(load?.eCode));
 }
 
+// Loads picking up in or delivering to Mexico are never imported or exported, for every
+// customer. Customer lists mark Mexico with a MX/MEX country code or a Mexican state code
+// (EM, JA, GJ, BJ, NX, CH, CU, ...): any two-letter region that is not a US state or a
+// Canadian province counts.
+function isMexicoPlace(state, country) {
+  const countryCode = String(country || '').trim().toUpperCase();
+  if (countryCode === 'MX' || countryCode === 'MEX' || countryCode === 'MEXICO') return true;
+  const region = String(state || '').trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(region) && !stateCodes.has(region);
+}
+
+function isMexicoLoad(load) {
+  return isMexicoPlace(load?.origSt, load?.origCountry) || isMexicoPlace(load?.destSt, load?.destCountry);
+}
+
 function isParaCustomer(name) {
   return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === 'PARA1522166ATZ';
 }
@@ -2615,6 +2630,12 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
   // RXO ATZ van loads picking up in skipped states are not imported (see isRxoSkippedVanLoad).
   const skippedRxoVanCount = importedLoads.filter(load => isRxoSkippedVanLoad(customer, load)).length;
   importedLoads = importedLoads.filter(load => !isRxoSkippedVanLoad(customer, load));
+  // Loads to or from Mexico are never imported.
+  const skippedMexicoCount = importedLoads.filter(isMexicoLoad).length;
+  importedLoads = importedLoads.filter(load => !isMexicoLoad(load));
+  if (!importedLoads.length) {
+    throw new Error('Every load in this list goes to or from Mexico, so nothing was imported. Existing loads were not deleted.');
+  }
   const loadKey = load => normalizeLoadId(getBaseLoadId(load));
   const importedById = new Map();
   let duplicateCount = 0;
@@ -2693,6 +2714,8 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
     if (load.status === 'BOOKED') return true;
     // Loads from before the RXO van state rule was added are cleared out on the next import.
     if (isRxoSkippedVanLoad(customer, load)) return false;
+    // Same for loads to or from Mexico imported before that rule.
+    if (isMexicoLoad(load)) return false;
     const exportedAt = Date.parse(load.landstarExportedAt);
     // Screenshot imports also keep loads moved to ENT by hand (no export date).
     const retainedArchive = load.status === 'ENT' && (Number.isFinite(exportedAt)
@@ -2714,7 +2737,7 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
     return rest;
   });
   return {
-    loads, additive, processedLoads: mergedLoads, droppedPostings, skippedRxoVanCount,
+    loads, additive, processedLoads: mergedLoads, droppedPostings, skippedRxoVanCount, skippedMexicoCount,
     laneDayDuplicateCount,
     usesScreenshotStatus: isParaCustomer(customer)
       && importedLoads.some(load => ['ON HOLD', 'OPEN'].includes(load.screenshotStatus)),
@@ -2729,6 +2752,7 @@ function getImportReplacementMessage(replacement) {
       `• Duplicate load/day rows skipped: ${replacement.duplicateCount}; ${replacement.usesScreenshotStatus ? 'Para screenshot: red = ON HOLD, non-red = OPEN' : 'imported loads set to OPEN'}.\n`
       + (replacement.laneDayDuplicateCount ? `• Same-lane/pickup-day duplicates skipped: ${replacement.laneDayDuplicateCount} (first load kept).\n` : '')
       + (replacement.skippedRxoVanCount ? `• Skipped ${replacement.skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID.\n` : '')
+      + (replacement.skippedMexicoCount ? `• Skipped ${replacement.skippedMexicoCount} load(s) to or from Mexico.\n` : '')
       + (replacement.droppedPostings?.length ? `• No longer on the list: ${replacement.droppedPostings.length} posted load(s); the upload bot will remove them from Landstar.\n` : '')
     : '';
 }
@@ -5575,11 +5599,12 @@ export default function App({ sharing = null } = {}) {
   const queueDroppedPostings = (replacement, existingLoads, { interactive = true } = {}) => {
     const dropped = replacement?.droppedPostings || [];
     if (!dropped.length) return 0;
-    const posted = (existingLoads || []).filter(load => load.landstarPosting).length;
-    if (dropped.length > 20 && dropped.length > posted / 2) {
+    // Paramount removals always need a yes; every other customer's are removed automatically.
+    if (dropped.some(item => isParaCustomer(item.customer))) {
+      const posted = (existingLoads || []).filter(load => load.landstarPosting).length;
       const ok = interactive && window.confirm(
-        `${dropped.length} of ${posted} loads posted on Landstar for this customer are not on the new list.\n\n`
-        + 'Remove all of them from Landstar? Choose Cancel if the file may be incomplete.'
+        `${dropped.length} of ${posted} Paramount loads posted on Landstar are not on the new list.\n\n`
+        + 'Remove them from Landstar? Choose Cancel to leave them posted.'
       );
       if (!ok) return 0;
     }
@@ -5677,14 +5702,18 @@ export default function App({ sharing = null } = {}) {
     const unbookedLoads = candidateLoads.filter(o => o.status !== 'BOOKED');
     const skippedBookedCount = candidateLoads.length - unbookedLoads.length;
     // RXO ATZ van loads picking up in skipped states are never posted.
-    const loadsToExport = unbookedLoads.filter(o => !isRxoSkippedVanLoad(selectedBroker, o));
-    const skippedRxoVanCount = unbookedLoads.length - loadsToExport.length;
+    const notRxoSkipped = unbookedLoads.filter(o => !isRxoSkippedVanLoad(selectedBroker, o));
+    const skippedRxoVanCount = unbookedLoads.length - notRxoSkipped.length;
+    // Loads to or from Mexico are never posted.
+    const loadsToExport = notRxoSkipped.filter(o => !isMexicoLoad(o));
+    const skippedMexicoCount = notRxoSkipped.length - loadsToExport.length;
 
     if (loadsToExport.length === 0) {
-      alert(skippedBookedCount || skippedRxoVanCount
+      alert(skippedBookedCount || skippedRxoVanCount || skippedMexicoCount
         ? `Nothing to export: ${[
           skippedBookedCount && `${skippedBookedCount} booked load(s)`,
-          skippedRxoVanCount && `${skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID`
+          skippedRxoVanCount && `${skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID`,
+          skippedMexicoCount && `${skippedMexicoCount} load(s) to or from Mexico`
         ].filter(Boolean).join(' and ')} are not exported to Landstar.`
         : 'No loads selected for export!');
       return;
@@ -6266,6 +6295,9 @@ export default function App({ sharing = null } = {}) {
     const skippedNotes = [];
     if (skippedRxoVanCount) {
       skippedNotes.push(`Left out ${skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID (not posted for RXO).`);
+    }
+    if (skippedMexicoCount) {
+      skippedNotes.push(`Left out ${skippedMexicoCount} load(s) to or from Mexico (never posted).`);
     }
     if (movedPickupStarts.length) {
       skippedNotes.push(`Moved the pickup start to now for ${movedPickupStarts.length} load(s) whose pickup window had already started (Landstar rejects a past pickup start). The pickup end time is unchanged.`);

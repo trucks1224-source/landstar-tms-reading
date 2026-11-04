@@ -186,6 +186,14 @@ function bookLoad(load, bookedAt = new Date().toISOString()) {
   return { ...load, status: 'BOOKED', tag: 'BOOKED', bookedAt: load.bookedAt || bookedAt };
 }
 
+// Takes the truck off a booked load: clears the driver, equipment, pickup ETA and
+// tracking, and puts the load back in OPEN so it can be re-booked or exported.
+// The rate and every other load detail are kept.
+function removeCapacity(load) {
+  const { bookedAt, trackingStage, checkCalls, ...rest } = load || {};
+  return { ...rest, status: 'OPEN', tag: 'OPEN', driver: '', driverPhone: '', truck: '', trailer: '', pickupEta: '' };
+}
+
 // Drivers, trucks and trailers already used on any load, for auto-complete.
 // When a driver appears on several loads, the most recently booked one wins
 // and any missing phone/truck/trailer is filled from their other loads.
@@ -1894,6 +1902,54 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
   return autoFillLoadZipCodes(loads);
 }
 
+// Earliest pickup start Landstar will accept, as an Excel serial on the local clock:
+// now plus a lead time (for the upload bot's rate check and upload), rounded up to
+// the next quarter hour. Landstar rejects "Pickup Start Date cannot be in the past".
+function getEarliestPickupSerial(now = new Date(), leadMinutes = 30) {
+  const quarterHour = 15 * 60 * 1000;
+  const wallClock = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes() + leadMinutes);
+  return (Math.ceil(wallClock / quarterHour) * quarterHour - Date.UTC(1899, 11, 30)) / 86400000;
+}
+
+// Excel serial (local clock) -> "MM/DD/YY HH:MM", the way the Landstar board shows times.
+function excelSerialToBoardTime(serial) {
+  if (typeof serial !== 'number' || !Number.isFinite(serial)) return '';
+  const date = new Date(Math.round(serial * 86400000) + Date.UTC(1899, 11, 30));
+  const pad = value => String(value).padStart(2, '0');
+  return `${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())}/${pad(date.getUTCFullYear() % 100)} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
+}
+
+// What identifies a load's posting on Landstar (Landstar postings carry no customer
+// load number): both ZIPs, pickup and delivery END times, and weight, exactly as exported.
+// End times are used because the export may move a past pickup START up to now.
+function buildLandstarPosting(record) {
+  return {
+    originZip: String(record['Origin Zipcode(Required)'] || '').trim().toUpperCase(),
+    destZip: String(record['Destination Zipcode(Required)'] || '').trim().toUpperCase(),
+    pickupThru: excelSerialToBoardTime(record['Pickup Date (Thru)(Required)']),
+    deliveryThru: excelSerialToBoardTime(record['Delivery Date (Thru)(Required)']),
+    weight: Number(record['Weight(Required)']) || 0
+  };
+}
+
+// Loads that were posted to Landstar and are missing from a customer's new full list.
+// Nolan's imports are partial (screenshots of part of their board), so they never count.
+function findDroppedPostings(customer, importedLoads, existingLoads) {
+  if (normalizeCustomerName(customer) === ntgCustomerName) return [];
+  const importedIds = new Set(importedLoads.map(load => normalizeLoadId(getBaseLoadId(load))).filter(Boolean));
+  if (!importedIds.size) return [];
+  return existingLoads.filter(load => load.landstarPosting && !importedIds.has(normalizeLoadId(getBaseLoadId(load))));
+}
+
+// A pickup window that already started but is still open is posted from the earliest
+// allowed start (its end stays the same); a window that is over can't be posted.
+function adjustPickupWindow(pickupFrom, pickupThru, earliestStart) {
+  if (pickupFrom === null || pickupThru === null) return { from: pickupFrom, ended: false, moved: false };
+  if (pickupThru < earliestStart) return { from: pickupFrom, ended: true, moved: false };
+  if (pickupFrom < earliestStart) return { from: earliestStart, ended: false, moved: true };
+  return { from: pickupFrom, ended: false, moved: false };
+}
+
 function toExcelDateTime(value, fallbackDateValue = '') {
   const dateTime = String(value || '').replace(/[•·]/g, ' ').replace(/\s+/g, ' ').trim();
   const fullMatch = dateTime.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,4})(?::(\d{2}))?\s*(AM|PM)?$/i);
@@ -2536,7 +2592,9 @@ function deduplicateDatImports(importedLoads, existingLoads) {
 }
 
 function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
-  additive = !preservesImportedLoadStatus(customer), allowGeneratedIds = additive, now = Date.now(), keepManualEnt = false
+  additive = !preservesImportedLoadStatus(customer), allowGeneratedIds = additive, now = Date.now(), keepManualEnt = false,
+  // false for partial lists (DAT rate screenshots, screenshots with unreadable rows)
+  reportDroppedPostings = true
 } = {}) {
   if (!importedLoads.length) {
     throw new Error('The imported load list is empty. Existing loads were not deleted.');
@@ -2627,9 +2685,18 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
     return retainedArchive || (additive && !(load.status === 'ENT' && Number.isFinite(exportedAt)
       && now - exportedAt >= exportedLoadRetentionMs));
   });
-  const loads = [...mergedLoads, ...retained];
+  // Posted loads missing from this (full) list: the upload bot removes their Landstar
+  // postings. Each is handed over once, so its saved posting details are cleared here.
+  const dropped = reportDroppedPostings ? findDroppedPostings(customer, importedLoads, existingLoads) : [];
+  const droppedIds = new Set(dropped.map(load => String(load.id)));
+  const droppedPostings = dropped.map(load => ({ customer, loadId: String(load.id), posting: load.landstarPosting }));
+  const loads = [...mergedLoads, ...retained].map(load => {
+    if (!droppedIds.has(String(load.id))) return load;
+    const { landstarPosting, ...rest } = load;
+    return rest;
+  });
   return {
-    loads, additive, processedLoads: mergedLoads,
+    loads, additive, processedLoads: mergedLoads, droppedPostings,
     laneDayDuplicateCount,
     usesScreenshotStatus: isParaCustomer(customer)
       && importedLoads.some(load => ['ON HOLD', 'OPEN'].includes(load.screenshotStatus)),
@@ -2643,6 +2710,7 @@ function getImportReplacementMessage(replacement) {
     ? `• ${replacement.additive ? 'Imported list merged' : 'Full list replaced'}; removed loads: ${replacement.removedCount}. Exported ENT loads retained for 30 days unless re-imported.\n` +
       `• Duplicate load/day rows skipped: ${replacement.duplicateCount}; ${replacement.usesScreenshotStatus ? 'Para screenshot: red = ON HOLD, non-red = OPEN' : 'imported loads set to OPEN'}.\n`
       + (replacement.laneDayDuplicateCount ? `• Same-lane/pickup-day duplicates skipped: ${replacement.laneDayDuplicateCount} (first load kept).\n` : '')
+      + (replacement.droppedPostings?.length ? `• No longer on the list: ${replacement.droppedPostings.length} posted load(s); the upload bot will remove them from Landstar.\n` : '')
     : '';
 }
 
@@ -2987,44 +3055,59 @@ function createLaneLookupKey(order) {
   return JSON.stringify([origin, normalize(order.origSt), destination, normalize(order.destSt)]);
 }
 
-function recordRateHistory(customer, order, rate, source = 'manual') {
-  const history = readRateHistory();
-  const numericRate = Number(String(rate || '').replace(/[$,]/g, ''));
-  const key = createLaneRateKey(customer, order);
-  const lane = createLaneLookupKey(order);
-  if (!key || !lane || !(numericRate > 0) || !Number.isFinite(numericRate)) return history;
-  const now = new Date().toISOString();
-  const existingIndex = history.findIndex(entry => entry && entry.key === key && entry.rate === String(numericRate));
-  let next;
-  if (existingIndex >= 0) {
-    next = history.slice();
-    next[existingIndex] = { ...next[existingIndex], source, savedAt: now };
-  } else {
-    next = [...history, {
-      key,
-      lane,
-      customer: normalizeCustomerName(customer),
-      origCity: String(order.origCity || '').trim().toUpperCase(),
-      origSt: String(order.origSt || '').trim().toUpperCase(),
-      destCity: String(order.destCity || '').trim().toUpperCase(),
-      destSt: String(order.destSt || '').trim().toUpperCase(),
-      eCode: String(order.eCode || '').trim().toUpperCase(),
-      rate: String(numericRate),
-      source,
-      savedAt: now
-    }];
-  }
+// Adds (or refreshes) one rate per item in a history list; pure, no saving.
+function addRateHistoryEntries(history, customer, items, source, now = new Date().toISOString()) {
+  let next = history.slice();
+  items.forEach(({ order, rate }) => {
+    const numericRate = Number(String(rate || '').replace(/[$,]/g, ''));
+    const key = createLaneRateKey(customer, order);
+    const lane = createLaneLookupKey(order);
+    if (!key || !lane || !(numericRate > 0) || !Number.isFinite(numericRate)) return;
+    const existingIndex = next.findIndex(entry => entry && entry.key === key && entry.rate === String(numericRate));
+    if (existingIndex >= 0) {
+      next[existingIndex] = { ...next[existingIndex], source, savedAt: now };
+    } else {
+      next.push({
+        key,
+        lane,
+        customer: normalizeCustomerName(customer),
+        origCity: String(order.origCity || '').trim().toUpperCase(),
+        origSt: String(order.origSt || '').trim().toUpperCase(),
+        destCity: String(order.destCity || '').trim().toUpperCase(),
+        destSt: String(order.destSt || '').trim().toUpperCase(),
+        eCode: String(order.eCode || '').trim().toUpperCase(),
+        rate: String(numericRate),
+        source,
+        savedAt: now
+      });
+    }
+  });
   if (next.length > rateHistoryLimit) {
-    next = next.slice()
-      .sort((a, b) => String(b.savedAt).localeCompare(String(a.savedAt)))
-      .slice(0, rateHistoryLimit);
+    next = next.sort((a, b) => String(b.savedAt).localeCompare(String(a.savedAt))).slice(0, rateHistoryLimit);
   }
+  return next;
+}
+
+function saveRateHistory(next) {
   try {
     writeSyncedKey(rateHistoryKey, JSON.stringify(next));
   } catch (error) {
     console.error('Could not save rate history:', error);
   }
   return next;
+}
+
+function recordRateHistory(customer, order, rate, source = 'manual') {
+  const history = readRateHistory();
+  const next = addRateHistoryEntries(history, customer, [{ order, rate }], source);
+  return next.length === history.length && next.every((entry, i) => entry === history[i]) ? history : saveRateHistory(next);
+}
+
+// Every load exported to Landstar becomes a past rate for its lane, so the rate
+// outlives the ENT load (ENT loads are removed 30 days after export).
+function recordExportedRates(customer, exportedLoads) {
+  const items = exportedLoads.map(order => ({ order, rate: order.rateInput }));
+  return saveRateHistory(addRateHistoryEntries(readRateHistory(), customer, items, 'exported'));
 }
 
 // One-time seed: lanes that already have a saved rate predate the history log.
@@ -3268,7 +3351,7 @@ function formatCheckTime(iso) {
   return new Date(time).toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: 'numeric', minute: '2-digit' });
 }
 
-function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate }) {
+function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapacity }) {
   const activeCount = entries.filter(({ load }) => load.trackingStage !== 'Delivered').length;
   const alertCount = entries.filter(({ load }) => getTrackingAlert(load, now)).length;
   const phoneDigits = value => String(value || '').replace(/[^\d+]/g, '');
@@ -3336,6 +3419,16 @@ function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate }) {
                     {alert.level === 'late' ? '⚠ ' : '⏰ '}{alert.text}
                   </span>
                 )}
+                <div className="flex gap-1 mt-1">
+                  <button type="button" onClick={() => onOpen(customer, load.id)} title="Open this load to change the rate, dates or driver" className="bg-slate-700 hover:bg-slate-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold cursor-pointer">
+                    ✏️ Edit load
+                  </button>
+                  {onRemoveCapacity && (
+                    <button type="button" onClick={() => onRemoveCapacity(customer, load.id)} title="Clear the driver, truck and trailer and move this load back to OPEN" className="bg-amber-600 hover:bg-amber-500 text-white text-[11px] px-2 py-0.5 rounded font-semibold cursor-pointer">
+                      ↩ Remove capacity
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
             <form
@@ -3451,6 +3544,61 @@ function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
 // The Landstar upload bot (bot/status-server.js) reports its login status on
 // this computer while it runs. No answer means the bot is not running.
 const BOT_STATUS_URL = 'http://127.0.0.1:47615/status';
+const BOT_UNPOST_URL = 'http://127.0.0.1:47615/unpost';
+
+// Postings waiting to be removed from Landstar by the upload bot (loads that dropped
+// off a customer's list). Kept in this browser until the bot confirms it has them.
+const unpostQueueKey = 'landstar_unpostQueue';
+function readUnpostQueue() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(unpostQueueKey));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function writeUnpostQueue(queue) {
+  try {
+    localStorage.setItem(unpostQueueKey, JSON.stringify(queue));
+  } catch (error) {
+    console.error('Could not save the Landstar removal queue:', error);
+  }
+}
+function addToUnpostQueue(droppedPostings) {
+  const queue = readUnpostQueue();
+  const seen = new Set(queue.map(item => `${item.customer}|${item.loadId}`));
+  droppedPostings.forEach(item => {
+    if (item?.posting && !seen.has(`${item.customer}|${item.loadId}`)) {
+      queue.push({ ...item, queuedAt: new Date().toISOString() });
+      seen.add(`${item.customer}|${item.loadId}`);
+    }
+  });
+  writeUnpostQueue(queue);
+  return queue.length;
+}
+// Hands the queue to the bot; returns how many it accepted (0 if the bot is off).
+async function sendUnpostQueueToBot() {
+  const queue = readUnpostQueue();
+  if (!queue.length) return 0;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(BOT_UNPOST_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ postings: queue }),
+      signal: controller.signal
+    });
+    if (!response.ok) return 0;
+    const sent = new Set(queue.map(item => `${item.customer}|${item.loadId}`));
+    writeUnpostQueue(readUnpostQueue().filter(item => !sent.has(`${item.customer}|${item.loadId}`)));
+    return queue.length;
+  } catch {
+    return 0;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const botStatusStyles = {
   'logged-in': { label: 'Bot logged in', dot: '#22c55e', glow: '0 0 8px #22c55e' },
   uploading: { label: 'Bot uploading', dot: '#22c55e', glow: '0 0 8px #22c55e' },
@@ -3715,7 +3863,10 @@ export default function App({ sharing = null } = {}) {
         setCustomerOrdersMap(current => {
           const next = { ...current };
           fullLists.forEach((loads, customer) => {
-            next[customer] = replaceImportedCustomerLoads(customer, loads, current[customer] || []).loads;
+            const replacement = replaceImportedCustomerLoads(customer, loads, current[customer] || []);
+            next[customer] = replacement.loads;
+            // Background import: never asks, so an unusually large drop is skipped instead.
+            queueDroppedPostings(replacement, current[customer] || [], { interactive: false });
           });
           return next;
         });
@@ -3900,6 +4051,16 @@ export default function App({ sharing = null } = {}) {
       ...prev,
       [selectedBroker]: (prev[selectedBroker] || []).map(o => o.id === updatedOrder.id ? updatedOrder : o)
     }));
+  };
+
+  const confirmRemoveCapacity = load => window.confirm(
+    `Remove ${String(load.driver || '').trim() || 'the truck'} from load #${load.id} and move it back to OPEN?\n\n`
+    + 'The driver, phone, truck, trailer, pickup ETA and tracking are cleared. The rate and load details stay.'
+  );
+
+  const handleRemoveCapacity = () => {
+    if (!selectedOrder || !confirmRemoveCapacity(selectedOrder)) return;
+    saveLoad(removeCapacity(selectedOrder));
   };
 
   const handleBookLoad = () => {
@@ -4437,6 +4598,7 @@ export default function App({ sharing = null } = {}) {
         ? removeDuplicateLoadImports(mergedList)
         : { loads: mergedList, duplicateCount: 0 };
       const replacement = replaceImportedCustomerLoads(selectedBroker, payerLoads, existingOrders);
+      queueDroppedPostings(replacement, existingOrders);
       const finalLoads = replacement ? replacement.loads : mergedFinalLoads;
       const nextOrders = { ...customerOrdersMap, [selectedBroker]: finalLoads };
       const saved = persistAppData(brokers, nextOrders);
@@ -4675,6 +4837,7 @@ export default function App({ sharing = null } = {}) {
           ? removeDuplicateLoadImports(mergedLoadList)
           : { loads: mergedLoadList, duplicateCount: 0 };
         const replacement = replaceImportedCustomerLoads(selectedBroker, importedRows, existingLoads);
+        queueDroppedPostings(replacement, existingLoads);
         const finalLoads = replacement ? replacement.loads : mergedFinalLoads;
         const nextOrders = { ...customerOrdersMap, [selectedBroker]: finalLoads };
         const saved = persistAppData(brokers, nextOrders);
@@ -5218,8 +5381,11 @@ export default function App({ sharing = null } = {}) {
       const mergedOrders = new Map(existingOrders.map(order => [order.id, order]));
       mergedImportedLoads.forEach(order => mergedOrders.set(order.id, order));
       const replacement = replaceImportedCustomerLoads(brokerName, isDatImport ? importedLoads : recognizedLoads, existingOrders,
-        isDatImport ? { additive: true, allowGeneratedIds: true }
-          : gridSkippedRows.length ? { additive: true, allowGeneratedIds: !preservesImportedLoadStatus(brokerName) } : { keepManualEnt: true });
+        isDatImport ? { additive: true, allowGeneratedIds: true, reportDroppedPostings: false }
+          : gridSkippedRows.length
+            ? { additive: true, allowGeneratedIds: !preservesImportedLoadStatus(brokerName), reportDroppedPostings: false }
+            : { keepManualEnt: true });
+      queueDroppedPostings(replacement, existingOrders);
       const finalLoads = replacement ? replacement.loads : Array.from(mergedOrders.values());
       const nextOrders = {
         ...customerOrdersMap,
@@ -5361,6 +5527,33 @@ export default function App({ sharing = null } = {}) {
     const timer = setInterval(loadInquiries, 60 * 1000);
     return () => { cancelled = true; clearInterval(timer); };
   }, []);
+
+  // Hands loads that dropped off a customer's list to the upload bot, which removes
+  // their Landstar postings. Retries every 30 seconds while the bot is off.
+  // Keep this the last effect: tests address earlier effects by position.
+  useEffect(() => {
+    const timer = setInterval(() => { void sendUnpostQueueToBot(); }, 30 * 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Queues a full-list import's dropped loads for removal from Landstar. If an import
+  // would drop more than half of a customer's posted loads, ask first: the file may be
+  // cut off or misread.
+  const queueDroppedPostings = (replacement, existingLoads, { interactive = true } = {}) => {
+    const dropped = replacement?.droppedPostings || [];
+    if (!dropped.length) return 0;
+    const posted = (existingLoads || []).filter(load => load.landstarPosting).length;
+    if (dropped.length > 20 && dropped.length > posted / 2) {
+      const ok = interactive && window.confirm(
+        `${dropped.length} of ${posted} loads posted on Landstar for this customer are not on the new list.\n\n`
+        + 'Remove all of them from Landstar? Choose Cancel if the file may be incomplete.'
+      );
+      if (!ok) return 0;
+    }
+    addToUnpostQueue(dropped);
+    void sendUnpostQueueToBot();
+    return dropped.length;
+  };
 
   const unseenInquiryCount = inquiries.filter(inquiry => !inquiry.seen).length;
 
@@ -5546,6 +5739,8 @@ export default function App({ sharing = null } = {}) {
 
     const validationErrors = [];
     const exportEntries = [];
+    const earliestPickupSerial = getEarliestPickupSerial();
+    const movedPickupStarts = [];
     loadsToExport.forEach(ord => {
       const rowErrors = [];
       const originState = String(ord.origSt || '').trim().toUpperCase();
@@ -5612,8 +5807,10 @@ export default function App({ sharing = null } = {}) {
       }
       const puParts = splitScheduleRange(ord.pickupTime);
       const delParts = splitScheduleRange(ord.deliveryTime);
-      const pickupFrom = toExcelDateTime(puParts[0]);
       const pickupThru = toExcelDateTime(puParts[1] || puParts[0], puParts[0]);
+      const pickupWindow = adjustPickupWindow(toExcelDateTime(puParts[0]), pickupThru, earliestPickupSerial);
+      const pickupFrom = pickupWindow.from;
+      if (pickupWindow.moved) movedPickupStarts.push(ord.id);
       const deliveryFrom = toExcelDateTime(delParts[0]);
       const deliveryThru = toExcelDateTime(delParts[1] || delParts[0], delParts[0]);
       const equipment = getLandstarEquipmentCode(ord.eCode);
@@ -5638,7 +5835,7 @@ export default function App({ sharing = null } = {}) {
       if (pickupFrom === null || pickupThru === null) {
         rowErrors.push(`pickup date/time (current value "${ord.pickupTime || ''}" — use MM/DD/YYYY HHMM - HHMM)`);
       }
-      else if (pickupThru < todaySerial) rowErrors.push('pickup end date cannot be in the past');
+      else if (pickupWindow.ended) rowErrors.push('pickup window has already ended (Landstar only accepts a pickup that is still open)');
       else if (pickupThru < pickupFrom) rowErrors.push('pickup end must be after pickup start');
       if (deliveryFrom === null || deliveryThru === null) rowErrors.push('delivery date and time');
       else if (deliveryThru < todaySerial) rowErrors.push('delivery end date cannot be in the past');
@@ -6005,13 +6202,19 @@ export default function App({ sharing = null } = {}) {
       exportedRegistrySaved = false;
       console.error('Could not save exported load records:', error);
     }
+    // Remember exactly what was posted, so the bot can find and remove the posting
+    // later if the load drops off the customer's list.
+    const postingsById = new Map(readyEntries.map(({ ord, record }) => [String(ord.id), buildLandstarPosting(record)]));
     const nextOrders = {
       ...customerOrdersMap,
-      [selectedBroker]: markLoadsExported(orders, exportedIds, exportedAt).map(load => (
-        inquiryTokens.has(String(load.id)) ? { ...load, inquiryToken: inquiryTokens.get(String(load.id)) } : load
-      ))
+      [selectedBroker]: markLoadsExported(orders, exportedIds, exportedAt).map(load => {
+        const posting = postingsById.get(String(load.id));
+        const withPosting = posting ? { ...load, landstarPosting: posting } : load;
+        return inquiryTokens.has(String(load.id)) ? { ...withPosting, inquiryToken: inquiryTokens.get(String(load.id)) } : withPosting;
+      })
     };
     const saved = persistAppData(brokers, nextOrders);
+    setRateHistory(recordExportedRates(selectedBroker, readyEntries.map(({ ord }) => ord)));
     setExportErrorIds(failedIds);
     setCustomerOrdersMap(nextOrders);
     setSelectedIds(prev => prev.filter(id => !exportedIds.has(String(id))));
@@ -6022,6 +6225,9 @@ export default function App({ sharing = null } = {}) {
     );
 
     const skippedNotes = [];
+    if (movedPickupStarts.length) {
+      skippedNotes.push(`Moved the pickup start to now for ${movedPickupStarts.length} load(s) whose pickup window had already started (Landstar rejects a past pickup start). The pickup end time is unchanged.`);
+    }
     if (reExportCount > 0) {
       skippedNotes.push(`Re-exported ${reExportCount} load(s) that were already posted to Landstar (ENT). They stay ENT.`);
     }
@@ -6893,6 +7099,10 @@ export default function App({ sharing = null } = {}) {
             onBack={() => setView('loads')}
             onOpen={openBookedLoad}
             onUpdate={updateCustomerLoad}
+            onRemoveCapacity={(customer, id) => {
+              const load = (customerOrdersMap[customer] || []).find(o => String(o.id) === String(id));
+              if (load && confirmRemoveCapacity(load)) updateCustomerLoad(customer, id, removeCapacity(load));
+            }}
           />
         ) : selectedOrder ? (
           <div>
@@ -7113,7 +7323,7 @@ export default function App({ sharing = null } = {}) {
                               const titleParts = [
                                 entry.customer,
                                 entry.eCode || 'Any equipment',
-                                entry.source === 'manual' ? 'Entered' : entry.source === 'saved' ? 'Saved rate' : entry.source,
+                                entry.source === 'manual' ? 'Entered' : entry.source === 'saved' ? 'Saved rate' : entry.source === 'exported' ? 'Exported to Landstar' : entry.source,
                                 savedDate && !Number.isNaN(savedDate.getTime()) ? savedDate.toLocaleString() : ''
                               ].filter(Boolean);
                               if (!isExact) titleParts.push('different customer/equipment');
@@ -7346,8 +7556,18 @@ export default function App({ sharing = null } = {}) {
 
               <div className="flex justify-between items-center pt-4 border-t border-[#1c2541]">
                 {selectedOrder.status === 'BOOKED' ? (
-                  <div className="w-full text-center bg-purple-900/50 border border-purple-500 text-purple-100 px-6 py-2 rounded text-sm font-semibold" role="status">
-                    ✓ Booked{selectedOrder.driver ? ` · ${selectedOrder.driver}` : ''} (in Booked Loads; use OPEN above to un-book)
+                  <div className="w-full flex flex-wrap items-center gap-2">
+                    <div className="flex-1 min-w-[12rem] text-center bg-purple-900/50 border border-purple-500 text-purple-100 px-4 py-2 rounded text-sm font-semibold" role="status">
+                      ✓ Booked{selectedOrder.driver ? ` · ${selectedOrder.driver}` : ''} · edit any field above (rate, dates, driver) and it saves automatically
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRemoveCapacity}
+                      title="Clear the driver, truck and trailer and move this load back to OPEN"
+                      className="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded text-sm font-semibold cursor-pointer"
+                    >
+                      ↩ Remove capacity
+                    </button>
                   </div>
                 ) : (
                   <button

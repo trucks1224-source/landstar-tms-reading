@@ -1932,10 +1932,9 @@ function buildLandstarPosting(record) {
   };
 }
 
-// Loads that were posted to Landstar and are missing from a customer's new full list.
-// Nolan's imports are partial (screenshots of part of their board), so they never count.
+// Loads that were posted to Landstar and are missing from a customer's new list. This
+// includes Nolan: any posted Nolan load not in the new screenshots is removed too.
 function findDroppedPostings(customer, importedLoads, existingLoads) {
-  if (normalizeCustomerName(customer) === ntgCustomerName) return [];
   const importedIds = new Set(importedLoads.map(load => normalizeLoadId(getBaseLoadId(load))).filter(Boolean));
   if (!importedIds.size) return [];
   return existingLoads.filter(load => load.landstarPosting && !importedIds.has(normalizeLoadId(getBaseLoadId(load))));

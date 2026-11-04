@@ -24,6 +24,9 @@ const nativeSetItem = Storage.prototype.setItem;
 // Personal values as last saved in app_data, and personal values waiting to upload.
 const lastSynced = {};
 const pending = {};
+// Values this browser recently uploaded, per key, to recognize realtime echoes of them.
+const ownPushes = {};
+const ownPushLimit = 3;
 // Shared customers as last saved in the database, keyed by customer name:
 // { ownerId, memberIds, loadOrder: [loadId], loads: { loadId: json }, rates: { rateKey: rate } }
 let shared = {};
@@ -326,6 +329,7 @@ async function doFlush() {
       const { error } = await supabase.from('app_data').upsert(rows, { onConflict: 'user_id,key' });
       if (error) throw error;
       rows.forEach(row => {
+        ownPushes[row.key] = [...(ownPushes[row.key] || []), row.value].slice(-ownPushLimit);
         lastSynced[row.key] = row.value;
         if (pending[row.key] === row.value) delete pending[row.key];
       });
@@ -454,6 +458,22 @@ export function clearLocalWorkspace() {
     .forEach(key => window.localStorage.removeItem(key));
 }
 
+// Applies a value saved by another browser. Echoes of this browser's own saves are
+// skipped: they can arrive after a newer local save and would roll it back.
+export function applyRemoteValue(key, value) {
+  if (typeof value !== 'string') return false;
+  // Local edits waiting to upload win; they will overwrite the remote value shortly.
+  if (key in pending) return false;
+  if ((ownPushes[key] || []).includes(value)) return false;
+  lastSynced[key] = value;
+  const local = window.localStorage.getItem(key);
+  const merged = mergedValue(key, local);
+  if (merged === local) return false;
+  writeLocal(key, merged);
+  notifyData();
+  return true;
+}
+
 // Keeps this browser up to date with the user's other browsers and with teammates
 // editing shared customers.
 export function subscribeToRemoteChanges(userId) {
@@ -462,14 +482,21 @@ export function subscribeToRemoteChanges(userId) {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'app_data', filter: `user_id=eq.${userId}` }, payload => {
       const row = payload.new;
       if (!row?.key || row.user_id !== userId || !syncedKeys.includes(row.key)) return;
-      // Local edits waiting to upload win; they will overwrite the remote value shortly.
-      if (row.key in pending) return;
-      lastSynced[row.key] = row.value;
-      const local = window.localStorage.getItem(row.key);
-      const merged = mergedValue(row.key, local);
-      if (merged === local) return;
-      writeLocal(row.key, merged);
-      notifyData();
+      // Realtime leaves large values (a full load list) out of the message. Read the
+      // saved value instead of treating the missing value as an empty list.
+      if (typeof row.value !== 'string') {
+        enqueue(async () => {
+          const { data, error } = await supabase.from('app_data').select('value')
+            .eq('user_id', userId).eq('key', row.key).maybeSingle();
+          if (error) {
+            console.error('Could not read a synced change:', error);
+            return;
+          }
+          if (currentUserId === userId) applyRemoteValue(row.key, data?.value);
+        });
+        return;
+      }
+      applyRemoteValue(row.key, row.value);
     })
     .subscribe();
   const team = supabase.channel(`shared-customers-sync-${userId}`);
@@ -492,6 +519,7 @@ export function stopCloudSync() {
   currentUserId = null;
   shared = {};
   Object.keys(pending).forEach(key => delete pending[key]);
+  Object.keys(ownPushes).forEach(key => delete ownPushes[key]);
   pendingLoads.clear();
   pendingRates.clear();
   pendingOrder.clear();

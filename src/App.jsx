@@ -4232,7 +4232,9 @@ export default function App({ sharing = null } = {}) {
       // A same-browser load-list change without a version bump came from an outdated
       // app version or a stale tab; keep this tab's newer list and restore it instead.
       if (heal) scheduleUnversionedLoadListHeal();
-      adopt.forEach(key => { adopted[key] = values[key]; });
+      // A missing value is never adopted: an empty slot would otherwise load the
+      // sample loads over the real list.
+      adopt.forEach(key => { if (values[key] !== null) adopted[key] = values[key]; });
       // Track version bumps that arrived without content changes.
       markStorageAdopted({});
       if (!Object.keys(adopted).length) return;

@@ -2256,9 +2256,21 @@ function getLandstarCity(value, location) {
 const landstarCityAbbreviations = {
   'WASHINGTON COURT HOUSE': 'Washington CH'
 };
+// Landstar shortens military-base names (e.g. its city list has "MARCH ARB, CA" for
+// ZIP 92518 "March Air Reserve Base"); cutting them at 18 characters instead gives a
+// name Landstar rejects as "Invalid Origin".
+const landstarCityPhrases = [
+  [/\bAir Reserve Base\b/i, 'ARB'],
+  [/\bAir Force Base\b/i, 'AFB'],
+  [/\bNaval Air Station\b/i, 'NAS'],
+  [/\bMarine Corps Air Station\b/i, 'MCAS']
+];
 function toLandstarCity(value) {
   const city = String(value || '').trim();
-  const abbreviated = landstarCityAbbreviations[city.toUpperCase()] || city;
+  let abbreviated = landstarCityAbbreviations[city.toUpperCase()] || city;
+  if (abbreviated.length > 18) {
+    landstarCityPhrases.forEach(([phrase, short]) => { abbreviated = abbreviated.replace(phrase, short); });
+  }
   return abbreviated.length > 18 ? abbreviated.slice(0, 18).trim() : abbreviated;
 }
 
@@ -3384,17 +3396,25 @@ function buildInquiryDetails(load, profile = {}) {
   };
 }
 
-// Short public link on the live site; the dev server has no /i/ route, so it uses the page directly.
-function getInquiryUrl(token, origin = window.location.origin) {
-  return /\/\/(localhost|127\.0\.0\.1)(:|$)/.test(origin)
-    ? `${origin}/inquire.html?t=${token}`
-    : `${origin}/i/${token}`;
+// Driver links always point at the live site, even when the TMS runs on this
+// computer (a localhost link only works on your own PC). Override with
+// VITE_PUBLIC_SITE_URL if the site address ever changes.
+const publicSiteUrl = String(
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_PUBLIC_SITE_URL) || 'https://landstar-tms-reading-cffe.vercel.app'
+).replace(/\/+$/, '');
+
+function getInquiryUrl(token, siteUrl = publicSiteUrl) {
+  return `${String(siteUrl).replace(/\/+$/, '')}/i/${token}`;
 }
 
-// What goes in Landstar column AA: your comment, then the load's driver link.
-function getLandstarExportComment(load, url) {
-  return [String(load?.landstarComment || '').trim(), url ? `Inquire: ${url}` : '']
-    .filter(Boolean).join(' · ');
+
+// What goes in Landstar column AA. The bulk upload treats it as a comment CODE: anything
+// that is not exactly one of Landstar's standard comments fails the whole posting
+// ("Comment Code Not Found"). So only a standard comment is sent, spelled the way
+// Landstar has it; free text and links are left out.
+function getLandstarExportComment(load) {
+  const comment = String(load?.landstarComment || '').trim().toLowerCase();
+  return landstarCommentOptions.find(option => option.toLowerCase() === comment) || '';
 }
 
 function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
@@ -5405,7 +5425,7 @@ export default function App({ sharing = null } = {}) {
       if (selectedOrder.inquiryToken !== token) saveLoad({ ...selectedOrder, inquiryToken: token });
       const url = getInquiryUrl(token);
       await copyToClipboard(url, 'Driver link');
-      alert(`Driver link copied for load #${selectedOrder.id}:\n${url}\n\nIt is also added to this load's Landstar comment on export. You'll get an email when a driver inquires.`);
+      alert(`Driver link copied for load #${selectedOrder.id}:\n${url}\n\nPaste it into the load's BCO Posting Comments on Landstar, or text it to drivers. You'll get an email when a driver inquires.`);
     } catch (error) {
       console.error('Could not create the driver link:', error);
       alert(`Could not create the driver link: ${describeLinkError(error)}`);
@@ -5438,8 +5458,9 @@ export default function App({ sharing = null } = {}) {
       return;
     }
 
-    // Each exported load carries its driver inquiry link in the Landstar comment (column AA).
-    // If links can't be made (offline, not set up), the export still goes out without them.
+    // Make sure each exported load has a driver inquiry link (shown under its comment box,
+    // for texting or pasting into BCO Posting Comments). It is NOT sent in column AA:
+    // Landstar rejects any non-standard comment there. A failure never blocks the export.
     let inquiryTokens = new Map();
     let inquiryLinkError = '';
     try {
@@ -5670,7 +5691,7 @@ export default function App({ sharing = null } = {}) {
         "Carrier Load Alerts": "",
         // The Landstar template has no Team column; team is set through this attribute.
         "Load Attributes": [isHazmatLoad(ord) && 'Hazmat', isTeamLoad(ord) && 'Team Required'].filter(Boolean).join(', '),
-        "Comments": getLandstarExportComment(ord, inquiryTokens.has(String(ord.id)) ? getInquiryUrl(inquiryTokens.get(String(ord.id))) : ''),
+        "Comments": getLandstarExportComment(ord),
         // FSC columns stay blank; the fuel surcharge is already removed from the linehaul rate.
         "Fuel Surcharge Rate Type": "",
         "Fuel Surcharge": "",
@@ -5954,9 +5975,7 @@ export default function App({ sharing = null } = {}) {
       if (skippedBookedCount) {
         alert(`${skippedBookedCount} booked load${skippedBookedCount === 1 ? ' was' : 's were'} left out of the Landstar export.`);
       }
-      if (inquiryLinkError) {
-        alert(`Exported without driver links in the comments: ${inquiryLinkError}`);
-      }
+      if (inquiryLinkError) console.error(`Driver links were not created: ${inquiryLinkError}`);
     } catch (error) {
       console.error('Could not create the Landstar bulk spreadsheet:', error);
       alert('The Landstar bulk spreadsheet could not be created. Please try again.');
@@ -7174,10 +7193,15 @@ export default function App({ sharing = null } = {}) {
                     <datalist id="landstar-comment-options">
                       {landstarCommentOptions.map(option => <option key={option} value={option} />)}
                     </datalist>
+                    {String(selectedOrder.landstarComment || '').trim() && !getLandstarExportComment(selectedOrder) && (
+                      <p className="text-[11px] text-amber-300 mt-1" id="landstar-comment-warning">
+                        ⚠ Not a Landstar comment code, so it will not be exported (Landstar rejects the whole posting otherwise). Pick one from the list.
+                      </p>
+                    )}
                     <p className="text-[11px] text-gray-300 mt-1 break-all" id="landstar-comment-link">
                       {selectedOrder.inquiryToken
-                        ? <>🔗 Driver link (added after your comment on export): <a href={getInquiryUrl(selectedOrder.inquiryToken)} target="_blank" rel="noreferrer" className="text-purple-300 underline">{getInquiryUrl(selectedOrder.inquiryToken)}</a></>
-                        : '🔗 A driver inquiry link is added after your comment when you export this load.'}
+                        ? <>🔗 Driver link (paste into BCO Posting Comments or text it): <a href={getInquiryUrl(selectedOrder.inquiryToken)} target="_blank" rel="noreferrer" className="text-purple-300 underline">{getInquiryUrl(selectedOrder.inquiryToken)}</a></>
+                        : '🔗 Driver link: created when you export, or use “Copy driver link” above.'}
                     </p>
                   </div>
                 </div>

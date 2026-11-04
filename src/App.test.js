@@ -2177,7 +2177,7 @@ test('exported posting details use the Landstar board time format', () => {
   }) }, { originZip: '60007', destZip: '76063', pickupThru: '11/06/26 13:00', deliveryThru: '11/08/26 07:00', weight: 42000 });
 });
 
-test('posted loads missing from a full list are handed to the bot once; Nolan and DAT screenshots never are', () => {
+test('posted loads missing from a list are handed to the bot once, Nolan included; DAT screenshots never are', () => {
   const posting = { originZip: '60007', destZip: '76063', pickupThru: '11/06/26 13:00', deliveryThru: '11/08/26 07:00', weight: 42000 };
   const existing = [
     { ...load, id: '111111', status: 'ENT', tag: 'ENT', landstarExportedAt: new Date().toISOString(), landstarPosting: posting },
@@ -2195,7 +2195,7 @@ test('posted loads missing from a full list are handed to the bot once; Nolan an
   assert.equal(kept.landstarPosting, undefined, 'and is not handed over again next import');
   assert.ok(result.loads.find(item => item.id === '111111').landstarPosting, 'loads still on the list keep their posting');
 
-  assert.equal(policy.replaceImportedCustomerLoads(customers[2], imported, existing).droppedPostings.length, 0, 'Nolan lists are partial');
+  assert.deepEqual(Array.from(policy.replaceImportedCustomerLoads(customers[2], imported, existing).droppedPostings, item => item.loadId), ['222222'], 'Nolan removals are automatic too');
   assert.equal(policy.replaceImportedCustomerLoads(customers[0], imported, existing, { reportDroppedPostings: false }).droppedPostings.length, 0);
   assert.equal(policy.findDroppedPostings(customers[1], [], existing).length, 0, 'an empty list never drops everything');
 });

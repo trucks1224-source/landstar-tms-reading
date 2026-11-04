@@ -186,6 +186,14 @@ function bookLoad(load, bookedAt = new Date().toISOString()) {
   return { ...load, status: 'BOOKED', tag: 'BOOKED', bookedAt: load.bookedAt || bookedAt };
 }
 
+// Takes the truck off a booked load: clears the driver, equipment, pickup ETA and
+// tracking, and puts the load back in OPEN so it can be re-booked or exported.
+// The rate and every other load detail are kept.
+function removeCapacity(load) {
+  const { bookedAt, trackingStage, checkCalls, ...rest } = load || {};
+  return { ...rest, status: 'OPEN', tag: 'OPEN', driver: '', driverPhone: '', truck: '', trailer: '', pickupEta: '' };
+}
+
 // Drivers, trucks and trailers already used on any load, for auto-complete.
 // When a driver appears on several loads, the most recently booked one wins
 // and any missing phone/truck/trailer is filled from their other loads.
@@ -3301,7 +3309,7 @@ function formatCheckTime(iso) {
   return new Date(time).toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: 'numeric', minute: '2-digit' });
 }
 
-function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate }) {
+function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapacity }) {
   const activeCount = entries.filter(({ load }) => load.trackingStage !== 'Delivered').length;
   const alertCount = entries.filter(({ load }) => getTrackingAlert(load, now)).length;
   const phoneDigits = value => String(value || '').replace(/[^\d+]/g, '');
@@ -3369,6 +3377,16 @@ function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate }) {
                     {alert.level === 'late' ? '⚠ ' : '⏰ '}{alert.text}
                   </span>
                 )}
+                <div className="flex gap-1 mt-1">
+                  <button type="button" onClick={() => onOpen(customer, load.id)} title="Open this load to change the rate, dates or driver" className="bg-slate-700 hover:bg-slate-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold cursor-pointer">
+                    ✏️ Edit load
+                  </button>
+                  {onRemoveCapacity && (
+                    <button type="button" onClick={() => onRemoveCapacity(customer, load.id)} title="Clear the driver, truck and trailer and move this load back to OPEN" className="bg-amber-600 hover:bg-amber-500 text-white text-[11px] px-2 py-0.5 rounded font-semibold cursor-pointer">
+                      ↩ Remove capacity
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
             <form
@@ -3933,6 +3951,16 @@ export default function App({ sharing = null } = {}) {
       ...prev,
       [selectedBroker]: (prev[selectedBroker] || []).map(o => o.id === updatedOrder.id ? updatedOrder : o)
     }));
+  };
+
+  const confirmRemoveCapacity = load => window.confirm(
+    `Remove ${String(load.driver || '').trim() || 'the truck'} from load #${load.id} and move it back to OPEN?\n\n`
+    + 'The driver, phone, truck, trailer, pickup ETA and tracking are cleared. The rate and load details stay.'
+  );
+
+  const handleRemoveCapacity = () => {
+    if (!selectedOrder || !confirmRemoveCapacity(selectedOrder)) return;
+    saveLoad(removeCapacity(selectedOrder));
   };
 
   const handleBookLoad = () => {
@@ -6934,6 +6962,10 @@ export default function App({ sharing = null } = {}) {
             onBack={() => setView('loads')}
             onOpen={openBookedLoad}
             onUpdate={updateCustomerLoad}
+            onRemoveCapacity={(customer, id) => {
+              const load = (customerOrdersMap[customer] || []).find(o => String(o.id) === String(id));
+              if (load && confirmRemoveCapacity(load)) updateCustomerLoad(customer, id, removeCapacity(load));
+            }}
           />
         ) : selectedOrder ? (
           <div>
@@ -7387,8 +7419,18 @@ export default function App({ sharing = null } = {}) {
 
               <div className="flex justify-between items-center pt-4 border-t border-[#1c2541]">
                 {selectedOrder.status === 'BOOKED' ? (
-                  <div className="w-full text-center bg-purple-900/50 border border-purple-500 text-purple-100 px-6 py-2 rounded text-sm font-semibold" role="status">
-                    ✓ Booked{selectedOrder.driver ? ` · ${selectedOrder.driver}` : ''} (in Booked Loads; use OPEN above to un-book)
+                  <div className="w-full flex flex-wrap items-center gap-2">
+                    <div className="flex-1 min-w-[12rem] text-center bg-purple-900/50 border border-purple-500 text-purple-100 px-4 py-2 rounded text-sm font-semibold" role="status">
+                      ✓ Booked{selectedOrder.driver ? ` · ${selectedOrder.driver}` : ''} · edit any field above (rate, dates, driver) and it saves automatically
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRemoveCapacity}
+                      title="Clear the driver, truck and trailer and move this load back to OPEN"
+                      className="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded text-sm font-semibold cursor-pointer"
+                    >
+                      ↩ Remove capacity
+                    </button>
                   </div>
                 ) : (
                   <button

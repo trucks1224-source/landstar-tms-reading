@@ -28,7 +28,7 @@ export {
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -2113,4 +2113,36 @@ test('a pickup window that already started is posted from now; an ended window i
 
   const over = policy.adjustPickupWindow(policy.toExcelDateTime('11/03/2026 0700'), policy.toExcelDateTime('11/04/2026 0830'), earliest);
   assert.equal(over.ended, true);
+});
+
+test('removing capacity clears the truck and tracking, keeps the rate, and moves the load back to OPEN', () => {
+  const booked = {
+    ...load, id: '7', status: 'BOOKED', tag: 'BOOKED', rateInput: '3175', landstarComment: 'Load Ready now',
+    driver: 'Alex Driver', driverPhone: '555-1111', truck: 'T-102', trailer: 'TR-208', pickupEta: '11/06 10:00',
+    bookedAt: '2026-11-04T12:00:00Z', trackingStage: 'Loaded', checkCalls: [{ at: 'x', stage: 'Loaded', note: '' }]
+  };
+  const open = policy.removeCapacity(booked);
+  assert.equal(open.status, 'OPEN');
+  assert.equal(open.tag, 'OPEN');
+  for (const field of ['driver', 'driverPhone', 'truck', 'trailer', 'pickupEta']) assert.equal(open[field], '', field);
+  for (const field of ['bookedAt', 'trackingStage', 'checkCalls']) assert.equal(field in open, false, field);
+  assert.equal(open.rateInput, '3175');
+  assert.equal(open.landstarComment, 'Load Ready now');
+});
+
+test('a booked load shows Remove capacity, keeps its rate editable, and goes back to OPEN after confirming', () => {
+  const app = createAppHarness(customers[0], [
+    { ...load, id: '1', status: 'BOOKED', tag: 'BOOKED', driver: 'Alex Driver', truck: 'T-102', rateInput: '3175' }
+  ], null, {}, { window: { confirm: () => true, location: { origin: 'http://localhost:5173' } } });
+  app.enterRate('3300');
+  app.render();
+  assert.equal(app.states[6].rateInput, '3300', 'rate can be changed on a booked load');
+  const button = app.find(node => node.type === 'button' && textOf(node).includes('Remove capacity'));
+  assert.ok(button, 'Remove capacity button on booked loads');
+  button.props.onClick();
+  app.render();
+  assert.equal(app.states[6].status, 'OPEN');
+  assert.equal(app.states[6].driver, '');
+  assert.equal(app.states[6].rateInput, '3300');
+  assert.equal(app.find(node => node.type === 'button' && textOf(node).includes('Remove capacity')), null);
 });

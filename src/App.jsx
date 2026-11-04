@@ -1894,6 +1894,24 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
   return autoFillLoadZipCodes(loads);
 }
 
+// Earliest pickup start Landstar will accept, as an Excel serial on the local clock:
+// now plus a lead time (for the upload bot's rate check and upload), rounded up to
+// the next quarter hour. Landstar rejects "Pickup Start Date cannot be in the past".
+function getEarliestPickupSerial(now = new Date(), leadMinutes = 30) {
+  const quarterHour = 15 * 60 * 1000;
+  const wallClock = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes() + leadMinutes);
+  return (Math.ceil(wallClock / quarterHour) * quarterHour - Date.UTC(1899, 11, 30)) / 86400000;
+}
+
+// A pickup window that already started but is still open is posted from the earliest
+// allowed start (its end stays the same); a window that is over can't be posted.
+function adjustPickupWindow(pickupFrom, pickupThru, earliestStart) {
+  if (pickupFrom === null || pickupThru === null) return { from: pickupFrom, ended: false, moved: false };
+  if (pickupThru < earliestStart) return { from: pickupFrom, ended: true, moved: false };
+  if (pickupFrom < earliestStart) return { from: earliestStart, ended: false, moved: true };
+  return { from: pickupFrom, ended: false, moved: false };
+}
+
 function toExcelDateTime(value, fallbackDateValue = '') {
   const dateTime = String(value || '').replace(/[•·]/g, ' ').replace(/\s+/g, ' ').trim();
   const fullMatch = dateTime.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,4})(?::(\d{2}))?\s*(AM|PM)?$/i);
@@ -5561,6 +5579,8 @@ export default function App({ sharing = null } = {}) {
 
     const validationErrors = [];
     const exportEntries = [];
+    const earliestPickupSerial = getEarliestPickupSerial();
+    const movedPickupStarts = [];
     loadsToExport.forEach(ord => {
       const rowErrors = [];
       const originState = String(ord.origSt || '').trim().toUpperCase();
@@ -5627,8 +5647,10 @@ export default function App({ sharing = null } = {}) {
       }
       const puParts = splitScheduleRange(ord.pickupTime);
       const delParts = splitScheduleRange(ord.deliveryTime);
-      const pickupFrom = toExcelDateTime(puParts[0]);
       const pickupThru = toExcelDateTime(puParts[1] || puParts[0], puParts[0]);
+      const pickupWindow = adjustPickupWindow(toExcelDateTime(puParts[0]), pickupThru, earliestPickupSerial);
+      const pickupFrom = pickupWindow.from;
+      if (pickupWindow.moved) movedPickupStarts.push(ord.id);
       const deliveryFrom = toExcelDateTime(delParts[0]);
       const deliveryThru = toExcelDateTime(delParts[1] || delParts[0], delParts[0]);
       const equipment = getLandstarEquipmentCode(ord.eCode);
@@ -5653,7 +5675,7 @@ export default function App({ sharing = null } = {}) {
       if (pickupFrom === null || pickupThru === null) {
         rowErrors.push(`pickup date/time (current value "${ord.pickupTime || ''}" — use MM/DD/YYYY HHMM - HHMM)`);
       }
-      else if (pickupThru < todaySerial) rowErrors.push('pickup end date cannot be in the past');
+      else if (pickupWindow.ended) rowErrors.push('pickup window has already ended (Landstar only accepts a pickup that is still open)');
       else if (pickupThru < pickupFrom) rowErrors.push('pickup end must be after pickup start');
       if (deliveryFrom === null || deliveryThru === null) rowErrors.push('delivery date and time');
       else if (deliveryThru < todaySerial) rowErrors.push('delivery end date cannot be in the past');
@@ -6038,6 +6060,9 @@ export default function App({ sharing = null } = {}) {
     );
 
     const skippedNotes = [];
+    if (movedPickupStarts.length) {
+      skippedNotes.push(`Moved the pickup start to now for ${movedPickupStarts.length} load(s) whose pickup window had already started (Landstar rejects a past pickup start). The pickup end time is unchanged.`);
+    }
     if (reExportCount > 0) {
       skippedNotes.push(`Re-exported ${reExportCount} load(s) that were already posted to Landstar (ENT). They stay ENT.`);
     }

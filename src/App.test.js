@@ -27,7 +27,8 @@ export {
   isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted,
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
-  buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries
+  buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
+  getEarliestPickupSerial, adjustPickupWindow
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -2095,4 +2096,21 @@ test('exported rates become past rates for the lane, one entry per distinct rate
   history = policy.addRateHistoryEntries(history, customers[1], [{ order: lane, rate: '3175' }], 'exported', '2026-11-05T12:00:00.000Z');
   assert.equal(history.length, 2, 'same lane and rate refreshes instead of duplicating');
   assert.equal(history.find(entry => entry.rate === '3175').savedAt, '2026-11-05T12:00:00.000Z');
+});
+
+test('a pickup window that already started is posted from now; an ended window is not posted', () => {
+  // 11/04/2026 08:22 local + 30 min lead -> 08:52, rounded up to 09:00.
+  const earliest = policy.getEarliestPickupSerial(new Date(2026, 10, 4, 8, 22));
+  assert.equal(earliest, policy.toExcelDateTime('11/04/2026 0900'));
+  // Exactly on a quarter hour stays put: 08:30 + 30 = 09:00.
+  assert.equal(policy.getEarliestPickupSerial(new Date(2026, 10, 4, 8, 30)), policy.toExcelDateTime('11/04/2026 0900'));
+
+  const started = policy.adjustPickupWindow(policy.toExcelDateTime('11/03/2026 0700'), policy.toExcelDateTime('11/04/2026 1000'), earliest);
+  assert.deepEqual({ ...started }, { from: earliest, ended: false, moved: true }, 'Carthage -> Houston case');
+
+  const future = policy.toExcelDateTime('11/10/2026 1900');
+  assert.deepEqual({ ...policy.adjustPickupWindow(future, future, earliest) }, { from: future, ended: false, moved: false });
+
+  const over = policy.adjustPickupWindow(policy.toExcelDateTime('11/03/2026 0700'), policy.toExcelDateTime('11/04/2026 0830'), earliest);
+  assert.equal(over.ended, true);
 });

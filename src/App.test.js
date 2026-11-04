@@ -2286,3 +2286,20 @@ test('history copies are described by customer with load and booked counts', () 
   assert.equal(policy.describeLoadListSummary({}), 'Empty list');
   assert.equal(policy.describeLoadListSummary(null), 'No details');
 });
+
+test('intermodal (INT) loads are never imported, from any source, and older ones are cleared', () => {
+  for (const value of ['INT', 'Int', 'Intermodal', 'INTER MODAL', 'Van, INT']) {
+    assert.equal(policy.isSkippableEquipment(value), true, value);
+  }
+  for (const value of ['Van', 'Reefer', 'Flatbed', 'Interstate Van', 'PRINT']) {
+    assert.equal(policy.isSkippableEquipment(value), false, value);
+  }
+  const result = policy.replaceImportedCustomerLoads('Para 1522166 - ATZ', [
+    { ...load, id: '2290001', eCode: 'INT' },
+    { ...load, id: '2290002', eCode: 'V', destCity: 'Memphis', destSt: 'TN', destZip: '38118' }
+  ], [
+    { ...load, id: '2280001', eCode: 'INT', origCity: 'Dallas', origSt: 'TX' }
+  ]);
+  assert.deepEqual(Array.from(result.loads, l => l.id), ['2290002']);
+  assert.equal(result.skippedEquipmentCount, 1);
+});

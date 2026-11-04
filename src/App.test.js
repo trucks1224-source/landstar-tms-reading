@@ -29,7 +29,7 @@ export {
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity,
-  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, isRxoSkippedVanLoad
+  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, isRxoSkippedVanLoad, isMexicoLoad
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -2227,4 +2227,33 @@ test('RXO ATZ imports leave out skipped-state van loads and clear older ones', (
   const ids = Array.from(result.loads, l => l.id).sort();
   assert.deepEqual(ids, ['24580001', '24590002', '24590003'], 'OH van skipped, OH reefer kept, old MI van cleared, booked kept');
   assert.equal(result.skippedRxoVanCount, 1);
+});
+
+test('loads to or from Mexico are recognized by Mexican state or country code', () => {
+  for (const [extra, expected] of [
+    [{ origSt: 'TX', destSt: 'EM' }, true],
+    [{ origSt: 'NX', destSt: 'TX' }, true],
+    [{ origSt: 'JA', destSt: 'IL' }, true],
+    [{ origSt: 'TX', destSt: 'TX', destCountry: 'MEX' }, true],
+    [{ origSt: 'TX', destSt: 'CA' }, false],
+    [{ origSt: 'ON', destSt: 'MI' }, false],
+    [{ origSt: 'TX', destSt: '' }, false]
+  ]) {
+    assert.equal(policy.isMexicoLoad({ ...load, ...extra }), expected, JSON.stringify(extra));
+  }
+});
+
+test('imports leave out loads to or from Mexico and clear older ones; booked loads stay', () => {
+  const result = policy.replaceImportedCustomerLoads('R X O 2429200 - ATZ', [
+    { ...load, id: '24590101', origCity: 'Laredo', origSt: 'TX', destCity: 'Monterrey', destSt: 'NX' },
+    { ...load, id: '24590102', origCity: 'Laredo', origSt: 'TX', destCity: 'Dallas', destSt: 'TX' }
+  ], [
+    { ...load, id: '24580100', origCity: 'Toluca', origSt: 'EM', destCity: 'Dallas', destSt: 'TX' },
+    { ...load, id: '24580101', origCity: 'Toluca', origSt: 'EM', destCity: 'Dallas', destSt: 'TX', status: 'BOOKED', tag: 'BOOKED', driver: 'Alex' }
+  ]);
+  assert.deepEqual(Array.from(result.loads, l => l.id).sort(), ['24580101', '24590102']);
+  assert.equal(result.skippedMexicoCount, 1);
+  assert.throws(() => policy.replaceImportedCustomerLoads('R X O 2429200 - ATZ', [
+    { ...load, id: '24590103', origSt: 'TX', destSt: 'JA' }
+  ], []), /Mexico/);
 });

@@ -879,18 +879,22 @@ body.tms-list-focus .tms-sidebar-header {
   animation-name: tms-smoke-rise-alt;
 }
 
+/* Same flow as the painted smoke: straight up out of the pipe tip, then rolling
+   up and back to the left through the painted cloud */
 @keyframes tms-smoke-rise {
-  0% { transform: translate(-50%, -50%) scale(0.35); opacity: 0; }
-  8% { opacity: 0.9; }
-  45% { transform: translate(-130%, -330%) scale(1.9) rotate(40deg); opacity: 0.45; }
-  100% { transform: translate(-300%, -620%) scale(4.2) rotate(90deg); opacity: 0; }
+  0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0; }
+  10% { opacity: 0.85; }
+  18% { transform: translate(-55%, -130%) scale(0.7) rotate(15deg); }
+  50% { transform: translate(-190%, -200%) scale(1.7) rotate(50deg); opacity: 0.45; }
+  100% { transform: translate(-470%, -330%) scale(3.2) rotate(110deg); opacity: 0; }
 }
 
 @keyframes tms-smoke-rise-alt {
   0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0; }
-  8% { opacity: 0.85; }
-  45% { transform: translate(-80%, -360%) scale(1.7) rotate(-30deg); opacity: 0.4; }
-  100% { transform: translate(-240%, -680%) scale(3.8) rotate(-70deg); opacity: 0; }
+  10% { opacity: 0.8; }
+  18% { transform: translate(-45%, -145%) scale(0.65) rotate(-10deg); }
+  50% { transform: translate(-165%, -235%) scale(1.6) rotate(-45deg); opacity: 0.4; }
+  100% { transform: translate(-430%, -390%) scale(3) rotate(-100deg); opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

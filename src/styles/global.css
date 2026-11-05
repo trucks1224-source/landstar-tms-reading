@@ -585,47 +585,47 @@ body {
   transform: rotate(-8deg);
 }
 
-/* Compact list: about twice as many loads on screen */
+/* Compact load cards (always on): about twice as many loads on screen */
 .tms-card-meta {
   display: block;
 }
 
-body.tms-compact-list .tms-load-card {
+.tms-shell .tms-load-card {
   padding: 5px 8px;
   border-radius: 8px;
 }
 
-body.tms-compact-list .tms-load-card > input[type='checkbox'] {
+.tms-shell .tms-load-card > input[type='checkbox'] {
   margin-top: 2px;
 }
 
-body.tms-compact-list .tms-load-card .mb-1 {
+.tms-shell .tms-load-card .mb-1 {
   margin-bottom: 1px;
 }
 
-body.tms-compact-list .tms-load-card .tms-card-meta {
+.tms-shell .tms-load-card .tms-card-meta {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
 }
 
-body.tms-compact-list .tms-load-card .tms-card-rate {
+.tms-shell .tms-load-card .tms-card-rate {
   margin-top: 0;
   white-space: nowrap;
 }
 
-body.tms-compact-list .tms-load-card .tms-card-dates {
+.tms-shell .tms-load-card .tms-card-dates {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-body.tms-compact-list .tms-load-card .tms-card-comment {
+.tms-shell .tms-load-card .tms-card-comment {
   display: none;
 }
 
-body.tms-compact-list .space-y-2 > .tms-load-card + .tms-load-card {
+.tms-shell .space-y-2 > .tms-load-card + .tms-load-card {
   margin-top: 4px;
 }
 

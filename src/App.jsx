@@ -3711,30 +3711,6 @@ function LoadListHistory({ onRestore }) {
   );
 }
 
-// Compact list: smaller load cards so many more fit on screen. Remembered per browser.
-const compactListKey = 'landstar_compactList';
-
-function CompactListToggle() {
-  const [compact, setCompact] = useState(() => {
-    try { return localStorage.getItem(compactListKey) === 'true'; } catch { return false; }
-  });
-  useEffect(() => {
-    if (typeof document !== 'undefined') document.body.classList.toggle('tms-compact-list', compact);
-    try { localStorage.setItem(compactListKey, String(compact)); } catch { /* storage unavailable */ }
-  }, [compact]);
-  return (
-    <button
-      type="button"
-      onClick={() => setCompact(on => !on)}
-      aria-pressed={compact}
-      title={compact ? 'Show full load cards' : 'Show more loads at once (compact cards)'}
-      className={`rounded border px-2 text-xs font-semibold whitespace-nowrap ${compact ? 'bg-cyan-600 border-cyan-400 text-white' : 'bg-[#0b132b] border-[#1c2541] text-white hover:border-cyan-500'}`}
-    >
-      {compact ? '▤ Compact' : '▦ Full cards'}
-    </button>
-  );
-}
-
 // Full-height list: hides everything above the load list (logo, tools, customers,
 // filters) so the loads fill the whole sidebar. Remembered per browser.
 const listFocusKey = 'landstar_listFocus';
@@ -7033,7 +7009,6 @@ export default function App({ sharing = null } = {}) {
           </div>
 
           <div className="mt-2 flex gap-1.5">
-            <CompactListToggle />
             <button
               type="button"
               onClick={() => setLaneSort(current => current === 'pickup-asc' ? 'pickup-desc' : 'pickup-asc')}

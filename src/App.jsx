@@ -3729,8 +3729,8 @@ const listFocusKey = 'landstar_listFocus';
 
 // The truck's own painted lights (roof and step markers, headlights, fog lights,
 // under-glow) are cut out of the art into two layers so the glow sits exactly on them:
-// public/truck-lights-yellow.png (markers, step lights, headlights, fog lights) and
-// public/truck-lights-under.png (the white under-glow). They flash for a few seconds after sign-in, then stay on.
+// public/truck-lights-yellow.png (roof, side and step markers) and
+// public/truck-lights-under.png (white headlights, fog lights and under-glow). They flash for a few seconds after sign-in, then stay on.
 // Lights the art doesn't have (mirrors, exhaust stacks) are added as dots; positions
 // are percentages of the 1152x768 background, shown centered with "contain".
 const truckLights = [

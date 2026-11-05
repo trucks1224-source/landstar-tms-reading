@@ -790,7 +790,7 @@ body.tms-list-focus .tms-sidebar-header {
 }
 
 /* The art's own lights, glowing in place */
-/* Yellow lights everywhere except the white under-glow; change these to recolor them */
+/* Yellow markers, mirror and stack lights; white headlights, fog lights and under-glow */
 .tms-truck-lit {
   position: absolute;
   inset: 0;
@@ -806,13 +806,13 @@ body.tms-list-focus .tms-sidebar-header {
   background-repeat: no-repeat;
 }
 
-/* Markers, step lights, headlights and fog lights, painted over in yellow */
+/* Roof, side and step markers, painted over in yellow */
 .tms-truck-glow.is-yellow {
   background-image: url('/truck-lights-yellow.png');
   filter: drop-shadow(0 0 3px var(--truck-light-glow)) drop-shadow(0 0 10px var(--truck-light-halo));
 }
 
-/* The under-glow stays white */
+/* Headlights, fog lights and under-glow stay white */
 .tms-truck-glow.is-under {
   background-image: url('/truck-lights-under.png');
   mix-blend-mode: screen;

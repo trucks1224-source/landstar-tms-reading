@@ -3715,6 +3715,96 @@ function LoadListHistory({ onRestore }) {
 // filters) so the loads fill the whole sidebar. Remembered per browser.
 const listFocusKey = 'landstar_listFocus';
 
+// Every light on the background truck flashes for a few seconds after sign-in, and the
+// BROSKI badge on the art gets a brighter, glowing copy. Positions are percentages of
+// the 1152x768 background image, which the shell shows centered with "contain".
+const truckLights = [
+  // amber roof markers
+  ['amber', 52.5, 30.8], ['amber', 54.1, 30.6], ['amber', 56, 30.4], ['amber', 57.8, 30.6],
+  // amber side markers by the fuel tank
+  ['amber', 38.8, 54.8], ['amber', 40.5, 54.8], ['amber', 42.3, 54.8],
+  // front turn signals (the four-ways)
+  ['amber', 56.5, 52.9], ['amber', 72.8, 48.4],
+  // headlights and bumper lights
+  ['white', 58.8, 54], ['white', 73.1, 50.7], ['white', 60.3, 60.4], ['white', 74, 58.5],
+  // under-glow
+  ['glow', 38.8, 64.7], ['glow', 45, 65.3], ['glow', 50.6, 65.7], ['glow', 65, 63.8], ['glow', 75, 62.3],
+];
+// Exhaust stack tops; smoke rises from here all the time.
+const truckStacks = [[41, 27.6], [56.3, 22.8]];
+const smokePuffs = 12;
+const truckFlashMs = 6000;
+
+// Import/Data tools and the customer list live in a drawer that slides out from the
+// left. The sidebar keeps one button showing the selected customer; picking a customer,
+// clicking outside, Esc or ✕ closes it.
+function ToolsDrawer({ selected, count, children }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    // The sidebar's blur would trap the fixed drawer inside it, so drop it while open.
+    if (open) {
+      document.body.classList.add('tms-drawer-open');
+      const onKey = event => { if (event.key === 'Escape') setOpen(false); };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }
+    const timer = setTimeout(() => document.body.classList.remove('tms-drawer-open'), 320);
+    return () => clearTimeout(timer);
+  }, [open]);
+  return (
+    <>
+      <button type="button" className="tms-drawer-trigger" onClick={() => setOpen(true)} aria-expanded={open}>
+        <span className="tms-drawer-burger" aria-hidden="true">☰</span>
+        <span className="tms-drawer-trigger-text">
+          <span>Tools &amp; Customers ({count})</span>
+          <strong>{selected || 'Pick a customer'}</strong>
+        </span>
+        <span className="tms-drawer-chevron" aria-hidden="true">›</span>
+      </button>
+      <div className={`tms-drawer${open ? ' is-open' : ''}`}>
+        <div className="tms-drawer-backdrop" onClick={() => setOpen(false)} />
+        <aside
+          className="tms-drawer-panel tms-sidebar-header"
+          aria-label="Tools and customers"
+          onClick={event => { if (event.target?.closest?.('[data-close-drawer]')) setOpen(false); }}
+        >
+          <div className="tms-drawer-head">
+            <span>Tools &amp; Customers</span>
+            <button type="button" className="tms-drawer-close" onClick={() => setOpen(false)} aria-label="Close">✕</button>
+          </div>
+          {children}
+        </aside>
+      </div>
+    </>
+  );
+}
+
+function TruckLights() {
+  const [flashing, setFlashing] = useState(true);
+  useEffect(() => {
+    const timer = setTimeout(() => setFlashing(false), truckFlashMs);
+    return () => clearTimeout(timer);
+  }, []);
+  return (
+    <div className="tms-truck-fx" aria-hidden="true">
+      <div className="tms-truck-box">
+        <div className={`tms-broski-badge${flashing ? ' is-flashing' : ''}`} />
+        {truckStacks.map(([x, y], stack) => (
+          <div key={`stack-${stack}`} className="tms-smoke" style={{ left: `${x}%`, top: `${y}%` }}>
+            {Array.from({ length: smokePuffs }, (_, puff) => (
+              <span key={puff} style={{ animationDelay: `${-(puff * 0.4 + stack * 0.2).toFixed(1)}s` }} />
+            ))}
+          </div>
+        ))}
+        {flashing && truckLights.map(([kind, x, y], index) => (
+          <span key={index} className={`tms-truck-light is-${kind}`} style={{ left: `${x}%`, top: `${y}%` }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ListFocusToggle() {
   const [focus, setFocus] = useState(() => {
     try { return localStorage.getItem(listFocusKey) === 'true'; } catch { return false; }
@@ -6649,9 +6739,11 @@ export default function App({ sharing = null } = {}) {
 
   return (
     <div className="tms-shell flex h-screen text-white overflow-hidden font-sans">
+      <TruckLights />
       {/* Left Sidebar - Order List */}
       <div className="tms-sidebar w-96 border-r border-[#1c2541] flex flex-col">
         <div className="tms-sidebar-header p-3 border-b border-[#1c2541]">
+          <ToolsDrawer selected={selectedBroker} count={brokers.length}>
           <div className="tms-top-controls flex flex-col items-start gap-2 mb-2">
             <button
               type="button"
@@ -6783,7 +6875,7 @@ export default function App({ sharing = null } = {}) {
           )}
 
           {/* Customer / Broker Buttons */}
-          <div className="flex flex-col gap-1.5 my-2">
+          <div className="tms-customers-section flex flex-col gap-1.5 my-2">
             <button
               type="button"
               onClick={() => setShowCustomers(open => !open)}
@@ -6813,6 +6905,7 @@ export default function App({ sharing = null } = {}) {
                 >
                   <span
                     className="truncate flex-1 cursor-pointer"
+                    data-close-drawer
                     onClick={() => handleSelectBroker(broker)}
                     title={sharedCustomers[broker] ? 'Shared customer – teammates see the same loads' : undefined}
                   >
@@ -6869,6 +6962,8 @@ export default function App({ sharing = null } = {}) {
               </button>
             ))}
           </div>
+
+          </ToolsDrawer>
 
           <div className="relative mb-2">
             <input
@@ -7158,7 +7253,7 @@ export default function App({ sharing = null } = {}) {
               <img className="tms-eagles-logo" src="/eagles-sidebar.png" alt="Eagles artwork" width="474" height="475" />
           </div>
           <div className="tms-brand-name">
-          <span>Broski Transportation &amp; Logistics</span>
+          <span className="tms-brand-title">Broski Transportation &amp; Logistics</span>
           {profile.phone ? (
             <a className="tms-brand-phone" href={`tel:+1${profile.phone}`}>
               {countryFlags[profile.flag] && (
@@ -7183,6 +7278,14 @@ export default function App({ sharing = null } = {}) {
               className={`text-white text-xs px-2.5 py-1 rounded font-medium cursor-pointer normal-case tracking-normal ${unseenInquiryCount ? 'bg-purple-600 hover:bg-purple-500' : 'bg-slate-700 hover:bg-slate-600'}`}
             >
               📨 Inquiries{unseenInquiryCount ? ` (${unseenInquiryCount} new)` : ''}
+            </button>
+            <button
+              type="button"
+              onClick={handleExportToLandstar}
+              className="tms-export-button"
+              title="Export the selected (or shown) loads to a Landstar bulk file and move them to ENT; the bot uploads it"
+            >
+              🚀 Export to Landstar
             </button>
             {showInquiries && (
               <InquiriesPanel
@@ -7401,9 +7504,6 @@ export default function App({ sharing = null } = {}) {
                 <button onClick={() => handleStatusChange('OPEN')} className="tms-open px-3 py-1 text-xs font-bold rounded cursor-pointer">OPEN</button>
                 <button onClick={() => handleStatusChange('ON HOLD')} className="bg-red-600 hover:bg-red-500 px-3 py-1 text-xs font-bold rounded text-white cursor-pointer">ON HOLD</button>
                 <button onClick={() => handleStatusChange('ENT')} className="tms-ent px-3 py-1 text-xs font-bold rounded cursor-pointer">ENT</button>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={handleExportToLandstar} className="bg-purple-600 hover:bg-purple-500 px-3 py-1 text-xs rounded text-white font-medium cursor-pointer">📥 Export to Landstar Bulk Excel & Move to ENT</button>
               </div>
             </div>
 

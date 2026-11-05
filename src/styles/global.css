@@ -740,3 +740,310 @@ body.tms-list-focus .tms-sidebar-header {
   transform: translateY(-1px);
   box-shadow: 0 0 0 1px rgba(253, 230, 138, 0.6), 0 0 26px rgba(249, 115, 22, 0.65);
 }
+
+/* Truck lights flash on sign-in + brighter BROSKI badge on the background art */
+.tms-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+.tms-truck-fx {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  container-type: size;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.tms-truck-box {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(100cqw, 150cqh);
+  aspect-ratio: 3 / 2;
+  transform: translate(-50%, -50%);
+}
+
+.tms-broski-badge {
+  position: absolute;
+  left: 10.5%;
+  top: 17.5%;
+  width: 16%;
+  height: 19.5%;
+  background-image: url('/broski-background.png');
+  /* 100/16 and 100/19.5 of the box, offset so the crop lines up with the art */
+  background-size: 625% 512.82%;
+  background-position: 12.5% 21.74%;
+  filter: brightness(1.35) saturate(1.35) contrast(1.1) drop-shadow(0 0 10px rgba(56, 189, 248, 0.85));
+  -webkit-mask-image: radial-gradient(ellipse closest-side, #000 72%, transparent 100%);
+  mask-image: radial-gradient(ellipse closest-side, #000 72%, transparent 100%);
+  transform: scale(1.08);
+}
+
+.tms-broski-badge.is-flashing {
+  animation: tms-badge-pulse 1s ease-in-out 6;
+}
+
+@keyframes tms-badge-pulse {
+  50% { filter: brightness(1.7) saturate(1.5) contrast(1.1) drop-shadow(0 0 22px rgba(56, 189, 248, 1)); }
+}
+
+.tms-truck-light {
+  position: absolute;
+  width: 1.6%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  mix-blend-mode: screen;
+  animation: tms-truck-blink 1s steps(1, end) 6;
+}
+
+.tms-truck-light.is-amber {
+  background: radial-gradient(circle, #fff7d6 0%, #fbbf24 30%, rgba(245, 158, 11, 0.55) 55%, transparent 72%);
+  box-shadow: 0 0 18px 6px rgba(251, 191, 36, 0.7);
+}
+
+.tms-truck-light.is-white {
+  width: 3%;
+  background: radial-gradient(circle, #ffffff 0%, #dbeafe 28%, rgba(147, 197, 253, 0.55) 55%, transparent 72%);
+  box-shadow: 0 0 26px 10px rgba(191, 219, 254, 0.65);
+}
+
+.tms-truck-light.is-glow {
+  width: 4%;
+  aspect-ratio: 3 / 1;
+  background: radial-gradient(ellipse, rgba(255, 255, 255, 0.95) 0%, rgba(186, 230, 253, 0.6) 40%, transparent 72%);
+}
+
+@keyframes tms-truck-blink {
+  0% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tms-truck-light,
+  .tms-broski-badge.is-flashing {
+    animation: none;
+  }
+  .tms-truck-light {
+    display: none;
+  }
+}
+
+/* Broski name in the top bar: bigger, chrome-to-cyan, glowing, with a shine sweep on sign-in */
+.tms-brand .tms-brand-title {
+  font-size: 19px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  background: linear-gradient(100deg, #ffffff 0%, #bae6fd 30%, #22d3ee 48%, #ffffff 52%, #60a5fa 70%, #ffffff 100%);
+  background-size: 250% 100%;
+  background-position: 100% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: none;
+  filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.9)) drop-shadow(0 2px 2px rgba(0, 0, 0, 0.8));
+  animation: tms-title-shine 2s ease-in-out 3;
+}
+
+@keyframes tms-title-shine {
+  0% { background-position: 100% 0; }
+  100% { background-position: 0% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tms-brand .tms-brand-title { animation: none; }
+}
+/* Exhaust smoke: soft puffs rise from both stacks, grow, drift back and fade, forever */
+.tms-smoke {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+.tms-smoke span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(min(100cqw, 150cqh) * 0.03);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(241, 245, 249, 0.75) 0%, rgba(226, 232, 240, 0.45) 30%, rgba(203, 213, 225, 0.15) 52%, transparent 70%);
+  opacity: 0;
+  animation: tms-smoke-rise 4.8s linear infinite;
+  will-change: transform, opacity;
+}
+
+.tms-smoke span:nth-child(even) {
+  animation-name: tms-smoke-rise-alt;
+}
+
+/* Same flow as the painted smoke: straight up out of the pipe tip, then rolling
+   up and back to the left through the painted cloud */
+@keyframes tms-smoke-rise {
+  0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0; }
+  10% { opacity: 0.85; }
+  18% { transform: translate(-55%, -130%) scale(0.7) rotate(15deg); }
+  50% { transform: translate(-190%, -200%) scale(1.7) rotate(50deg); opacity: 0.45; }
+  100% { transform: translate(-470%, -330%) scale(3.2) rotate(110deg); opacity: 0; }
+}
+
+@keyframes tms-smoke-rise-alt {
+  0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0; }
+  10% { opacity: 0.8; }
+  18% { transform: translate(-45%, -145%) scale(0.65) rotate(-10deg); }
+  50% { transform: translate(-165%, -235%) scale(1.6) rotate(-45deg); opacity: 0.4; }
+  100% { transform: translate(-430%, -390%) scale(3) rotate(-100deg); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tms-smoke { display: none; }
+}
+
+/* Slide-out drawer for the tools and the customer list */
+.tms-shell .tms-drawer-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  text-align: left;
+  color: #fff;
+  background: linear-gradient(90deg, rgba(8, 145, 178, 0.35), rgba(124, 58, 237, 0.2));
+  border: 1px solid rgba(34, 211, 238, 0.55);
+  border-radius: 12px;
+  box-shadow: 0 0 16px rgba(34, 211, 238, 0.18);
+  cursor: pointer;
+  transition: box-shadow 0.15s, background 0.15s;
+}
+
+.tms-shell .tms-drawer-trigger:hover {
+  background: linear-gradient(90deg, rgba(8, 145, 178, 0.5), rgba(124, 58, 237, 0.32));
+  box-shadow: 0 0 22px rgba(34, 211, 238, 0.4);
+}
+
+.tms-drawer-burger {
+  font-size: 20px;
+  line-height: 1;
+  color: #22d3ee;
+}
+
+.tms-drawer-trigger-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.tms-drawer-trigger-text span {
+  font-family: 'Orbitron', 'Inter', system-ui, sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #67e8f9;
+}
+
+.tms-drawer-trigger-text strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.tms-drawer-chevron {
+  font-size: 22px;
+  color: #67e8f9;
+}
+
+.tms-drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  visibility: hidden;
+  pointer-events: none;
+  transition: visibility 0s linear 0.3s;
+}
+
+.tms-drawer.is-open {
+  visibility: visible;
+  pointer-events: auto;
+  transition: visibility 0s;
+}
+
+.tms-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 18, 0.55);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.tms-drawer.is-open .tms-drawer-backdrop {
+  opacity: 1;
+}
+
+.tms-shell .tms-drawer-panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(420px, 92vw);
+  overflow-y: auto;
+  padding: 14px;
+  background: linear-gradient(180deg, rgba(8, 16, 33, 0.98), rgba(6, 12, 26, 0.99));
+  border-right: 1px solid rgba(34, 211, 238, 0.45);
+  box-shadow: 8px 0 40px rgba(0, 0, 0, 0.6), 0 0 30px rgba(34, 211, 238, 0.15);
+  transform: translateX(-104%);
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.tms-drawer.is-open .tms-drawer-panel {
+  transform: none;
+}
+
+.tms-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-family: 'Orbitron', 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #22d3ee;
+}
+
+.tms-shell .tms-drawer-close {
+  width: 30px;
+  height: 30px;
+  color: #fff;
+  background: rgba(34, 211, 238, 0.14);
+  border: 1px solid rgba(34, 211, 238, 0.5);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.tms-shell .tms-drawer-close:hover {
+  background: rgba(239, 68, 68, 0.5);
+}
+
+/* Inside the drawer everything is shown, so the old collapse toggles go away */
+.tms-drawer-panel .tms-top-controls > button:first-child,
+.tms-drawer-panel .tms-customers-section > button:first-child {
+  display: none;
+}
+
+body.tms-drawer-open .tms-sidebar {
+  backdrop-filter: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tms-shell .tms-drawer-panel,
+  .tms-drawer-backdrop {
+    transition: none;
+  }
+}

@@ -628,3 +628,48 @@ body.tms-compact-list .tms-load-card .tms-card-comment {
 body.tms-compact-list .space-y-2 > .tms-load-card + .tms-load-card {
   margin-top: 4px;
 }
+
+/* Full-height load list */
+.tms-list-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(56, 189, 248, 0.28);
+  background: rgba(6, 13, 28, 0.85);
+}
+
+.tms-list-bar-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Orbitron', 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #22d3ee;
+}
+
+.tms-shell .tms-list-bar-button {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(34, 211, 238, 0.16);
+  border: 1px solid rgba(34, 211, 238, 0.55);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.tms-shell .tms-list-bar-button:hover {
+  background: rgba(34, 211, 238, 0.3);
+  box-shadow: 0 0 12px rgba(34, 211, 238, 0.4);
+}
+
+body.tms-list-focus .tms-sidebar-header {
+  display: none;
+}

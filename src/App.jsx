@@ -3735,6 +3735,31 @@ function CompactListToggle() {
   );
 }
 
+// Full-height list: hides everything above the load list (logo, tools, customers,
+// filters) so the loads fill the whole sidebar. Remembered per browser.
+const listFocusKey = 'landstar_listFocus';
+
+function ListFocusToggle() {
+  const [focus, setFocus] = useState(() => {
+    try { return localStorage.getItem(listFocusKey) === 'true'; } catch { return false; }
+  });
+  useEffect(() => {
+    if (typeof document !== 'undefined') document.body.classList.toggle('tms-list-focus', focus);
+    try { localStorage.setItem(listFocusKey, String(focus)); } catch { /* storage unavailable */ }
+  }, [focus]);
+  return (
+    <button
+      type="button"
+      onClick={() => setFocus(on => !on)}
+      aria-pressed={focus}
+      title={focus ? 'Show the tools, customers and filters again' : 'Hide everything above the list so the loads fill the sidebar'}
+      className="tms-list-bar-button"
+    >
+      {focus ? '⤡ Show controls' : '⤢ Full-height list'}
+    </button>
+  );
+}
+
 function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
   return (
     <div className="fixed right-4 top-16 z-40 w-[26rem] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto bg-[#121829] border border-purple-500 rounded-lg shadow-2xl p-3 normal-case tracking-normal text-left" role="dialog" aria-label="Driver inquiries">
@@ -7085,6 +7110,10 @@ export default function App({ sharing = null } = {}) {
           </div>
         </div>
 
+        <div className="tms-list-bar">
+          <span className="tms-list-bar-title" title={selectedBroker}>{selectedBroker}</span>
+          <ListFocusToggle />
+        </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-2">
           {visibleOrderEntries.length === 0 ? (
             <div className="text-center text-gray-500 text-xs py-10">{isGlobalSearch ? 'No matching loads across all customers with the current filters.' : `No loads found for ${selectedBroker}. Click "📂 Import Excel" above!`}</div>

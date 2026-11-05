@@ -4046,17 +4046,34 @@ export function BotStatusLight() {
       </button>
     );
   }
+  const detail = status.state === 'off' ? '' : describeBotProgress(status);
   return (
     <span
-      className="inline-flex items-center gap-1.5 bg-slate-800 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal"
-      title={status.message || style.label}
+      className="inline-flex items-center gap-1.5 bg-slate-800 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal max-w-full"
+      title={[style.label, detail].filter(Boolean).join(' · ') || status.message}
       role="status"
       aria-live="polite"
     >
       {dot}
       {style.label}
+      {detail && <span className="text-slate-300 font-normal truncate max-w-[22rem]">· {detail}</span>}
     </span>
   );
+}
+
+// The bot light's progress line: files uploaded / still waiting, and what the bot is on.
+// "Rate-checking R_X_O_2429200___ATZ_9of108" -> "12 uploaded · 94 waiting · Rate-checking file 9 of 108"
+function describeBotProgress(status) {
+  const parts = [];
+  const progress = status?.progress;
+  if (progress && (progress.uploaded > 0 || progress.waiting > 0)) {
+    parts.push(`${progress.uploaded} uploaded`);
+    if (progress.waiting > 0) parts.push(`${progress.waiting} waiting`);
+  }
+  // Export file names end in "_26of108": show that as "file 26 of 108".
+  const message = String(status?.message || '').trim().replace(/\S*?(\d+)of(\d+)\b/, 'file $1 of $2');
+  if (/^(Rate-checking|Uploading|Removing|Checking)/i.test(message)) parts.push(message);
+  return parts.join(' · ');
 }
 
 export default function App({ sharing = null } = {}) {

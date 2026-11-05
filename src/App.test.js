@@ -28,7 +28,7 @@ export {
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy,
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
@@ -2392,4 +2392,12 @@ test('Copy driver info puts the driver details in the dispatch-chat format', () 
 test('Copy Order # by the title also copies the previous empty location', () => {
   assert.equal(policy.formatOrderCopy({ ...load, id: '24581209', emptyLocation: 'Toledo, OH' }), '24581209\nToledo, OH');
   assert.equal(policy.formatOrderCopy({ ...load, id: '24581209', emptyLocation: '  ' }), '24581209', 'no empty location: just the order #');
+});
+
+test('the bot light shows upload progress and what the bot is working on', () => {
+  assert.equal(policy.describeBotProgress({ state: 'uploading', message: 'Uploading R_X_O_2429200___ATZ_9of108', progress: { uploaded: 12, waiting: 94 } }),
+    '12 uploaded · 94 waiting · Uploading file 9 of 108');
+  assert.equal(policy.describeBotProgress({ state: 'logged-in', message: 'Watching for exports · last upload 10:05 AM', progress: { uploaded: 106, waiting: 0 } }),
+    '106 uploaded', 'idle messages are not repeated');
+  assert.equal(policy.describeBotProgress({ state: 'logged-in', message: 'Watching for exports' }), '');
 });

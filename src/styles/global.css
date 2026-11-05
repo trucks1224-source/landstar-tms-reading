@@ -789,45 +789,86 @@ body.tms-list-focus .tms-sidebar-header {
   50% { filter: brightness(1.7) saturate(1.5) contrast(1.1) drop-shadow(0 0 22px rgba(56, 189, 248, 1)); }
 }
 
+/* The art's own lights, glowing in place */
+/* Yellow lights everywhere except the white under-glow; change these to recolor them */
+.tms-truck-lit {
+  position: absolute;
+  inset: 0;
+  --truck-light-core: #fff7cc;
+  --truck-light-glow: rgba(250, 204, 21, 0.95);
+  --truck-light-halo: rgba(234, 179, 8, 0.55);
+}
+
+.tms-truck-glow {
+  position: absolute;
+  inset: 0;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+}
+
+/* Markers, step lights, headlights and fog lights, painted over in yellow */
+.tms-truck-glow.is-yellow {
+  background-image: url('/truck-lights-yellow.png');
+  filter: drop-shadow(0 0 3px var(--truck-light-glow)) drop-shadow(0 0 10px var(--truck-light-halo));
+}
+
+/* The under-glow stays white */
+.tms-truck-glow.is-under {
+  background-image: url('/truck-lights-under.png');
+  mix-blend-mode: screen;
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.95)) drop-shadow(0 0 12px rgba(224, 242, 254, 0.6));
+}
+
+/* Added lights: LED strips on the mirrors and a row up the left exhaust stack */
 .tms-truck-light {
   position: absolute;
-  width: 1.6%;
+  width: 0.75%;
   aspect-ratio: 1;
   border-radius: 50%;
   transform: translate(-50%, -50%);
+  background: radial-gradient(circle, #ffffff 0%, var(--truck-light-core) 35%, var(--truck-light-glow) 60%, transparent 75%);
+  box-shadow: 0 0 6px 2px var(--truck-light-glow), 0 0 14px 4px var(--truck-light-halo);
   mix-blend-mode: screen;
+}
+
+.tms-truck-light.is-mirror {
+  width: 0.32%;
+  height: 4.4%;
+  aspect-ratio: auto;
+  border-radius: 999px;
+  background: linear-gradient(180deg, transparent 0%, var(--truck-light-core) 12%, #ffffff 50%, var(--truck-light-core) 88%, transparent 100%);
+  box-shadow: 0 0 6px 2px var(--truck-light-glow), 0 0 16px 5px var(--truck-light-halo);
+}
+
+.tms-truck-light.is-stack {
+  width: 0.55%;
+  animation: tms-stack-chase 2.4s ease-in-out infinite;
+  animation-delay: calc(var(--chase) * 0.15s);
+}
+
+/* A soft pulse that climbs the stacks */
+@keyframes tms-stack-chase {
+  0%, 100% { opacity: 0.55; }
+  20% { opacity: 1; filter: brightness(1.5); }
+}
+
+/* On sign-in every light flashes together like four-ways, then stays on */
+.tms-truck-lit.is-flashing .tms-truck-glow,
+.tms-truck-lit.is-flashing .tms-truck-light {
   animation: tms-truck-blink 1s steps(1, end) 6;
-}
-
-.tms-truck-light.is-amber {
-  background: radial-gradient(circle, #fff7d6 0%, #fbbf24 30%, rgba(245, 158, 11, 0.55) 55%, transparent 72%);
-  box-shadow: 0 0 18px 6px rgba(251, 191, 36, 0.7);
-}
-
-.tms-truck-light.is-white {
-  width: 3%;
-  background: radial-gradient(circle, #ffffff 0%, #dbeafe 28%, rgba(147, 197, 253, 0.55) 55%, transparent 72%);
-  box-shadow: 0 0 26px 10px rgba(191, 219, 254, 0.65);
-}
-
-.tms-truck-light.is-glow {
-  width: 4%;
-  aspect-ratio: 3 / 1;
-  background: radial-gradient(ellipse, rgba(255, 255, 255, 0.95) 0%, rgba(186, 230, 253, 0.6) 40%, transparent 72%);
 }
 
 @keyframes tms-truck-blink {
   0% { opacity: 1; }
-  50% { opacity: 0; }
+  50% { opacity: 0.08; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tms-truck-light,
+  .tms-truck-lit.is-flashing .tms-truck-glow,
+  .tms-truck-lit.is-flashing .tms-truck-light,
+  .tms-truck-light.is-stack,
   .tms-broski-badge.is-flashing {
     animation: none;
-  }
-  .tms-truck-light {
-    display: none;
   }
 }
 
@@ -1046,4 +1087,26 @@ body.tms-drawer-open .tms-sidebar {
   .tms-drawer-backdrop {
     transition: none;
   }
+}
+
+/* Drag customers to reorder them */
+.tms-shell .tms-customer[draggable='true'] {
+  cursor: grab;
+}
+
+.tms-drag-handle {
+  margin-right: 8px;
+  font-size: 14px;
+  line-height: 1;
+  color: rgba(103, 232, 249, 0.6);
+  cursor: grab;
+}
+
+.tms-shell .tms-customer.is-dragging {
+  opacity: 0.45;
+}
+
+.tms-shell .tms-customer.is-drop-target {
+  border-color: #22d3ee;
+  box-shadow: 0 -3px 0 #22d3ee, 0 0 14px rgba(34, 211, 238, 0.45);
 }

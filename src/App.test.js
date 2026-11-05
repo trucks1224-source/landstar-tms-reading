@@ -29,7 +29,7 @@ export {
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity,
-  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary
+  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -2313,4 +2313,12 @@ test('the Team switch decides team, overriding team equipment codes', () => {
   const team = app.find(node => node.props?.id === 'load-team');
   assert.equal(team.type, 'select');
   assert.equal(typeof team.props.onChange, 'function');
+});
+
+test('dragging a customer onto another moves it to that spot', () => {
+  const list = ['A', 'B', 'C', 'D'];
+  assert.deepEqual(moveCustomer(list, 'D', 'B'), ['A', 'D', 'B', 'C']);
+  assert.deepEqual(moveCustomer(list, 'A', 'C'), ['B', 'C', 'A', 'D']);
+  assert.equal(moveCustomer(list, 'A', 'A'), list);
+  assert.equal(moveCustomer(list, 'X', 'A'), list);
 });

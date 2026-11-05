@@ -3245,6 +3245,18 @@ function getLaneRateHistory(history, customer, order) {
   return [...exact.sort(newestFirst), ...similar.sort(newestFirst)];
 }
 
+// Moves a customer to where another one sits (drag-and-drop in the customer list).
+function moveCustomer(list, name, targetName) {
+  const from = list.indexOf(name);
+  const to = list.indexOf(targetName);
+  if (from < 0 || to < 0 || from === to) return list;
+  const next = list.filter(item => item !== name);
+  next.splice(to, 0, name);
+  return next;
+}
+
+const customerDragType = 'text/x-tms-customer';
+
 function normalizeBrokerList(value) {
   const brokerList = Array.isArray(value) ? value : ['Para 1522166 - ATZ', rxoCustomerName];
   const normalizedBrokers = Array.from(new Set(brokerList.map(normalizeCustomerName).filter(Boolean)));
@@ -3715,20 +3727,18 @@ function LoadListHistory({ onRestore }) {
 // filters) so the loads fill the whole sidebar. Remembered per browser.
 const listFocusKey = 'landstar_listFocus';
 
-// Every light on the background truck flashes for a few seconds after sign-in, and the
-// BROSKI badge on the art gets a brighter, glowing copy. Positions are percentages of
-// the 1152x768 background image, which the shell shows centered with "contain".
+// The truck's own painted lights (roof and step markers, headlights, fog lights,
+// under-glow) are cut out of the art into two layers so the glow sits exactly on them:
+// public/truck-lights-yellow.png (markers, step lights, headlights, fog lights) and
+// public/truck-lights-under.png (the white under-glow). They flash for a few seconds after sign-in, then stay on.
+// Lights the art doesn't have (mirrors, exhaust stacks) are added as dots; positions
+// are percentages of the 1152x768 background, shown centered with "contain".
 const truckLights = [
-  // amber roof markers
-  ['amber', 52.5, 30.8], ['amber', 54.1, 30.6], ['amber', 56, 30.4], ['amber', 57.8, 30.6],
-  // amber side markers by the fuel tank
-  ['amber', 38.8, 54.8], ['amber', 40.5, 54.8], ['amber', 42.3, 54.8],
-  // front turn signals (the four-ways)
-  ['amber', 56.5, 52.9], ['amber', 72.8, 48.4],
-  // headlights and bumper lights
-  ['white', 58.8, 54], ['white', 73.1, 50.7], ['white', 60.3, 60.4], ['white', 74, 58.5],
-  // under-glow
-  ['glow', 38.8, 64.7], ['glow', 45, 65.3], ['glow', 50.6, 65.7], ['glow', 65, 63.8], ['glow', 75, 62.3],
+  // LED strips down the outer edge of each mirror
+  ['mirror', 45.35, 40.2], ['mirror', 64.15, 37.9],
+  // lights running up the left exhaust stack, bottom to top
+  ['stack', 43.6, 54.6], ['stack', 43.3, 51], ['stack', 42.9, 47.4], ['stack', 42.6, 43.8], ['stack', 42.3, 40.2],
+  ['stack', 42, 36.6], ['stack', 41.7, 33], ['stack', 41.4, 29.4],
 ];
 // Exhaust stack tops; smoke rises from here all the time.
 const truckStacks = [[41, 27.6], [56.3, 22.8]];
@@ -3797,9 +3807,17 @@ function TruckLights() {
             ))}
           </div>
         ))}
-        {flashing && truckLights.map(([kind, x, y], index) => (
-          <span key={index} className={`tms-truck-light is-${kind}`} style={{ left: `${x}%`, top: `${y}%` }} />
-        ))}
+        <div className={`tms-truck-lit${flashing ? ' is-flashing' : ''}`}>
+          <div className="tms-truck-glow is-yellow" />
+          <div className="tms-truck-glow is-under" />
+          {truckLights.map(([kind, x, y], index) => (
+            <span
+              key={index}
+              className={`tms-truck-light is-${kind}`}
+              style={{ left: `${x}%`, top: `${y}%`, '--chase': index }}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -6900,9 +6918,31 @@ export default function App({ sharing = null } = {}) {
               ) : (
                 <div
                   key={broker}
+                  draggable
+                  title="Drag to change the order"
+                  onDragStart={event => {
+                    event.dataTransfer.setData(customerDragType, broker);
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.currentTarget.classList.add('is-dragging');
+                  }}
+                  onDragEnd={event => event.currentTarget.classList.remove('is-dragging')}
+                  onDragOver={event => {
+                    if (![...event.dataTransfer.types].includes(customerDragType)) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'move';
+                    event.currentTarget.classList.add('is-drop-target');
+                  }}
+                  onDragLeave={event => event.currentTarget.classList.remove('is-drop-target')}
+                  onDrop={event => {
+                    event.preventDefault();
+                    event.currentTarget.classList.remove('is-drop-target');
+                    const dragged = event.dataTransfer.getData(customerDragType);
+                    if (dragged && dragged !== broker) setBrokers(current => moveCustomer(current, dragged, broker));
+                  }}
                   className={`tms-customer flex items-center justify-between px-2.5 py-1.5 text-[11px] rounded font-medium border transition-colors ${selectedBroker === broker ? 'bg-blue-600/30 border-blue-500 text-white' : 'bg-[#1c2541] border-[#253259] text-gray-300 hover:bg-[#253259]'}`}
                   data-selected={selectedBroker === broker}
                 >
+                  <span className="tms-drag-handle" aria-hidden="true">⠿</span>
                   <span
                     className="truncate flex-1 cursor-pointer"
                     data-close-drawer

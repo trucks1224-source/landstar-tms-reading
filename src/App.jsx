@@ -140,11 +140,27 @@ function autoFillLoadZipCodes(loads) {
   });
 }
 
+// A load added by hand (＋ Add Load). It stays in the TMS until you delete it: imports of
+// the customer's list never remove it, it never expires, and its Landstar posting is never
+// sent to the bot for removal.
+function createManualLoad(id, fields = {}) {
+  return {
+    id: String(id || '').trim(),
+    eCode: 'VZ', status: 'OPEN', tag: 'OPEN', route: '', puDate: 'PU: Today', delDate: 'DFL: Upcoming',
+    pickupTime: '', origCity: '', origSt: '', origZip: '', weight: '', deliveryTime: '',
+    destCity: '', destSt: '', destZip: '', miles: '', planningComment: 'Added by hand',
+    carrier: '', driver: '', truck: '', trailer: '', rateInput: '', brokerable: 'false', notes: '',
+    ...fields,
+    manualEntry: true
+  };
+}
+
 function removeExpiredExportedLoads(customerOrders, now = Date.now()) {
   let changed = false;
   const nextOrders = {};
   Object.entries(customerOrders).forEach(([customer, loads]) => {
     nextOrders[customer] = loads.filter(load => {
+      if (load.manualEntry) return true;
       if (load.status !== 'ENT' || !load.landstarExportedAt) return true;
       const exportedAt = Date.parse(load.landstarExportedAt);
       const keep = !Number.isFinite(exportedAt) || now - exportedAt < exportedLoadRetentionMs;
@@ -429,6 +445,7 @@ function parseWeightPounds(value) {
 
 function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
   const isParaImport = isParaCustomer(selectedBroker);
+  const holdsRedRows = holdsRedScreenshotLoads(selectedBroker);
   const cleanCell = value => value
     .replace(/[|[\]]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -580,9 +597,9 @@ function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
       id: id || `IMG-${Date.now()}-${index}`,
       eCode: isTeamEquipment(equipment) ? 'V' : equipment || (isRxoCustomer(selectedBroker) ? 'VAN:VAN' : 'VZ'),
       team: isTeamEquipment(equipment) ? 'true' : 'false',
-      status: isParaImport && line.orderNumberHighlighted ? 'ON HOLD' : 'OPEN',
-      tag: isParaImport && line.orderNumberHighlighted ? 'HOLD' : 'OPEN',
-      ...(isParaImport && typeof line.orderNumberHighlighted === 'boolean'
+      status: holdsRedRows && line.orderNumberHighlighted ? 'ON HOLD' : 'OPEN',
+      tag: holdsRedRows && line.orderNumberHighlighted ? 'HOLD' : 'OPEN',
+      ...(holdsRedRows && typeof line.orderNumberHighlighted === 'boolean'
         ? { screenshotStatus: line.orderNumberHighlighted ? 'ON HOLD' : 'OPEN' }
         : {}),
       route: `${origin}${originState ? `, ${originState}` : ''} → ${destination}${destinationState ? `, ${destinationState}` : ''}`,
@@ -1339,7 +1356,7 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       origSt: origin.state,
       origZip: '',
       weight: hasWeight ? `${weight} lbs` : '40000 lbs',
-      deliveryTime: String(selectedBroker || '').includes('965974') ? '' : '0800 - 1600',
+      deliveryTime: isNolanCustomer(selectedBroker) ? '' : '0800 - 1600',
       destCity: destination.city,
       destSt: destination.state,
       destZip: '',
@@ -1960,7 +1977,9 @@ function buildLandstarPosting(record) {
 function findDroppedPostings(customer, importedLoads, existingLoads) {
   const importedIds = new Set(importedLoads.map(load => normalizeLoadId(getBaseLoadId(load))).filter(Boolean));
   if (!importedIds.size) return [];
-  return existingLoads.filter(load => load.landstarPosting && !importedIds.has(normalizeLoadId(getBaseLoadId(load))));
+  // Loads added by hand are never taken off Landstar for being missing from the list.
+  return existingLoads.filter(load => load.landstarPosting && !load.manualEntry
+    && !importedIds.has(normalizeLoadId(getBaseLoadId(load))));
 }
 
 // Tabs of an Excel workbook that hold loads: the first tab always (as before), plus any
@@ -2405,8 +2424,15 @@ function normalizeCustomerName(name) {
   return String(name || '').trim();
 }
 
+// Customer rules match one exact account. Accounts can share a name and number and differ
+// only by the letter at the end ("Para 1522166 - ATZ" vs "Para 1522166 - ATZ H"): those
+// are separate accounts, so a rule for one must never check just the name or number.
+function isNolanCustomer(name) {
+  return normalizeCustomerName(name) === ntgCustomerName;
+}
+
 function getImportedLoadSelection(customer, importedLoads) {
-  return normalizeCustomerName(customer) === ntgCustomerName
+  return isNolanCustomer(customer)
     ? Array.from(new Set(importedLoads.map(load => load.id)))
     : [];
 }
@@ -2432,6 +2458,30 @@ function isRxoSkippedVanLoad(customer, load) {
   return vanEquipmentCodes.has(getLandstarEquipmentCode(load?.eCode));
 }
 
+// R X O 2429200 - ATZ only (not ATZ P): van loads priced from DAT post under the DAT rate.
+// Under $1,000: $50 less; $1,000 to under $1,600: $100 less; $1,600 to $3,500: $200 less;
+// over $3,500: $300 less. Hazmat and tanker loads keep the full rate (hazmat must stay highest).
+// When another agent has the load on the board, the bot posts their rate + $25 instead.
+function getRxoAtzDatVanDiscount(customer, load, rate) {
+  if (normalizeCustomerName(customer) !== rxoCustomerName) return 0;
+  if (!['dat-api', 'dat-screenshot'].includes(load?.rateSource)) return 0;
+  if (!vanEquipmentCodes.has(getLandstarEquipmentCode(load?.eCode))) return 0;
+  if (isHazmatLoad(load) || isTankerLoad(load)) return 0;
+  if (!(rate > 0)) return 0;
+  if (rate < 1000) return 50;
+  if (rate < 1600) return 100;
+  if (rate <= 3500) return 200;
+  return 300;
+}
+
+// R X O 2429200 - ATZ only: a load that picks up and delivers in the same city is never exported.
+function isRxoSameCityLoad(customer, load) {
+  if (normalizeCustomerName(customer) !== rxoCustomerName) return false;
+  const place = (city, state) => `${String(city || '').toUpperCase().replace(/[^A-Z]/g, '')}|${String(state || '').trim().toUpperCase()}`;
+  const origin = place(load?.origCity, load?.origSt);
+  return origin !== '|' && !origin.startsWith('|') && origin === place(load?.destCity, load?.destSt);
+}
+
 // Loads picking up in or delivering to Mexico are never imported or exported, for every
 // customer. Customer lists mark Mexico with a MX/MEX country code or a Mexican state code
 // (EM, JA, GJ, BJ, NX, CH, CU, ...): any two-letter region that is not a US state or a
@@ -2451,6 +2501,14 @@ function isParaCustomer(name) {
   return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === 'PARA1522166ATZ';
 }
 
+// Customers whose screenshots mark loads on hold with a red order number: a red order #
+// imports as ON HOLD, any other as OPEN. Para 1522166 - ATZ and Para 1522166 - ATZ H.
+const redHoldScreenshotCustomers = new Set(['PARA1522166ATZ', 'PARA1522166ATZH']);
+
+function holdsRedScreenshotLoads(name) {
+  return redHoldScreenshotCustomers.has(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
+}
+
 function isCh593772Customer(name) {
   return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === 'CH593772ATZ';
 }
@@ -2466,7 +2524,62 @@ function preservesImportedLoadStatus(name) {
   return importStatusPreservationCustomers.has(normalized);
 }
 
+// When Google Routes can't answer, driving miles are estimated from the two ZIP codes:
+// straight-line miles between them times 1.2 (roads are about 20% longer than a straight line).
+const zipRoadMilesFactor = 1.2;
+
+function estimateRoadMilesFromZips(zipData, originZip, destZip) {
+  const zip5 = value => String(value || '').trim().slice(0, 5);
+  if (!/^\d{5}$/.test(zip5(originZip)) || !/^\d{5}$/.test(zip5(destZip))) return '';
+  if (!zipData?.lookup?.(zip5(originZip)) || !zipData?.lookup?.(zip5(destZip))) return '';
+  const straightMiles = Number(zipData.distance(zip5(originZip), zip5(destZip)));
+  return straightMiles > 0 ? String(Math.round(straightMiles * zipRoadMilesFactor)) : '';
+}
+
+// Google Routes charges per lookup, so the driving miles for each lane are saved the first
+// time Google answers and reused after that (roads don't move). A lane is its origin and
+// destination ZIPs, or city + state when a ZIP is missing. Saved in this browser only.
+const roadMilesCacheKey = 'landstar_roadMilesCache';
+
+function getRoadMilesLaneKey(order) {
+  const zip5 = value => String(value || '').trim().slice(0, 5);
+  if (/^\d{5}$/.test(zip5(order?.origZip)) && /^\d{5}$/.test(zip5(order?.destZip))) {
+    return `${zip5(order.origZip)}>${zip5(order.destZip)}`;
+  }
+  const place = (city, state) => {
+    const cityKey = String(city || '').toUpperCase().replace(/[^A-Z]/g, '');
+    const stateKey = String(state || '').trim().toUpperCase();
+    return cityKey && stateKey ? `${cityKey},${stateKey}` : '';
+  };
+  const origin = place(order?.origCity, order?.origSt);
+  const destination = place(order?.destCity, order?.destSt);
+  return origin && destination ? `${origin}>${destination}` : '';
+}
+
+function readRoadMilesCache() {
+  try {
+    const saved = JSON.parse(globalThis.localStorage?.getItem(roadMilesCacheKey) || '{}');
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveRoadMiles(laneKey, miles) {
+  if (!laneKey) return;
+  try {
+    const cache = readRoadMilesCache();
+    cache[laneKey] = miles;
+    globalThis.localStorage?.setItem(roadMilesCacheKey, JSON.stringify(cache));
+  } catch (error) {
+    console.error('Could not save the lane miles:', error);
+  }
+}
+
 async function getGoogleRoadMiles(order) {
+  const laneKey = getRoadMilesLaneKey(order);
+  const savedMiles = laneKey ? readRoadMilesCache()[laneKey] : undefined;
+  if (Number(savedMiles) > 0) return String(savedMiles);
   const response = await fetch('/api/road-miles', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2485,6 +2598,7 @@ async function getGoogleRoadMiles(order) {
   if (!response.ok || !Number.isFinite(result?.miles) || result.miles <= 0) {
     throw new Error(`Could not calculate driving miles for load ${order.id}: ${result?.error || 'Google Routes returned no valid mileage.'}`);
   }
+  saveRoadMiles(laneKey, String(result.miles));
   return String(result.miles);
 }
 
@@ -2755,7 +2869,7 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
       merged.rateSource = 'user-entered';
     }
     delete merged.landstarExportedAt;
-    if (isParaCustomer(customer) && load.screenshotStatus === 'ON HOLD') {
+    if (holdsRedScreenshotLoads(customer) && load.screenshotStatus === 'ON HOLD') {
       merged.status = 'ON HOLD';
       merged.tag = 'HOLD';
     }
@@ -2775,6 +2889,8 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
     if (matchedIds.has(String(load.id))) return false;
     // Booked loads are covered; keep them even when the customer drops them from the list.
     if (load.status === 'BOOKED') return true;
+    // Loads added by hand stay until you delete them.
+    if (load.manualEntry) return true;
     // Loads from before the RXO van state rule was added are cleared out on the next import.
     if (isRxoSkippedVanLoad(customer, load)) return false;
     // Same for loads to or from Mexico imported before that rule.
@@ -2803,7 +2919,7 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
   return {
     loads, additive, processedLoads: mergedLoads, droppedPostings, skippedRxoVanCount, skippedMexicoCount, skippedEquipmentCount,
     laneDayDuplicateCount,
-    usesScreenshotStatus: isParaCustomer(customer)
+    usesScreenshotStatus: holdsRedScreenshotLoads(customer)
       && importedLoads.some(load => ['ON HOLD', 'OPEN'].includes(load.screenshotStatus)),
     duplicateCount,
     removedCount: existingLoads.filter(load => !matchedIds.has(String(load.id)) && !retained.includes(load)).length
@@ -4517,6 +4633,64 @@ export default function App({ sharing = null } = {}) {
     saveLoad(updatedOrder);
   };
 
+  // A load with both ZIPs and no miles gets its driving miles filled in automatically, a
+  // moment after you stop typing: from Google Routes, or estimated from the ZIPs when
+  // Google can't answer (the planning comment says which).
+  useEffect(() => {
+    const order = selectedOrder;
+    if (!order || Number(normalizeMilesValue(order.miles)) > 0) return undefined;
+    const originZip = String(order.origZip || '').trim();
+    const destZip = String(order.destZip || '').trim();
+    if (!/^\d{5}$/.test(originZip) || !/^\d{5}$/.test(destZip)) return undefined;
+    const customer = selectedBroker;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      let miles = '';
+      let note = '';
+      try {
+        miles = await getGoogleRoadMiles(order);
+        note = 'driving miles calculated by Google Routes';
+      } catch (error) {
+        try {
+          const zipModule = await import('zipcodes');
+          miles = estimateRoadMilesFromZips(zipModule.default || zipModule, originZip, destZip);
+          note = 'miles estimated from the ZIPs (Google Routes unavailable); check before posting';
+        } catch (zipError) {
+          console.error('Could not estimate miles from the ZIPs:', zipError);
+        }
+      }
+      if (cancelled || !miles) return;
+      const fill = load => (String(load.id) === String(order.id)
+        && !(Number(normalizeMilesValue(load.miles)) > 0)
+        && String(load.origZip || '').trim() === originZip && String(load.destZip || '').trim() === destZip)
+        ? { ...load, miles, planningComment: load.planningComment ? `${load.planningComment}; ${note}` : note }
+        : load;
+      setCustomerOrdersMap(prev => ({ ...prev, [customer]: (prev[customer] || []).map(fill) }));
+      setSelectedOrder(current => (current ? fill(current) : current));
+    }, 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [selectedOrder?.id, selectedOrder?.origZip, selectedOrder?.destZip, selectedOrder?.miles, selectedBroker]);
+
+  // ＋ Add Load: a blank load in the selected customer, filled in with the order editor.
+  const handleAddManualLoad = () => {
+    if (!selectedBroker) return;
+    const id = String(window.prompt(`Order # of the load to add to ${selectedBroker}:`) || '').trim();
+    if (!id) return;
+    const existing = orders.find(o => normalizeLoadId(o.id) === normalizeLoadId(id));
+    if (existing) {
+      const kept = { ...existing, manualEntry: true };
+      saveLoad(kept);
+      alert(`Load #${id} is already in ${selectedBroker}. It is now marked "added by hand", so imports will not remove it.`);
+      return;
+    }
+    const load = createManualLoad(id);
+    setCustomerOrdersMap(prev => ({ ...prev, [selectedBroker]: [load, ...(prev[selectedBroker] || [])] }));
+    setSelectedOrder(load);
+  };
+
   const handleDelete = () => {
     if (!selectedOrder) return;
     const remaining = orders.filter(o => o.id !== selectedOrder.id);
@@ -6117,18 +6291,22 @@ export default function App({ sharing = null } = {}) {
     // RXO ATZ van loads picking up in skipped states are never posted.
     const notRxoSkipped = unbookedLoads.filter(o => !isRxoSkippedVanLoad(selectedBroker, o));
     const skippedRxoVanCount = unbookedLoads.length - notRxoSkipped.length;
+    // RXO ATZ loads that pick up and deliver in the same city are never posted.
+    const notSameCity = notRxoSkipped.filter(o => !isRxoSameCityLoad(selectedBroker, o));
+    const skippedSameCityCount = notRxoSkipped.length - notSameCity.length;
     // Loads to or from Mexico are never posted.
-    const notMexico = notRxoSkipped.filter(o => !isMexicoLoad(o));
-    const skippedMexicoCount = notRxoSkipped.length - notMexico.length;
+    const notMexico = notSameCity.filter(o => !isMexicoLoad(o));
+    const skippedMexicoCount = notSameCity.length - notMexico.length;
     // Intermodal ("INT") and oversized equipment is never posted.
     const loadsToExport = notMexico.filter(o => !isSkippableEquipment(o.eCode));
     const skippedEquipmentExportCount = notMexico.length - loadsToExport.length;
 
     if (loadsToExport.length === 0) {
-      alert(skippedBookedCount || skippedRxoVanCount || skippedMexicoCount || skippedEquipmentExportCount
+      alert(skippedBookedCount || skippedRxoVanCount || skippedSameCityCount || skippedMexicoCount || skippedEquipmentExportCount
         ? `Nothing to export: ${[
           skippedBookedCount && `${skippedBookedCount} booked load(s)`,
           skippedRxoVanCount && `${skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID`,
+          skippedSameCityCount && `${skippedSameCityCount} RXO load(s) picking up and delivering in the same city`,
           skippedMexicoCount && `${skippedMexicoCount} load(s) to or from Mexico`,
           skippedEquipmentExportCount && `${skippedEquipmentExportCount} intermodal (INT) or oversized load(s)`
         ].filter(Boolean).join(' and ')} are not exported to Landstar.`
@@ -6310,7 +6488,9 @@ export default function App({ sharing = null } = {}) {
       const commodity = getLoadCommodity(ord);
       const miles = Number(normalizeMilesValue(ord.miles));
       const weight = parseWeightPounds(ord.weight);
-      const rate = Number(String(ord.rateInput || '').replace(/[$,]/g, ''));
+      const quotedRate = Number(String(ord.rateInput || '').replace(/[$,]/g, ''));
+      // RXO ATZ van loads priced from DAT post under the DAT rate (see getRxoAtzDatVanDiscount).
+      const rate = quotedRate - getRxoAtzDatVanDiscount(selectedBroker, ord, quotedRate);
       const postingCode = String(ord.postingCode || profile.postingCode).trim().toUpperCase();
       const visibilityCode = exportVisibilityGroup;
       const brokerable = ['true', 'y'].includes(String(ord.brokerable || '').trim().toLowerCase()) ? 'Y' : 'N';
@@ -6721,6 +6901,9 @@ export default function App({ sharing = null } = {}) {
     if (skippedRxoVanCount) {
       skippedNotes.push(`Left out ${skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID (not posted for RXO).`);
     }
+    if (skippedSameCityCount) {
+      skippedNotes.push(`Left out ${skippedSameCityCount} RXO load(s) picking up and delivering in the same city (not posted for RXO).`);
+    }
     if (skippedMexicoCount) {
       skippedNotes.push(`Left out ${skippedMexicoCount} load(s) to or from Mexico (never posted).`);
     }
@@ -6913,6 +7096,15 @@ export default function App({ sharing = null } = {}) {
               <div className="tms-tool-group">
                 <span className="tms-tool-label">Import</span>
                 <div className="tms-tool-row">
+                  <button
+                    type="button"
+                    onClick={handleAddManualLoad}
+                    className="tms-tool"
+                    data-accent="emerald"
+                    title="Add one load by hand to the selected customer and fill it in. It stays until you delete it: importing the customer's list never removes it."
+                  >
+                    ＋ Add Load
+                  </button>
                   <label className={`tms-tool cursor-pointer ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} data-accent="emerald" title="AI Screenshot Import">
                     <span>{isImportingScreenshot && screenshotImportMode === 'ai' ? screenshotImportProgress : '✨ Customer Screenshot'}</span>
                     <input type="file" accept="image/*" onChange={handleScreenshotImport} className="hidden" disabled={isImportingScreenshot} />
@@ -7804,7 +7996,7 @@ export default function App({ sharing = null } = {}) {
                   <input
                     type="text"
                     value={selectedOrder.deliveryTime || ''}
-                    placeholder={String(selectedBroker || '').includes('965974') ? 'MM/DD/YY 08:00  MM/DD/YY 16:00' : ''}
+                    placeholder={isNolanCustomer(selectedBroker) ? 'MM/DD/YY 08:00  MM/DD/YY 16:00' : ''}
                     onChange={(e) => handleFieldChange('deliveryTime', e.target.value)}
                     className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
                   />

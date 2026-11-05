@@ -28,7 +28,7 @@ export {
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress,
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, getRxoAtzDatVanDiscount, isRxoSameCityLoad,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
@@ -2400,4 +2400,102 @@ test('the bot light shows upload progress and what the bot is working on', () =>
   assert.equal(policy.describeBotProgress({ state: 'logged-in', message: 'Watching for exports · last upload 10:05 AM', progress: { uploaded: 106, waiting: 0 } }),
     '106 uploaded', 'idle messages are not repeated');
   assert.equal(policy.describeBotProgress({ state: 'logged-in', message: 'Watching for exports' }), '');
+});
+
+test('a customer rule only applies to its exact account, not one with the same name and number', () => {
+  assert.equal(policy.isNolanCustomer('Nolan 965974 - ATZ H'), true);
+  assert.equal(policy.isNolanCustomer('Nolan 965974 - ATZ'), false, 'a different Nolan account');
+  assert.equal(policy.isParaCustomer('Para 1522166 - ATZ'), true);
+  assert.equal(policy.isParaCustomer('Para 1522166 - ATZ H'), false, 'Para ATZ H is its own account');
+  assert.equal(policy.preservesImportedLoadStatus('Para 1522166 - ATZ'), true);
+  assert.equal(policy.preservesImportedLoadStatus('Para 1522166 - ATZ H'), false);
+  const vanInOhio = { origSt: 'OH', eCode: 'VAN:VAN' };
+  assert.equal(policy.isRxoSkippedVanLoad('R X O 2429200 - ATZ', vanInOhio), true);
+  assert.equal(policy.isRxoSkippedVanLoad('R X O 2429200 - ATZ P', vanInOhio), false, 'the RXO van rule is ATZ only');
+});
+
+test('RXO ATZ van loads priced from DAT export under the DAT rate, by tier', () => {
+  const rxo = 'R X O 2429200 - ATZ';
+  const van = { eCode: 'VAN:VAN', rateSource: 'dat-api' };
+  const discount = (rate, load = van, customer = rxo) => policy.getRxoAtzDatVanDiscount(customer, load, rate);
+  assert.equal(discount(999), 50);
+  assert.equal(discount(1000), 100);
+  assert.equal(discount(1599), 100);
+  assert.equal(discount(1600), 200);
+  assert.equal(discount(3500), 200);
+  assert.equal(discount(3501), 300);
+  assert.equal(discount(1200, { ...van, rateSource: 'dat-screenshot' }), 100, 'DAT screenshot rates count too');
+  assert.equal(discount(1200, { ...van, rateSource: 'user-entered' }), 0, 'rates you typed are posted as entered');
+  assert.equal(discount(1200, { ...van, eCode: 'R' }), 0, 'van loads only');
+  assert.equal(discount(1200, { ...van, hazmat: 'true' }), 0, 'hazmat keeps the full rate');
+  assert.equal(discount(1200, van, 'R X O 2429200 - ATZ P'), 0, 'RXO ATZ only, not ATZ P');
+});
+
+test('RXO ATZ loads that pick up and deliver in the same city are not exported', () => {
+  const load = { origCity: 'Chicago', origSt: 'IL', destCity: 'CHICAGO', destSt: 'IL' };
+  assert.equal(policy.isRxoSameCityLoad('R X O 2429200 - ATZ', load), true);
+  assert.equal(policy.isRxoSameCityLoad('R X O 2429200 - ATZ', { ...load, destCity: 'Joliet' }), false);
+  assert.equal(policy.isRxoSameCityLoad('R X O 2429200 - ATZ', { ...load, destSt: 'IN' }), false, 'same name, other state');
+  assert.equal(policy.isRxoSameCityLoad('R X O 2429200 - ATZ P', load), false, 'RXO ATZ only');
+});
+
+test('Para ATZ H screenshots put red order numbers on hold too; other customers stay open', () => {
+  const red = { ...load, id: '2283633', pickupTime: '11/30/2026 0800', screenshotStatus: 'ON HOLD' };
+  const atzH = policy.replaceImportedCustomerLoads('Para 1522166 - ATZ H', [red], []);
+  assert.equal(atzH.loads[0].status, 'ON HOLD');
+  assert.equal(atzH.loads[0].tag, 'HOLD');
+  const rxo = policy.replaceImportedCustomerLoads('R X O 2429200 - ATZ', [red], []);
+  assert.equal(rxo.loads[0].status, 'OPEN', 'red holds are only for the Para accounts');
+});
+
+test('a load added by hand stays until you delete it', () => {
+  const manual = policy.createManualLoad('2283650', {
+    origCity: 'GREEN BAY', origSt: 'WI', origZip: '54313', destCity: 'OREGON', destSt: 'OH', destZip: '43616',
+    pickupTime: '11/06/2026 0700 - 1430', deliveryTime: '11/09/2026 0800 - 1400',
+    status: 'ENT', tag: 'ENT', landstarExportedAt: '2026-09-01T00:00:00Z',
+    landstarPosting: { originZip: '54313', destZip: '43616', pickupThru: '11/06/26 14:30' }
+  });
+  assert.equal(manual.manualEntry, true);
+  // Full-list import (Para ATZ replaces its list) without this load: it is kept.
+  const other = { ...load, id: '2283633', pickupTime: '11/30/2026 0800' };
+  const result = policy.replaceImportedCustomerLoads('Para 1522166 - ATZ', [other], [manual]);
+  assert.ok(result.loads.some(order => order.id === '2283650'), 'not removed by the import');
+  assert.deepEqual(result.droppedPostings, [], 'its Landstar posting is not sent for removal');
+  assert.deepEqual(policy.findDroppedPostings('Para 1522166 - ATZ H', [other], [manual]), []);
+  // Exported long ago: still not expired.
+  const now = Date.parse('2026-11-05T00:00:00Z');
+  assert.equal(policy.removeExpiredExportedLoads({ c: [manual] }, now).c.length, 1);
+});
+
+test('miles are estimated from the two ZIPs when Google Routes cannot answer', () => {
+  const zipData = zipcodes;
+  // Green Bay, WI -> Oregon, OH: about 308 straight-line miles, times 1.2 for roads.
+  assert.equal(policy.estimateRoadMilesFromZips(zipData, '54313', '43616'), '370');
+  assert.equal(policy.estimateRoadMilesFromZips(zipData, '54313', ''), '', 'needs both ZIPs');
+  assert.equal(policy.estimateRoadMilesFromZips(zipData, '54313', '00000'), '', 'unknown ZIP');
+});
+
+test('Google miles are looked up once per lane and reused after that', async () => {
+  const storage = new Map();
+  let lookups = 0;
+  const lanePolicy = { module: { exports: {} } };
+  vm.runInNewContext(code, {
+    ...lanePolicy,
+    require: context.require,
+    console,
+    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    fetch: async () => {
+      lookups += 1;
+      return { ok: true, json: async () => ({ miles: 441 }) };
+    }
+  });
+  const { getGoogleRoadMiles, getRoadMilesLaneKey } = lanePolicy.module.exports;
+  const greenBay = { id: '1', origCity: 'GREEN BAY', origSt: 'WI', origZip: '54313', destCity: 'OREGON', destSt: 'OH', destZip: '43616' };
+  assert.equal(getRoadMilesLaneKey(greenBay), '54313>43616');
+  assert.equal(await getGoogleRoadMiles(greenBay), '441');
+  assert.equal(await getGoogleRoadMiles({ ...greenBay, id: '2' }), '441');
+  assert.equal(lookups, 1, 'the second load on the lane reuses the saved miles');
+  await getGoogleRoadMiles({ ...greenBay, destZip: '43604', destCity: 'TOLEDO' });
+  assert.equal(lookups, 2, 'a different lane asks Google');
+  assert.equal(getRoadMilesLaneKey({ origCity: 'Chicago', origSt: 'IL', destCity: 'Dallas', destSt: 'TX' }), 'CHICAGO,IL>DALLAS,TX', 'no ZIPs: city and state');
 });

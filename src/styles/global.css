@@ -675,3 +675,43 @@ body {
 body.tms-list-focus .tms-sidebar-header {
   display: none;
 }
+
+/* Top bar: logos left, buttons in the middle, Broski name with the phone on the right */
+.tms-brand {
+  align-items: center;
+}
+
+.tms-brand-logos {
+  order: 1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.tms-brand-actions {
+  order: 2;
+  margin-left: auto;
+  font-family: var(--fx-font-body);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.tms-brand-name {
+  order: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-align: right;
+}
+
+.tms-brand .tms-landstar-word {
+  text-transform: none;
+  letter-spacing: -0.01em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6), 0 0 14px rgba(56, 189, 248, 0.25);
+}
+
+.tms-brand .tms-eagles-logo {
+  width: 52px;
+  height: 52px;
+}

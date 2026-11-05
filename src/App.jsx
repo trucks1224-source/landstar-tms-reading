@@ -6655,25 +6655,6 @@ export default function App({ sharing = null } = {}) {
           <div className="tms-top-controls flex flex-col items-start gap-2 mb-2">
             <button
               type="button"
-              onClick={() => setShowHeader(open => !open)}
-              aria-expanded={showHeader}
-              className="text-[10px] font-bold text-gray-300 hover:text-white self-start"
-            >
-              {showHeader ? '▾ Hide header' : '▸ Show header'}
-            </button>
-            {showHeader && (
-            <div className="tms-sidebar-logos">
-              <div className="tms-landstar-mark" role="img" aria-label="Landstar">
-                <span className="tms-landstar-word">Landstar</span>
-                <svg className="tms-landstar-star" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 1.8l3.05 6.55 7.15.86-5.27 4.93 1.38 7.1L12 17.75l-6.31 3.49 1.38-7.1L1.8 9.21l7.15-.86z" />
-                </svg>
-              </div>
-              <img className="tms-eagles-logo" src="/eagles-sidebar.png" alt="Eagles artwork" width="474" height="475" />
-            </div>
-            )}
-            <button
-              type="button"
               onClick={() => setShowTools(open => !open)}
               aria-expanded={showTools}
               className="text-[10px] font-bold text-gray-300 hover:text-white self-start"
@@ -7167,6 +7148,16 @@ export default function App({ sharing = null } = {}) {
       {/* Main Content Area */}
       <div className="tms-workspace flex-1 flex flex-col overflow-y-auto p-6">
         <div className="tms-brand">
+          <div className="tms-brand-logos">
+              <div className="tms-landstar-mark" role="img" aria-label="Landstar">
+                <span className="tms-landstar-word">Landstar</span>
+                <svg className="tms-landstar-star" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 1.8l3.05 6.55 7.15.86-5.27 4.93 1.38 7.1L12 17.75l-6.31 3.49 1.38-7.1L1.8 9.21l7.15-.86z" />
+                </svg>
+              </div>
+              <img className="tms-eagles-logo" src="/eagles-sidebar.png" alt="Eagles artwork" width="474" height="475" />
+          </div>
+          <div className="tms-brand-name">
           <span>Broski Transportation &amp; Logistics</span>
           {profile.phone ? (
             <a className="tms-brand-phone" href={`tel:+1${profile.phone}`}>
@@ -7183,7 +7174,8 @@ export default function App({ sharing = null } = {}) {
           ) : (
             <span className="text-xs text-amber-400">Add your phone in ⚙ My Settings</span>
           )}
-          <span className="inline-flex items-center gap-2">
+          </div>
+          <span className="tms-brand-actions inline-flex items-center gap-2">
             <button
               type="button"
               onClick={() => setShowInquiries(open => !open)}

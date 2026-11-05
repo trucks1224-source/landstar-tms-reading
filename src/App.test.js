@@ -29,7 +29,7 @@ export {
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity,
-  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
+  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
   module: { exports: {} },
@@ -863,7 +863,6 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
   const effects = [];
   const alerts = [];
   const errors = [];
-  let pendingRead;
   let stateCursor = 0;
   const react = {
     createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
@@ -884,11 +883,6 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       setItem: (key, value) => storage.set(key, value)
     },
     alert: message => alerts.push(message),
-    FileReader: class {
-      readAsArrayBuffer(buffer) {
-        pendingRead = this.onload({ target: { result: buffer } });
-      }
-    },
     fetch: async url => {
       if (url === '/api/road-miles') return { ok: true, json: async () => ({ miles: 500 }) };
       assert.equal(url, '/api/dat-rate');
@@ -947,13 +941,19 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       input.props.onChange({ target: { value } });
     },
     async importExcel(rows) {
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), 'Loads');
-      const buffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+      await this.importExcelFiles([rows]);
+    },
+    // Several files picked together in the file dialog (one list per file).
+    async importExcelFiles(fileRows) {
+      const files = fileRows.map((rows, index) => {
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), 'Loads');
+        const buffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+        return { name: `loads-${index + 1}.xlsx`, arrayBuffer: async () => buffer };
+      });
       const input = findExcelInput(tree);
       assert.ok(input, 'Excel import control exists');
-      input.props.onChange({ target: { files: [buffer] } });
-      await pendingRead;
+      await input.props.onChange({ target: { files } });
     }
   };
 }
@@ -2321,4 +2321,52 @@ test('dragging a customer onto another moves it to that spot', () => {
   assert.deepEqual([...policy.moveCustomer(list, 'A', 'C')], ['B', 'C', 'A', 'D']);
   assert.equal(policy.moveCustomer(list, 'A', 'A'), list);
   assert.equal(policy.moveCustomer(list, 'X', 'A'), list);
+});
+
+test('a customer list split across tabs imports every load tab and skips summary tabs', () => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['Order #', 'Equipment', 'Origin City'], ['111111', 'V', 'Chicago']]), 'Page 1');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['Totals'], ['2 loads']]), 'Summary');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['Load ID', 'Equipment', 'Origin City'], ['222222', 'V', 'Denver']]), 'Page 2');
+  assert.deepEqual(Array.from(policy.getLoadSheetNames(workbook, XLSX)), ['Page 1', 'Page 2']);
+
+  const noHeaders = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(noHeaders, XLSX.utils.aoa_to_sheet([['111111', 'V']]), 'Only');
+  assert.deepEqual(Array.from(policy.getLoadSheetNames(noHeaders, XLSX)), ['Only'], 'the first tab is always read, as before');
+});
+
+test('importing all of a customer\'s files together removes only postings on none of them', () => {
+  const posting = { originZip: '60007', destZip: '76063', pickupThru: '11/06/26 13:00', deliveryThru: '11/08/26 07:00', weight: 42000 };
+  const exportedAt = new Date().toISOString();
+  const existing = ['111111', '222222', '333333'].map((id, index) => ({
+    ...load, id, origCity: ['Chicago', 'Denver', 'Austin'][index], status: 'ENT', tag: 'ENT', landstarExportedAt: exportedAt, landstarPosting: { ...posting, weight: 42000 + index }
+  }));
+  const fileOne = [{ ...load, id: '111111' }];
+  const fileTwo = [{ ...load, id: '222222', origCity: 'Denver' }];
+
+  // One file at a time treats that file as the whole list.
+  assert.deepEqual(Array.from(policy.replaceImportedCustomerLoads(customers[0], fileTwo, existing).droppedPostings, item => item.loadId), ['111111', '333333']);
+  // Both files together: only the load on neither file is removed.
+  assert.deepEqual(Array.from(policy.replaceImportedCustomerLoads(customers[0], [...fileOne, ...fileTwo], existing).droppedPostings, item => item.loadId), ['333333']);
+});
+
+test('Excel import of several files at once only queues removal for postings on none of them', async () => {
+  const header = ['Order Number', 'Equipment Type', '', '', '', '', 'Origin City', 'Origin State', 'Origin Zip',
+    '', '', 'Destination City', 'Destination State', 'Destination Zip', 'Weight', '',
+    'Pickup Time', 'Delivery Time', 'Miles'];
+  const row = (id, city) => [id, 'Reefer - 53', '', '', '', '', city, 'IL', '60601', '', '', 'Dallas', 'TX',
+    '75201', '42000', '', '11/27/2026 0800 - 1600', '11/30/2026 0800 - 1600', '900'];
+  const posting = { originZip: '60601', destZip: '75201', pickupThru: '11/27/26 16:00', deliveryThru: '11/30/26 16:00', weight: 42000 };
+  const exportedAt = new Date().toISOString();
+  const existing = [['910001', 'CHICAGO'], ['910002', 'ELGIN'], ['910003', 'JOLIET']].map(([id, city]) => ({
+    ...load, id, eCode: 'R', origCity: city, origSt: 'IL', origZip: '60601', destCity: 'DALLAS', destSt: 'TX', destZip: '75201',
+    pickupTime: '11/27/2026 0800 - 1600', deliveryTime: '11/30/2026 0800 - 1600',
+    status: 'ENT', tag: 'ENT', landstarExportedAt: exportedAt, landstarPosting: posting
+  }));
+
+  const app = createAppHarness(customers[1], existing, null, {}, { AbortController, setTimeout, clearTimeout });
+  await app.importExcelFiles([[header, row('910001', 'Chicago')], [header, row('910002', 'Elgin')]]);
+  const queue = JSON.parse(app.storage.get('landstar_unpostQueue') || '[]');
+  assert.deepEqual(queue.map(item => item.loadId), ['910003']);
+  assert.ok(app.alerts.some(message => message.includes('Combined into one list: 2 file(s), 2 tab(s)')));
 });

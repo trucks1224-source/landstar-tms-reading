@@ -186,12 +186,28 @@ function bookLoad(load, bookedAt = new Date().toISOString()) {
   return { ...load, status: 'BOOKED', tag: 'BOOKED', bookedAt: load.bookedAt || bookedAt };
 }
 
-// Takes the truck off a booked load: clears the driver, equipment, pickup ETA and
-// tracking, and puts the load back in OPEN so it can be re-booked or exported.
-// The rate and every other load detail are kept.
+// Takes the truck off a booked load: clears the driver, equipment, pickup ETA, previous
+// empty location and tracking, and puts the load back in OPEN so it can be re-booked or
+// exported. The rate and every other load detail are kept.
+// The driver's details as one text block for chats and emails:
+//   Driver 1 / name / phone / Tractor 1 / truck / Trailer 1 / trailer /
+//   Previous Empty / location / Pickup ETA / eta / load#123
+// A section with nothing filled in is left out.
+function formatDriverInfo(load) {
+  const value = field => String(load?.[field] || '').trim();
+  const lines = [];
+  if (value('driver') || value('driverPhone')) lines.push('Driver 1', ...[value('driver'), value('driverPhone')].filter(Boolean));
+  if (value('truck')) lines.push('Tractor 1', value('truck'));
+  if (value('trailer')) lines.push('Trailer 1', value('trailer'));
+  if (value('emptyLocation')) lines.push('Previous Empty', value('emptyLocation'));
+  if (value('pickupEta')) lines.push('Pickup ETA', value('pickupEta'));
+  lines.push(`load#${value('id')}`);
+  return lines.join('\n');
+}
+
 function removeCapacity(load) {
   const { bookedAt, trackingStage, checkCalls, ...rest } = load || {};
-  return { ...rest, status: 'OPEN', tag: 'OPEN', driver: '', driverPhone: '', truck: '', trailer: '', pickupEta: '' };
+  return { ...rest, status: 'OPEN', tag: 'OPEN', driver: '', driverPhone: '', truck: '', trailer: '', pickupEta: '', emptyLocation: '' };
 }
 
 // Drivers, trucks and trailers already used on any load, for auto-complete.
@@ -2712,7 +2728,7 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
       merged.tag = 'ENT';
     }
     if (existing) {
-      ['rateInput', 'rateSource', 'carrier', 'driver', 'driverPhone', 'truck', 'trailer', 'pickupEta', 'notes', 'landstarComment'].forEach(field => {
+      ['rateInput', 'rateSource', 'carrier', 'driver', 'driverPhone', 'truck', 'trailer', 'pickupEta', 'emptyLocation', 'notes', 'landstarComment'].forEach(field => {
         if (String(existing[field] || '').trim()) merged[field] = existing[field];
       });
       if (allowGeneratedIds && load.rateSource === 'dat-screenshot' && existing.rateSource !== 'user-entered'
@@ -3509,7 +3525,7 @@ function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapac
               </div>
               <div className="text-sm text-white">
                 <p className="font-semibold">🚚 {load.driver || 'No driver'}</p>
-                <p className="text-[11px] text-gray-300">Truck {load.truck || '—'} · Trailer {load.trailer || '—'}{load.pickupEta ? ` · PU ETA ${load.pickupEta}` : ''}</p>
+                <p className="text-[11px] text-gray-300">Truck {load.truck || '—'} · Trailer {load.trailer || '—'}{load.pickupEta ? ` · PU ETA ${load.pickupEta}` : ''}{load.emptyLocation ? ` · Empty ${load.emptyLocation}` : ''}</p>
                 {phone ? (
                   <p className="flex gap-2 mt-1">
                     <a href={`tel:${phone}`} className="bg-emerald-700 hover:bg-emerald-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold">📞 Call {load.driverPhone}</a>
@@ -7973,14 +7989,29 @@ export default function App({ sharing = null } = {}) {
               <div className="border border-[#1c2541] bg-[#121829]/60 p-4 rounded-lg">
                 <div className="flex items-center justify-between gap-2 mb-3">
                   <h3 className="text-xs font-bold text-purple-400 uppercase tracking-wide">Driver & Equipment Assignment</h3>
-                  <button
-                    type="button"
-                    onClick={handleCopyDriverLink}
-                    title="Copy a link drivers can open to see this load and send you an inquiry"
-                    className="bg-purple-700 hover:bg-purple-600 text-white text-[11px] px-2.5 py-1 rounded font-semibold cursor-pointer"
-                  >
-                    🔗 Copy driver link
-                  </button>
+                  <div className="flex flex-wrap gap-1.5 justify-end">
+                    <button
+                      type="button"
+                      onClick={async (event) => {
+                        const button = event.currentTarget;
+                        await copyToClipboard(formatDriverInfo(selectedOrder), 'Driver info');
+                        button.textContent = '✓ Copied';
+                        setTimeout(() => { button.textContent = '📋 Copy driver info'; }, 1500);
+                      }}
+                      title="Copy the driver's name, phone, truck, trailer, previous empty location, pickup ETA and load number"
+                      className="bg-slate-700 hover:bg-slate-600 text-white text-[11px] px-2.5 py-1 rounded font-semibold cursor-pointer"
+                    >
+                      📋 Copy driver info
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCopyDriverLink}
+                      title="Copy a link drivers can open to see this load and send you an inquiry"
+                      className="bg-purple-700 hover:bg-purple-600 text-white text-[11px] px-2.5 py-1 rounded font-semibold cursor-pointer"
+                    >
+                      🔗 Copy driver link
+                    </button>
+                  </div>
                 </div>
                 {(() => {
                   const loadInquiries = inquiries.filter(inquiry => inquiry.customer === selectedBroker && String(inquiry.load_id) === String(selectedOrder.id));
@@ -8042,6 +8073,13 @@ export default function App({ sharing = null } = {}) {
                   <div>
                     <label htmlFor="assignment-pickup-eta" className="text-xs text-gray-400 block mb-1">Pickup ETA</label>
                     <input id="assignment-pickup-eta" type="text" value={selectedOrder.pickupEta || ''} onChange={(e) => handleFieldChange('pickupEta', e.target.value)} placeholder="MM/DD/YYYY HH:mm (local pickup time)" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <label htmlFor="assignment-empty-location" className="text-xs text-gray-400 block mb-1">Previous Empty Location</label>
+                  <div className="flex gap-1">
+                    <input id="assignment-empty-location" type="text" autoComplete="off" value={selectedOrder.emptyLocation || ''} onChange={(e) => handleFieldChange('emptyLocation', e.target.value)} placeholder="City, ST where the truck empties before this load" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <button type="button" onClick={() => copyToClipboard(selectedOrder.emptyLocation || '', 'Previous Empty Location')} title="Copy Previous Empty Location" aria-label="Copy Previous Empty Location" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
                   </div>
                 </div>
                 <div className="mt-3">

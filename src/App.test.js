@@ -28,7 +28,7 @@ export {
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity,
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
@@ -1656,7 +1656,8 @@ test('assignment fields save with the load and survive reload and re-import', ()
     driverPhone: ['assignment-driver-phone', '+1 (555) 123-4567'],
     truck: ['assignment-truck', 'T-102'],
     trailer: ['assignment-trailer', 'TR-208'],
-    pickupEta: ['assignment-pickup-eta', '10/28/2026 09:30']
+    pickupEta: ['assignment-pickup-eta', '10/28/2026 09:30'],
+    emptyLocation: ['assignment-empty-location', 'Toledo, OH']
   };
   for (const [field, [id, value]] of Object.entries(fields)) {
     const input = app.find(node => node.props?.id === id);
@@ -1669,7 +1670,7 @@ test('assignment fields save with the load and survive reload and re-import', ()
   const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[0]];
   const reloaded = createAppHarness(customers[0], saved);
   const replaced = policy.replaceImportedCustomerLoads(customers[0], [
-    { ...load, pickupEta: 'Imported ETA', driver: '', driverPhone: '', truck: '', trailer: '' }
+    { ...load, pickupEta: 'Imported ETA', emptyLocation: '', driver: '', driverPhone: '', truck: '', trailer: '' }
   ], saved).loads[0];
   for (const [field, [id, value]] of Object.entries(fields)) {
     assert.equal(reloaded.find(node => node.props?.id === id).props.value, value);
@@ -2142,13 +2143,13 @@ test('a pickup window that already started is posted from now; an ended window i
 test('removing capacity clears the truck and tracking, keeps the rate, and moves the load back to OPEN', () => {
   const booked = {
     ...load, id: '7', status: 'BOOKED', tag: 'BOOKED', rateInput: '3175', landstarComment: 'Load Ready now',
-    driver: 'Alex Driver', driverPhone: '555-1111', truck: 'T-102', trailer: 'TR-208', pickupEta: '11/06 10:00',
+    driver: 'Alex Driver', driverPhone: '555-1111', truck: 'T-102', trailer: 'TR-208', pickupEta: '11/06 10:00', emptyLocation: 'Toledo, OH',
     bookedAt: '2026-11-04T12:00:00Z', trackingStage: 'Loaded', checkCalls: [{ at: 'x', stage: 'Loaded', note: '' }]
   };
   const open = policy.removeCapacity(booked);
   assert.equal(open.status, 'OPEN');
   assert.equal(open.tag, 'OPEN');
-  for (const field of ['driver', 'driverPhone', 'truck', 'trailer', 'pickupEta']) assert.equal(open[field], '', field);
+  for (const field of ['driver', 'driverPhone', 'truck', 'trailer', 'pickupEta', 'emptyLocation']) assert.equal(open[field], '', field);
   for (const field of ['bookedAt', 'trackingStage', 'checkCalls']) assert.equal(field in open, false, field);
   assert.equal(open.rateInput, '3175');
   assert.equal(open.landstarComment, 'Load Ready now');
@@ -2369,4 +2370,21 @@ test('Excel import of several files at once only queues removal for postings on 
   const queue = JSON.parse(app.storage.get('landstar_unpostQueue') || '[]');
   assert.deepEqual(queue.map(item => item.loadId), ['910003']);
   assert.ok(app.alerts.some(message => message.includes('Combined into one list: 2 file(s), 2 tab(s)')));
+});
+
+test('Copy driver info puts the driver details in the dispatch-chat format', () => {
+  const booked = {
+    ...load, id: '24504425', driver: 'David Rickey', driverPhone: '405-637-5233', truck: '583902', trailer: '668004',
+    emptyLocation: 'Toledo, OH', pickupEta: '11/06/2026 10:00'
+  };
+  assert.equal(policy.formatDriverInfo(booked), [
+    'Driver 1', 'David Rickey', '405-637-5233',
+    'Tractor 1', '583902',
+    'Trailer 1', '668004',
+    'Previous Empty', 'Toledo, OH',
+    'Pickup ETA', '11/06/2026 10:00',
+    'load#24504425'
+  ].join('\n'));
+  assert.equal(policy.formatDriverInfo({ ...load, id: '7', driver: 'Sam', driverPhone: '', truck: '12', trailer: '', emptyLocation: '', pickupEta: '' }),
+    'Driver 1\nSam\nTractor 1\n12\nload#7', 'blank sections are left out');
 });

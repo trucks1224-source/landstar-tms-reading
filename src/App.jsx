@@ -3715,6 +3715,41 @@ function LoadListHistory({ onRestore }) {
 // filters) so the loads fill the whole sidebar. Remembered per browser.
 const listFocusKey = 'landstar_listFocus';
 
+// Every light on the background truck flashes for a few seconds after sign-in, and the
+// BROSKI badge on the art gets a brighter, glowing copy. Positions are percentages of
+// the 1152x768 background image, which the shell shows centered with "contain".
+const truckLights = [
+  // amber roof markers
+  ['amber', 59.1, 31.6], ['amber', 61.2, 31.6], ['amber', 63.2, 31.9], ['amber', 72, 32.3], ['amber', 73.9, 32.7],
+  // amber side markers by the fuel tank
+  ['amber', 47.3, 54.8], ['amber', 49.4, 54.8], ['amber', 51.5, 54.7],
+  // front turn signals (the four-ways)
+  ['amber', 68.9, 52.6], ['amber', 89.4, 48.6],
+  // headlights and bumper lights
+  ['white', 70.9, 53.6], ['white', 89, 51], ['white', 72.5, 61.2], ['white', 89.5, 60.3],
+  // under-glow
+  ['glow', 45, 64.2], ['glow', 51.3, 64.4], ['glow', 56.3, 64.4], ['glow', 75, 62], ['glow', 86.3, 61.6],
+];
+const truckFlashMs = 6000;
+
+function TruckLights() {
+  const [flashing, setFlashing] = useState(true);
+  useEffect(() => {
+    const timer = setTimeout(() => setFlashing(false), truckFlashMs);
+    return () => clearTimeout(timer);
+  }, []);
+  return (
+    <div className="tms-truck-fx" aria-hidden="true">
+      <div className="tms-truck-box">
+        <div className={`tms-broski-badge${flashing ? ' is-flashing' : ''}`} />
+        {flashing && truckLights.map(([kind, x, y], index) => (
+          <span key={index} className={`tms-truck-light is-${kind}`} style={{ left: `${x}%`, top: `${y}%` }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ListFocusToggle() {
   const [focus, setFocus] = useState(() => {
     try { return localStorage.getItem(listFocusKey) === 'true'; } catch { return false; }
@@ -6649,6 +6684,7 @@ export default function App({ sharing = null } = {}) {
 
   return (
     <div className="tms-shell flex h-screen text-white overflow-hidden font-sans">
+      <TruckLights />
       {/* Left Sidebar - Order List */}
       <div className="tms-sidebar w-96 border-r border-[#1c2541] flex flex-col">
         <div className="tms-sidebar-header p-3 border-b border-[#1c2541]">
@@ -7158,7 +7194,7 @@ export default function App({ sharing = null } = {}) {
               <img className="tms-eagles-logo" src="/eagles-sidebar.png" alt="Eagles artwork" width="474" height="475" />
           </div>
           <div className="tms-brand-name">
-          <span>Broski Transportation &amp; Logistics</span>
+          <span className="tms-brand-title">Broski Transportation &amp; Logistics</span>
           {profile.phone ? (
             <a className="tms-brand-phone" href={`tel:+1${profile.phone}`}>
               {countryFlags[profile.flag] && (

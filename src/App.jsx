@@ -7184,6 +7184,14 @@ export default function App({ sharing = null } = {}) {
             >
               📨 Inquiries{unseenInquiryCount ? ` (${unseenInquiryCount} new)` : ''}
             </button>
+            <button
+              type="button"
+              onClick={handleExportToLandstar}
+              className="tms-export-button"
+              title="Export the selected (or shown) loads to a Landstar bulk file and move them to ENT; the bot uploads it"
+            >
+              🚀 Export to Landstar
+            </button>
             {showInquiries && (
               <InquiriesPanel
                 inquiries={inquiries}
@@ -7401,9 +7409,6 @@ export default function App({ sharing = null } = {}) {
                 <button onClick={() => handleStatusChange('OPEN')} className="tms-open px-3 py-1 text-xs font-bold rounded cursor-pointer">OPEN</button>
                 <button onClick={() => handleStatusChange('ON HOLD')} className="bg-red-600 hover:bg-red-500 px-3 py-1 text-xs font-bold rounded text-white cursor-pointer">ON HOLD</button>
                 <button onClick={() => handleStatusChange('ENT')} className="tms-ent px-3 py-1 text-xs font-bold rounded cursor-pointer">ENT</button>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={handleExportToLandstar} className="bg-purple-600 hover:bg-purple-500 px-3 py-1 text-xs rounded text-white font-medium cursor-pointer">📥 Export to Landstar Bulk Excel & Move to ENT</button>
               </div>
             </div>
 

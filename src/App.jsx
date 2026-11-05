@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { detectScreenshotGrid, readScreenshotGrid } from './lib/screenshotTable.js';
@@ -3941,8 +3941,18 @@ const botStatusStyles = {
   off: { label: 'Bot off', dot: '#64748b', glow: 'none' }
 };
 
+// The local TMS (npm run dev) can start the bot; the live site can only show its status.
+const BOT_START_URL = '/api/bot/start';
+const BOT_START_GRACE_MS = 45_000;
+const canStartBotHere = () => typeof window !== 'undefined'
+  && ['127.0.0.1', 'localhost'].includes(window.location.hostname);
+
 export function BotStatusLight() {
   const [status, setStatus] = useState({ state: 'off', message: 'Upload bot is not running' });
+  const startRequestedAt = useRef(0);
+  const offStatus = () => (Date.now() - startRequestedAt.current < BOT_START_GRACE_MS
+    ? { state: 'starting', message: 'Opening the bot window…' }
+    : { state: 'off', message: 'Upload bot is not running' });
   useEffect(() => {
     let cancelled = false;
     const check = async () => {
@@ -3951,9 +3961,9 @@ export function BotStatusLight() {
       try {
         const response = await fetch(BOT_STATUS_URL, { cache: 'no-store', signal: controller.signal });
         const next = await response.json();
-        if (!cancelled) setStatus(botStatusStyles[next.state] ? next : { state: 'off', message: 'Upload bot is not running' });
+        if (!cancelled) setStatus(botStatusStyles[next.state] ? next : offStatus());
       } catch {
-        if (!cancelled) setStatus({ state: 'off', message: 'Upload bot is not running' });
+        if (!cancelled) setStatus(offStatus());
       } finally {
         clearTimeout(timer);
       }
@@ -3962,7 +3972,40 @@ export function BotStatusLight() {
     const interval = setInterval(check, 3000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
+  const startBot = async () => {
+    startRequestedAt.current = Date.now();
+    setStatus({ state: 'starting', message: 'Opening the bot window…' });
+    try {
+      const response = await fetch(BOT_START_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'The bot could not be started.');
+    } catch (error) {
+      startRequestedAt.current = 0;
+      setStatus({ state: 'off', message: 'Upload bot is not running' });
+      alert(`${error.message || 'The bot could not be started.'}\n\nYou can also double-click "Start Landstar Bot.bat" in the bot folder.`);
+    }
+  };
   const style = botStatusStyles[status.state] || botStatusStyles.off;
+  const clickable = status.state === 'off' && canStartBotHere();
+  const dot = (
+    <span
+      aria-hidden="true"
+      style={{ width: 10, height: 10, borderRadius: '50%', background: style.dot, boxShadow: style.glow, display: 'inline-block' }}
+    />
+  );
+  if (clickable) {
+    return (
+      <button
+        type="button"
+        onClick={startBot}
+        className="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal cursor-pointer border border-slate-600"
+        title="The upload bot is off. Click to start it (a bot window opens; log in to Landstar if asked)."
+      >
+        {dot}
+        Bot off · Start bot
+      </button>
+    );
+  }
   return (
     <span
       className="inline-flex items-center gap-1.5 bg-slate-800 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal"
@@ -3970,10 +4013,7 @@ export function BotStatusLight() {
       role="status"
       aria-live="polite"
     >
-      <span
-        aria-hidden="true"
-        style={{ width: 10, height: 10, borderRadius: '50%', background: style.dot, boxShadow: style.glow, display: 'inline-block' }}
-      />
+      {dot}
       {style.label}
     </span>
   );

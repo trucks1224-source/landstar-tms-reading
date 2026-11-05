@@ -3735,6 +3735,51 @@ const truckStacks = [[41, 27.6], [56.3, 22.8]];
 const smokePuffs = 12;
 const truckFlashMs = 6000;
 
+// Import/Data tools and the customer list live in a drawer that slides out from the
+// left. The sidebar keeps one button showing the selected customer; picking a customer,
+// clicking outside, Esc or ✕ closes it.
+function ToolsDrawer({ selected, count, children }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    // The sidebar's blur would trap the fixed drawer inside it, so drop it while open.
+    if (open) {
+      document.body.classList.add('tms-drawer-open');
+      const onKey = event => { if (event.key === 'Escape') setOpen(false); };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }
+    const timer = setTimeout(() => document.body.classList.remove('tms-drawer-open'), 320);
+    return () => clearTimeout(timer);
+  }, [open]);
+  return (
+    <>
+      <button type="button" className="tms-drawer-trigger" onClick={() => setOpen(true)} aria-expanded={open}>
+        <span className="tms-drawer-burger" aria-hidden="true">☰</span>
+        <span className="tms-drawer-trigger-text">
+          <span>Tools &amp; Customers ({count})</span>
+          <strong>{selected || 'Pick a customer'}</strong>
+        </span>
+        <span className="tms-drawer-chevron" aria-hidden="true">›</span>
+      </button>
+      <div className={`tms-drawer${open ? ' is-open' : ''}`}>
+        <div className="tms-drawer-backdrop" onClick={() => setOpen(false)} />
+        <aside
+          className="tms-drawer-panel tms-sidebar-header"
+          aria-label="Tools and customers"
+          onClick={event => { if (event.target?.closest?.('[data-close-drawer]')) setOpen(false); }}
+        >
+          <div className="tms-drawer-head">
+            <span>Tools &amp; Customers</span>
+            <button type="button" className="tms-drawer-close" onClick={() => setOpen(false)} aria-label="Close">✕</button>
+          </div>
+          {children}
+        </aside>
+      </div>
+    </>
+  );
+}
+
 function TruckLights() {
   const [flashing, setFlashing] = useState(true);
   useEffect(() => {
@@ -6698,6 +6743,7 @@ export default function App({ sharing = null } = {}) {
       {/* Left Sidebar - Order List */}
       <div className="tms-sidebar w-96 border-r border-[#1c2541] flex flex-col">
         <div className="tms-sidebar-header p-3 border-b border-[#1c2541]">
+          <ToolsDrawer selected={selectedBroker} count={brokers.length}>
           <div className="tms-top-controls flex flex-col items-start gap-2 mb-2">
             <button
               type="button"
@@ -6829,7 +6875,7 @@ export default function App({ sharing = null } = {}) {
           )}
 
           {/* Customer / Broker Buttons */}
-          <div className="flex flex-col gap-1.5 my-2">
+          <div className="tms-customers-section flex flex-col gap-1.5 my-2">
             <button
               type="button"
               onClick={() => setShowCustomers(open => !open)}
@@ -6859,6 +6905,7 @@ export default function App({ sharing = null } = {}) {
                 >
                   <span
                     className="truncate flex-1 cursor-pointer"
+                    data-close-drawer
                     onClick={() => handleSelectBroker(broker)}
                     title={sharedCustomers[broker] ? 'Shared customer – teammates see the same loads' : undefined}
                   >
@@ -6915,6 +6962,8 @@ export default function App({ sharing = null } = {}) {
               </button>
             ))}
           </div>
+
+          </ToolsDrawer>
 
           <div className="relative mb-2">
             <input

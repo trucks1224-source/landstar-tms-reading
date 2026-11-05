@@ -6054,7 +6054,15 @@ export default function App({ sharing = null } = {}) {
         // Logan Township's ZIPs are filed under Swedesboro/Bridgeport in the offline data.
         'LOGAN TOWNSHIP|NJ': { zip: '08085', city: 'Logan Township', state: 'NJ' },
         // Woolwich Township's ZIP 08085 is also filed under Swedesboro in the offline data.
-        'WOOLWICH TOWNSHIP|NJ': { zip: '08085', city: 'Woolwich Township', state: 'NJ' }
+        'WOOLWICH TOWNSHIP|NJ': { zip: '08085', city: 'Woolwich Township', state: 'NJ' },
+        // Trappe's ZIP 19426 is filed under Collegeville in the offline data.
+        'TRAPPE|PA': { zip: '19426', city: 'Trappe', state: 'PA' },
+        // Westampton's ZIP 08060 is filed under Mount Holly in the offline data.
+        'WESTAMPTON|NJ': { zip: '08060', city: 'Westampton', state: 'NJ' },
+        // Brentwood's ZIPs outside NY/MD/TN/CA are filed under neighboring cities in the offline data.
+        'BRENTWOOD|MO': { zip: '63144', city: 'Brentwood', state: 'MO' },
+        'BRENTWOOD|PA': { zip: '15227', city: 'Brentwood', state: 'PA' },
+        'BRENTWOOD|NH': { zip: '03833', city: 'Brentwood', state: 'NH' }
       };
       const extraKey = `${String(city || '').trim().toUpperCase()}|${String(state || '').trim().toUpperCase()}`;
       if (extraCities[extraKey]) return extraCities[extraKey];

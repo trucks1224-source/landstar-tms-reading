@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import App from './App.jsx';
+import App, { BotStatusLight } from './App.jsx';
 import { supabase } from './lib/supabase.js';
 import {
   addSharedMembers,
@@ -102,6 +102,14 @@ function SyncBadge({ email }) {
         {statusLabels[status]}
       </span>
       <span className="text-gray-500">{email}</span>
+      <BotStatusLight />
+      <button
+        type="button"
+        onClick={() => window.__tmsOpenSettings?.()}
+        className="bg-slate-700 hover:bg-slate-600 text-white text-[11px] font-semibold px-2 py-0.5 rounded"
+      >
+        ⚙ My Settings
+      </button>
       <button type="button" onClick={handleSignOut} className="text-blue-400 hover:text-blue-300 underline">
         Sign out
       </button>

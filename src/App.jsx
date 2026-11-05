@@ -3833,7 +3833,7 @@ const botStatusStyles = {
   off: { label: 'Bot off', dot: '#64748b', glow: 'none' }
 };
 
-function BotStatusLight() {
+export function BotStatusLight() {
   const [status, setStatus] = useState({ state: 'off', message: 'Upload bot is not running' });
   useEffect(() => {
     let cancelled = false;
@@ -4492,6 +4492,8 @@ export default function App({ sharing = null } = {}) {
   useEffect(() => (sharing ? sharing.onSharedCustomersChange(setSharedCustomers) : undefined), [sharing]);
 
   const openProfileSettings = () => setProfileDraft({ ...profile, phone: formatPhone(profile.phone) });
+  // The signed-in account bar (bottom right, next to Sign out) opens My Settings through this.
+  if (typeof window !== 'undefined') window.__tmsOpenSettings = openProfileSettings;
 
   const handleSaveProfile = (e) => {
     e.preventDefault();
@@ -7198,7 +7200,10 @@ export default function App({ sharing = null } = {}) {
                 onClose={() => setShowInquiries(false)}
               />
             )}
-            <BotStatusLight />
+            {/* Signed in, the bot light and My Settings sit next to Sign out (bottom right);
+                local mode keeps them here. */}
+            {!sharing && <BotStatusLight />}
+            {!sharing && (
             <button
               type="button"
               onClick={openProfileSettings}
@@ -7206,6 +7211,7 @@ export default function App({ sharing = null } = {}) {
             >
               ⚙ My Settings
             </button>
+            )}
           </span>
         </div>
         {profileDraft && (

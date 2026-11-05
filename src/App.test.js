@@ -2317,8 +2317,8 @@ test('the Team switch decides team, overriding team equipment codes', () => {
 
 test('dragging a customer onto another moves it to that spot', () => {
   const list = ['A', 'B', 'C', 'D'];
-  assert.deepEqual(moveCustomer(list, 'D', 'B'), ['A', 'D', 'B', 'C']);
-  assert.deepEqual(moveCustomer(list, 'A', 'C'), ['B', 'C', 'A', 'D']);
-  assert.equal(moveCustomer(list, 'A', 'A'), list);
-  assert.equal(moveCustomer(list, 'X', 'A'), list);
+  assert.deepEqual([...policy.moveCustomer(list, 'D', 'B')], ['A', 'D', 'B', 'C']);
+  assert.deepEqual([...policy.moveCustomer(list, 'A', 'C')], ['B', 'C', 'A', 'D']);
+  assert.equal(policy.moveCustomer(list, 'A', 'A'), list);
+  assert.equal(policy.moveCustomer(list, 'X', 'A'), list);
 });

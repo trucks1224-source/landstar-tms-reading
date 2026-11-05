@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { detectScreenshotGrid, readScreenshotGrid } from './lib/screenshotTable.js';
@@ -1938,6 +1938,21 @@ function findDroppedPostings(customer, importedLoads, existingLoads) {
   const importedIds = new Set(importedLoads.map(load => normalizeLoadId(getBaseLoadId(load))).filter(Boolean));
   if (!importedIds.size) return [];
   return existingLoads.filter(load => load.landstarPosting && !importedIds.has(normalizeLoadId(getBaseLoadId(load))));
+}
+
+// Tabs of an Excel workbook that hold loads: the first tab always (as before), plus any
+// other tab whose header row names a load number and an origin city column, so a
+// customer's list split across tabs imports as one list and summary tabs are ignored.
+const loadIdHeaders = ['order #', 'load id', 'order number', 'load posting code'];
+const originCityHeaders = ['origin city', 'orig city', 'origin', 'origin - city'];
+function getLoadSheetNames(workbook, xlsx) {
+  const names = workbook?.SheetNames || [];
+  return names.filter((name, index) => {
+    if (index === 0) return true;
+    const header = (xlsx.utils.sheet_to_json(workbook.Sheets[name], { header: 1 })[0] || [])
+      .map(cell => String(cell || '').trim().toLowerCase());
+    return header.some(cell => loadIdHeaders.includes(cell)) && header.some(cell => originCityHeaders.includes(cell));
+  });
 }
 
 // A pickup window that already started but is still open is posted from the earliest
@@ -3883,6 +3898,8 @@ const BOT_UNPOST_URL = 'http://127.0.0.1:47615/unpost';
 // Postings waiting to be removed from Landstar by the upload bot (loads that dropped
 // off a customer's list). Kept in this browser until the bot confirms it has them.
 const unpostQueueKey = 'landstar_unpostQueue';
+// More removals than this from one import, and over half the customer's posted loads, needs a yes.
+const LARGE_DROP_MIN = 10;
 function readUnpostQueue() {
   try {
     const parsed = JSON.parse(localStorage.getItem(unpostQueueKey));
@@ -3941,8 +3958,18 @@ const botStatusStyles = {
   off: { label: 'Bot off', dot: '#64748b', glow: 'none' }
 };
 
+// The local TMS (npm run dev) can start the bot; the live site can only show its status.
+const BOT_START_URL = '/api/bot/start';
+const BOT_START_GRACE_MS = 45_000;
+const canStartBotHere = () => typeof window !== 'undefined'
+  && ['127.0.0.1', 'localhost'].includes(window.location.hostname);
+
 export function BotStatusLight() {
   const [status, setStatus] = useState({ state: 'off', message: 'Upload bot is not running' });
+  const startRequestedAt = useRef(0);
+  const offStatus = () => (Date.now() - startRequestedAt.current < BOT_START_GRACE_MS
+    ? { state: 'starting', message: 'Opening the bot window…' }
+    : { state: 'off', message: 'Upload bot is not running' });
   useEffect(() => {
     let cancelled = false;
     const check = async () => {
@@ -3951,9 +3978,9 @@ export function BotStatusLight() {
       try {
         const response = await fetch(BOT_STATUS_URL, { cache: 'no-store', signal: controller.signal });
         const next = await response.json();
-        if (!cancelled) setStatus(botStatusStyles[next.state] ? next : { state: 'off', message: 'Upload bot is not running' });
+        if (!cancelled) setStatus(botStatusStyles[next.state] ? next : offStatus());
       } catch {
-        if (!cancelled) setStatus({ state: 'off', message: 'Upload bot is not running' });
+        if (!cancelled) setStatus(offStatus());
       } finally {
         clearTimeout(timer);
       }
@@ -3962,7 +3989,40 @@ export function BotStatusLight() {
     const interval = setInterval(check, 3000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
+  const startBot = async () => {
+    startRequestedAt.current = Date.now();
+    setStatus({ state: 'starting', message: 'Opening the bot window…' });
+    try {
+      const response = await fetch(BOT_START_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'The bot could not be started.');
+    } catch (error) {
+      startRequestedAt.current = 0;
+      setStatus({ state: 'off', message: 'Upload bot is not running' });
+      alert(`${error.message || 'The bot could not be started.'}\n\nYou can also double-click "Start Landstar Bot.bat" in the bot folder.`);
+    }
+  };
   const style = botStatusStyles[status.state] || botStatusStyles.off;
+  const clickable = status.state === 'off' && canStartBotHere();
+  const dot = (
+    <span
+      aria-hidden="true"
+      style={{ width: 10, height: 10, borderRadius: '50%', background: style.dot, boxShadow: style.glow, display: 'inline-block' }}
+    />
+  );
+  if (clickable) {
+    return (
+      <button
+        type="button"
+        onClick={startBot}
+        className="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal cursor-pointer border border-slate-600"
+        title="The upload bot is off. Click to start it (a bot window opens; log in to Landstar if asked)."
+      >
+        {dot}
+        Bot off · Start bot
+      </button>
+    );
+  }
   return (
     <span
       className="inline-flex items-center gap-1.5 bg-slate-800 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal"
@@ -3970,10 +4030,7 @@ export function BotStatusLight() {
       role="status"
       aria-live="polite"
     >
-      <span
-        aria-hidden="true"
-        style={{ width: 10, height: 10, borderRadius: '50%', background: style.dot, boxShadow: style.glow, display: 'inline-block' }}
-      />
+      {dot}
       {style.label}
     </span>
   );
@@ -4965,69 +5022,88 @@ export default function App({ sharing = null } = {}) {
     }
   };
 
+  // One customer's list often comes as several Excel files (or tabs). Pick them all at
+  // once: they are combined into one list first, so a Landstar posting is only removed
+  // when its load is on none of them. Importing them one at a time treats each file as
+  // the whole list and removes the other files' postings.
   const handleExcelImport = (e) => {
-    const file = e.target.files[0];
+    const files = Array.from(e.target.files || []);
     e.target.value = '';
-    if (!file) return;
+    if (!files.length) return;
 
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
+    const runImport = async () => {
       try {
-        const data = new Uint8Array(evt.target.result);
-        const workbook = XLSX.read(data, { type: 'array', cellDates: false });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        
-        const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        const isRxoPayerImport = normalizeCustomerName(selectedBroker) === rxoPayerCustomerName;
+        const isRxoImport = isRxoCustomer(selectedBroker);
+        // Every data row of every load tab, with that tab's column positions.
+        const sheetRows = [];
+        let anyRxoDateTimeFormat = false;
+        let sheetCount = 0;
+        for (const file of files) {
+          const workbook = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array', cellDates: false });
+          for (const sheetName of getLoadSheetNames(workbook, XLSX)) {
+            const worksheet = workbook.Sheets[sheetName];
+            const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            if (rawRows.length <= 1) continue;
+            sheetCount += 1;
 
-        if (rawRows.length <= 1) {
-          alert("The uploaded Excel sheet is empty or only contains headers!");
+            const headerRow = rawRows[0] || [];
+            const findColIndex = (possibleNames, defaultIdx) => {
+              for (let name of possibleNames) {
+                const idx = headerRow.findIndex(h => String(h || '').trim().toLowerCase() === name.toLowerCase());
+                if (idx !== -1) return idx;
+              }
+              return defaultIdx;
+            };
+            const pickupTimeCol = findColIndex(['Pickup Date (From)', 'Pickup Time', 'PU Time'], -1);
+            const deliveryTimeCol = findColIndex(['Delivery Date (From)', 'Delivery Time', 'Del Time'], -1);
+            const hasRxoTimeColumns = pickupTimeCol >= 0 && deliveryTimeCol >= 0;
+            const columns = {
+              colA: findColIndex(['Order #', 'Load ID', 'Order Number', 'Load Posting Code'], 0),
+              colB: findColIndex(['Equipment', 'Equipment Type', 'Equipment 1', 'Equip'], 1),
+              colG: findColIndex(['Origin City', 'Orig City', 'Origin', 'Origin - City'], 6),
+              colH: findColIndex(['Origin State', 'Origin St', 'Orig State', 'Origin - State'], 7),
+              colI: findColIndex(['Origin Zipcode', 'Origin Zip', 'Orig Zip', 'Origin - Zip'], 8),
+              colL: findColIndex(['Destination City', 'Dest City', 'Destination', 'Destination - City'], 11),
+              colM: findColIndex(['Destination State', 'Destination St', 'Dest State', 'Destination - State'], 12),
+              colN: findColIndex(['Destination Zipcode', 'Destination Zip', 'Dest Zip', 'Destination - Zip'], 13),
+              colO: findColIndex(['Weight', 'Wgt', 'Weight (lbs)'], 14),
+              useRxoDateTimeFormat: isRxoImport || hasRxoTimeColumns,
+              colQ: isRxoImport && !hasRxoTimeColumns ? 16 : pickupTimeCol >= 0 ? pickupTimeCol : 16,
+              colR: isRxoImport && !hasRxoTimeColumns ? 17 : deliveryTimeCol >= 0 ? deliveryTimeCol : 17,
+              colS: findColIndex(['Bill as Miles', 'Miles', 'Distance', 'Loaded Miles'], 18),
+              // Only real column names here (no position fallback): other files put weight or
+              // dates where an RXO list has its commodity.
+              commodityCols: ['Commodity', 'Commodity Description']
+                .map(name => findColIndex([name], -1))
+                .filter(index => index >= 0)
+            };
+            if (columns.useRxoDateTimeFormat) anyRxoDateTimeFormat = true;
+            rawRows.slice(1).forEach((row, rowIndex) => {
+              const getRxoDateTime = colIndex => {
+                const cell = worksheet[XLSX.utils.encode_cell({ r: rowIndex + 1, c: colIndex })];
+                return formatRxoExcelDateTime(cell ? XLSX.utils.format_cell(cell) : row[colIndex]);
+              };
+              sheetRows.push({ ...columns, row, getRxoDateTime });
+            });
+          }
+        }
+
+        if (!sheetCount) {
+          alert(files.length > 1
+            ? 'The selected Excel files are empty or only contain headers!'
+            : 'The uploaded Excel sheet is empty or only contains headers!');
           return;
         }
 
-        const headerRow = rawRows[0] || [];
-        const findColIndex = (possibleNames, defaultIdx) => {
-          for (let name of possibleNames) {
-            const idx = headerRow.findIndex(h => String(h || '').trim().toLowerCase() === name.toLowerCase());
-            if (idx !== -1) return idx;
-          }
-          return defaultIdx;
-        };
-
-        const colA = findColIndex(['Order #', 'Load ID', 'Order Number', 'Load Posting Code'], 0);
-        const colB = findColIndex(['Equipment', 'Equipment Type', 'Equipment 1', 'Equip'], 1);
-        const colG = findColIndex(['Origin City', 'Orig City', 'Origin', 'Origin - City'], 6);
-        const colH = findColIndex(['Origin State', 'Origin St', 'Orig State', 'Origin - State'], 7);
-        const colI = findColIndex(['Origin Zipcode', 'Origin Zip', 'Orig Zip', 'Origin - Zip'], 8);
-        const colL = findColIndex(['Destination City', 'Dest City', 'Destination', 'Destination - City'], 11);
-        const colM = findColIndex(['Destination State', 'Destination St', 'Dest State', 'Destination - State'], 12);
-        const colN = findColIndex(['Destination Zipcode', 'Destination Zip', 'Dest Zip', 'Destination - Zip'], 13);
-        const colO = findColIndex(['Weight', 'Wgt', 'Weight (lbs)'], 14);
-        const isRxoPayerImport = normalizeCustomerName(selectedBroker) === rxoPayerCustomerName;
-        const isRxoImport = isRxoCustomer(selectedBroker);
-        const pickupTimeCol = findColIndex(['Pickup Date (From)', 'Pickup Time', 'PU Time'], -1);
-        const deliveryTimeCol = findColIndex(['Delivery Date (From)', 'Delivery Time', 'Del Time'], -1);
-        const hasRxoTimeColumns = pickupTimeCol >= 0 && deliveryTimeCol >= 0;
-        const useRxoDateTimeFormat = isRxoImport || hasRxoTimeColumns;
-        const colQ = isRxoImport && !hasRxoTimeColumns ? 16 : pickupTimeCol >= 0 ? pickupTimeCol : 16;
-        const colR = isRxoImport && !hasRxoTimeColumns ? 17 : deliveryTimeCol >= 0 ? deliveryTimeCol : 17;
-        const colS = findColIndex(['Bill as Miles', 'Miles', 'Distance', 'Loaded Miles'], 18);
-        // Only real column names here (no position fallback): other files put weight or
-        // dates where an RXO list has its commodity.
-        const commodityCols = ['Commodity', 'Commodity Description']
-          .map(name => findColIndex([name], -1))
-          .filter(index => index >= 0);
-
-        const dataRows = rawRows.slice(1);
-        const getRxoDateTime = (row, rowIndex, colIndex) => {
-          const cell = worksheet[XLSX.utils.encode_cell({ r: rowIndex + 1, c: colIndex })];
-          return formatRxoExcelDateTime(cell ? XLSX.utils.format_cell(cell) : row[colIndex]);
-        };
         let datRateError = '';
         let skippedEquipmentCount = 0;
         let importedRows = [];
-        for (let idx = 0; idx < dataRows.length; idx++) {
-          const row = dataRows[idx];
+        for (let idx = 0; idx < sheetRows.length; idx++) {
+          const {
+            row, colA, colB, colG, colH, colI, colL, colM, colN, colO, colQ, colR, colS,
+            commodityCols, useRxoDateTimeFormat, getRxoDateTime
+          } = sheetRows[idx];
           if (!row || row.length === 0) continue;
 
           // Skip oversized/specialized equipment we don't haul (Over Dimensional, RGN, etc.).
@@ -5046,10 +5122,10 @@ export default function App({ sharing = null } = {}) {
           const weightVal = isRxoPayerImport ? '42000 lbs' : String(row[colO] || '40000 lbs').trim();
           
           const puTimeVal = useRxoDateTimeFormat
-            ? getRxoDateTime(row, idx, colQ)
+            ? getRxoDateTime(colQ)
             : formatExcelDateTime(row[colQ]);
           const delTimeVal = useRxoDateTimeFormat
-            ? getRxoDateTime(row, idx, colR)
+            ? getRxoDateTime(colR)
             : formatExcelDateTime(row[colR]);
           // Broker exports append a unit to miles, e.g. '396.3 miles'; store the number only.
           const milesVal = String(row[colS] || '500').replace(/,/g, '').match(/\d+(?:\.\d+)?/)?.[0] || '500';
@@ -5161,7 +5237,7 @@ export default function App({ sharing = null } = {}) {
             mergedLoads.set(load.id, { ...existingLoad, status: 'OPEN', tag: 'OPEN' });
           } else if (load.status === 'ENT' && existingLoad.status !== 'ENT' && !preserveStatus) {
             mergedLoads.set(load.id, { ...existingLoad, status: 'ENT', tag: 'ENT' });
-          } else if (useRxoDateTimeFormat) {
+          } else if (anyRxoDateTimeFormat) {
             mergedLoads.set(load.id, {
               ...mergedLoads.get(load.id),
               pickupTime: load.pickupTime || existingLoad.pickupTime,
@@ -5191,6 +5267,9 @@ export default function App({ sharing = null } = {}) {
 
         alert(
           `📂 Excel Import Complete for ${selectedBroker}:\n` +
+          (files.length > 1 || sheetCount > 1
+            ? `• Combined into one list: ${files.length} file(s), ${sheetCount} tab(s)\n`
+            : '') +
           `• Added/Processed: ${replacement ? finalLoads.length : importedLoads.length} loads\n` +
           `• Total in list: ${finalLoads.length} loads\n` +
           getImportReplacementMessage(replacement) +
@@ -5212,7 +5291,7 @@ export default function App({ sharing = null } = {}) {
         alert(`Excel import failed: ${err.message || "Please make sure it's a valid .xlsx or .xls file."}`);
       }
     };
-    reader.readAsArrayBuffer(file);
+    return runImport();
   };
 
   const handleScreenshotImport = async (event, importMode = 'ai') => {
@@ -5883,9 +5962,19 @@ export default function App({ sharing = null } = {}) {
   const queueDroppedPostings = (replacement, existingLoads, { interactive = true } = {}) => {
     const dropped = replacement?.droppedPostings || [];
     if (!dropped.length) return 0;
-    // Paramount removals always need a yes; every other customer's are removed automatically.
+    const posted = (existingLoads || []).filter(load => load.landstarPosting).length;
+    // Paramount removals always need a yes; every other customer's are removed automatically,
+    // unless one import would remove most of the customer's posted loads at once.
+    if (!dropped.some(item => isParaCustomer(item.customer))
+      && dropped.length > LARGE_DROP_MIN && dropped.length > posted / 2) {
+      const ok = interactive && window.confirm(
+        `This import would remove ${dropped.length} of ${posted} ${dropped[0].customer} loads posted on Landstar `
+        + '(they are not on the new list).\n\nThat is unusually many. The file may be cut off or the wrong list.\n\n'
+        + 'Remove them from Landstar? Choose Cancel to leave them posted.'
+      );
+      if (!ok) return 0;
+    }
     if (dropped.some(item => isParaCustomer(item.customer))) {
-      const posted = (existingLoads || []).filter(load => load.landstarPosting).length;
       const ok = interactive && window.confirm(
         `${dropped.length} of ${posted} Paramount loads posted on Landstar are not on the new list.\n\n`
         + 'Remove them from Landstar? Choose Cancel to leave them posted.'
@@ -6054,7 +6143,15 @@ export default function App({ sharing = null } = {}) {
         // Logan Township's ZIPs are filed under Swedesboro/Bridgeport in the offline data.
         'LOGAN TOWNSHIP|NJ': { zip: '08085', city: 'Logan Township', state: 'NJ' },
         // Woolwich Township's ZIP 08085 is also filed under Swedesboro in the offline data.
-        'WOOLWICH TOWNSHIP|NJ': { zip: '08085', city: 'Woolwich Township', state: 'NJ' }
+        'WOOLWICH TOWNSHIP|NJ': { zip: '08085', city: 'Woolwich Township', state: 'NJ' },
+        // Trappe's ZIP 19426 is filed under Collegeville in the offline data.
+        'TRAPPE|PA': { zip: '19426', city: 'Trappe', state: 'PA' },
+        // Westampton's ZIP 08060 is filed under Mount Holly in the offline data.
+        'WESTAMPTON|NJ': { zip: '08060', city: 'Westampton', state: 'NJ' },
+        // Brentwood's ZIPs outside NY/MD/TN/CA are filed under neighboring cities in the offline data.
+        'BRENTWOOD|MO': { zip: '63144', city: 'Brentwood', state: 'MO' },
+        'BRENTWOOD|PA': { zip: '15227', city: 'Brentwood', state: 'PA' },
+        'BRENTWOOD|NH': { zip: '03833', city: 'Brentwood', state: 'NH' }
       };
       const extraKey = `${String(city || '').trim().toUpperCase()}|${String(state || '').trim().toUpperCase()}`;
       if (extraCities[extraKey]) return extraCities[extraKey];
@@ -6802,7 +6899,7 @@ export default function App({ sharing = null } = {}) {
                   </button>
                   <label className="tms-tool cursor-pointer" data-accent="sky" title="Import Excel Spreadsheet">
                     <span>📂 Import Excel</span>
-                    <input type="file" accept=".xlsx, .xls, .csv" onChange={handleExcelImport} className="hidden" />
+                    <input type="file" accept=".xlsx, .xls, .csv" multiple onChange={handleExcelImport} className="hidden" />
                   </label>
                   <button
                     type="button"

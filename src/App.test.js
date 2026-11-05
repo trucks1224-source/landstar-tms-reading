@@ -28,7 +28,7 @@ export {
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo,
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
@@ -2387,4 +2387,9 @@ test('Copy driver info puts the driver details in the dispatch-chat format', () 
   ].join('\n'));
   assert.equal(policy.formatDriverInfo({ ...load, id: '7', driver: 'Sam', driverPhone: '', truck: '12', trailer: '', emptyLocation: '', pickupEta: '' }),
     'Driver 1\nSam\nTractor 1\n12\nload#7', 'blank sections are left out');
+});
+
+test('Copy Order # by the title also copies the previous empty location', () => {
+  assert.equal(policy.formatOrderCopy({ ...load, id: '24581209', emptyLocation: 'Toledo, OH' }), '24581209\nToledo, OH');
+  assert.equal(policy.formatOrderCopy({ ...load, id: '24581209', emptyLocation: '  ' }), '24581209', 'no empty location: just the order #');
 });

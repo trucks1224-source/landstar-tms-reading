@@ -205,6 +205,13 @@ function formatDriverInfo(load) {
   return lines.join('\n');
 }
 
+// "Copy Order #" by the order title: the order number, plus the previous empty
+// location on the next line when one is entered.
+function formatOrderCopy(load) {
+  const emptyLocation = String(load?.emptyLocation || '').trim();
+  return [String(load?.id || '').trim(), emptyLocation].filter(Boolean).join('\n');
+}
+
 function removeCapacity(load) {
   const { bookedAt, trackingStage, checkCalls, ...rest } = load || {};
   return { ...rest, status: 'OPEN', tag: 'OPEN', driver: '', driverPhone: '', truck: '', trailer: '', pickupEta: '', emptyLocation: '' };
@@ -7664,7 +7671,8 @@ export default function App({ sharing = null } = {}) {
               <div className="flex items-center space-x-3">
                 <h2 className="text-xl font-bold tracking-wide">ORDER #{selectedOrder.id}</h2>
                 <button
-                  onClick={() => copyToClipboard(selectedOrder.id, 'Order #')}
+                  onClick={() => copyToClipboard(formatOrderCopy(selectedOrder), 'Order #')}
+                  title={String(selectedOrder.emptyLocation || '').trim() ? 'Copy the order # and previous empty location' : 'Copy the order #'}
                   className="bg-slate-700 hover:bg-slate-600 text-white text-xs px-2.5 py-1 rounded font-medium flex items-center space-x-1 cursor-pointer"
                 >
                   <span>📋 Copy Order #</span>

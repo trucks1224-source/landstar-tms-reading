@@ -676,7 +676,7 @@ body.tms-list-focus .tms-sidebar-header {
   display: none;
 }
 
-/* Top bar: logos left, buttons in the middle, Broski name with the phone on the right */
+/* Top bar: logos left with the buttons right after the Eagles logo; Broski name with the phone on the right */
 .tms-brand {
   align-items: center;
 }
@@ -690,7 +690,7 @@ body.tms-list-focus .tms-sidebar-header {
 
 .tms-brand-actions {
   order: 2;
-  margin-left: auto;
+  margin-left: 4px;
   font-family: var(--fx-font-body);
   letter-spacing: normal;
   text-transform: none;
@@ -698,6 +698,7 @@ body.tms-list-focus .tms-sidebar-header {
 
 .tms-brand-name {
   order: 3;
+  margin-left: auto;
   display: flex;
   flex-direction: column;
   align-items: flex-end;

@@ -236,7 +236,7 @@
    ===================================================================== */
 :root {
   --fx-bg: #050b17;
-  --fx-panel: rgba(9, 18, 36, 0.72);
+  --fx-panel: rgba(9, 18, 36, 0.42);
   --fx-panel-strong: rgba(6, 13, 28, 0.88);
   --fx-edge: rgba(56, 189, 248, 0.28);
   --fx-edge-strong: rgba(34, 211, 238, 0.65);
@@ -260,9 +260,9 @@ body {
   background-image:
     radial-gradient(ellipse at 15% -10%, rgba(34, 211, 238, 0.16), transparent 55%),
     radial-gradient(ellipse at 95% 110%, rgba(167, 139, 250, 0.14), transparent 55%),
-    linear-gradient(rgba(56, 189, 248, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(56, 189, 248, 0.05) 1px, transparent 1px),
-    linear-gradient(rgba(5, 11, 23, 0.86), rgba(5, 11, 23, 0.86)),
+    linear-gradient(rgba(56, 189, 248, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.035) 1px, transparent 1px),
+    linear-gradient(rgba(5, 11, 23, 0.3), rgba(5, 11, 23, 0.3)),
     url('/broski-background.png');
   background-size: auto, auto, 44px 44px, 44px 44px, auto, contain;
   background-position: center, center, -1px -1px, -1px -1px, center, center;
@@ -300,10 +300,20 @@ body {
 }
 
 .tms-sidebar-logos {
-  padding: 8px 10px;
+  padding: 4px 2px;
+  background: none;
+  box-shadow: none;
+}
+
+.tms-logo {
+  width: 190px;
+  filter: brightness(0) invert(1) drop-shadow(0 0 6px rgba(34, 211, 238, 0.55)) drop-shadow(0 0 14px rgba(34, 211, 238, 0.25));
+  image-rendering: auto;
+}
+
+.tms-eagles-logo {
   border-radius: 12px;
-  background: linear-gradient(120deg, rgba(255, 255, 255, 0.92), rgba(224, 242, 254, 0.86));
-  box-shadow: var(--fx-glow);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.45), 0 0 18px rgba(34, 211, 238, 0.3);
 }
 
 /* Toolbox: Import / Post / Data */
@@ -423,12 +433,11 @@ body {
 .tms-load-details {
   background: var(--fx-panel);
   border-color: var(--fx-edge);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 30px rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(12px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 30px rgba(0, 0, 0, 0.3);
 }
 
 .tms-load-details .rounded-lg {
-  background: rgba(4, 10, 24, 0.45);
+  background: rgba(4, 10, 24, 0.28);
   border-color: rgba(56, 189, 248, 0.2);
 }
 

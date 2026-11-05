@@ -3720,16 +3720,19 @@ const listFocusKey = 'landstar_listFocus';
 // the 1152x768 background image, which the shell shows centered with "contain".
 const truckLights = [
   // amber roof markers
-  ['amber', 59.1, 31.6], ['amber', 61.2, 31.6], ['amber', 63.2, 31.9], ['amber', 72, 32.3], ['amber', 73.9, 32.7],
+  ['amber', 52.5, 30.8], ['amber', 54.1, 30.6], ['amber', 56, 30.4], ['amber', 57.8, 30.6],
   // amber side markers by the fuel tank
-  ['amber', 47.3, 54.8], ['amber', 49.4, 54.8], ['amber', 51.5, 54.7],
+  ['amber', 38.8, 54.8], ['amber', 40.5, 54.8], ['amber', 42.3, 54.8],
   // front turn signals (the four-ways)
-  ['amber', 68.9, 52.6], ['amber', 89.4, 48.6],
+  ['amber', 56.5, 52.9], ['amber', 72.8, 48.4],
   // headlights and bumper lights
-  ['white', 70.9, 53.6], ['white', 89, 51], ['white', 72.5, 61.2], ['white', 89.5, 60.3],
+  ['white', 58.8, 54], ['white', 73.1, 50.7], ['white', 60.3, 60.4], ['white', 74, 58.5],
   // under-glow
-  ['glow', 45, 64.2], ['glow', 51.3, 64.4], ['glow', 56.3, 64.4], ['glow', 75, 62], ['glow', 86.3, 61.6],
+  ['glow', 38.8, 64.7], ['glow', 45, 65.3], ['glow', 50.6, 65.7], ['glow', 65, 63.8], ['glow', 75, 62.3],
 ];
+// Exhaust stack tops; smoke rises from here all the time.
+const truckStacks = [[41, 27.6], [56.3, 22.8]];
+const smokePuffs = 12;
 const truckFlashMs = 6000;
 
 function TruckLights() {
@@ -3742,6 +3745,13 @@ function TruckLights() {
     <div className="tms-truck-fx" aria-hidden="true">
       <div className="tms-truck-box">
         <div className={`tms-broski-badge${flashing ? ' is-flashing' : ''}`} />
+        {truckStacks.map(([x, y], stack) => (
+          <div key={`stack-${stack}`} className="tms-smoke" style={{ left: `${x}%`, top: `${y}%` }}>
+            {Array.from({ length: smokePuffs }, (_, puff) => (
+              <span key={puff} style={{ animationDelay: `${-(puff * 0.4 + stack * 0.2).toFixed(1)}s` }} />
+            ))}
+          </div>
+        ))}
         {flashing && truckLights.map(([kind, x, y], index) => (
           <span key={index} className={`tms-truck-light is-${kind}`} style={{ left: `${x}%`, top: `${y}%` }} />
         ))}

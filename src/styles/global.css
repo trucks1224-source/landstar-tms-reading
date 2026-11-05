@@ -767,14 +767,14 @@ body.tms-list-focus .tms-sidebar-header {
 
 .tms-broski-badge {
   position: absolute;
-  left: 11.5%;
-  top: 16.5%;
-  width: 21%;
-  height: 24.5%;
+  left: 10.5%;
+  top: 17.5%;
+  width: 16%;
+  height: 19.5%;
   background-image: url('/broski-background.png');
-  /* 100/21 and 100/24.5 of the box, offset so the crop lines up with the art */
-  background-size: 476.19% 408.16%;
-  background-position: 14.56% 21.85%;
+  /* 100/16 and 100/19.5 of the box, offset so the crop lines up with the art */
+  background-size: 625% 512.82%;
+  background-position: 12.5% 21.74%;
   filter: brightness(1.35) saturate(1.35) contrast(1.1) drop-shadow(0 0 10px rgba(56, 189, 248, 0.85));
   -webkit-mask-image: radial-gradient(ellipse closest-side, #000 72%, transparent 100%);
   mask-image: radial-gradient(ellipse closest-side, #000 72%, transparent 100%);
@@ -854,4 +854,45 @@ body.tms-list-focus .tms-sidebar-header {
 
 @media (prefers-reduced-motion: reduce) {
   .tms-brand .tms-brand-title { animation: none; }
+}
+/* Exhaust smoke: soft puffs rise from both stacks, grow, drift back and fade, forever */
+.tms-smoke {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+.tms-smoke span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(min(100cqw, 150cqh) * 0.03);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(241, 245, 249, 0.75) 0%, rgba(226, 232, 240, 0.45) 30%, rgba(203, 213, 225, 0.15) 52%, transparent 70%);
+  opacity: 0;
+  animation: tms-smoke-rise 4.8s cubic-bezier(0.25, 0.6, 0.4, 1) infinite;
+  will-change: transform, opacity;
+}
+
+.tms-smoke span:nth-child(even) {
+  animation-name: tms-smoke-rise-alt;
+}
+
+@keyframes tms-smoke-rise {
+  0% { transform: translate(-50%, -50%) scale(0.35); opacity: 0; }
+  8% { opacity: 0.9; }
+  45% { transform: translate(-130%, -330%) scale(1.9) rotate(40deg); opacity: 0.45; }
+  100% { transform: translate(-300%, -620%) scale(4.2) rotate(90deg); opacity: 0; }
+}
+
+@keyframes tms-smoke-rise-alt {
+  0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0; }
+  8% { opacity: 0.85; }
+  45% { transform: translate(-80%, -360%) scale(1.7) rotate(-30deg); opacity: 0.4; }
+  100% { transform: translate(-240%, -680%) scale(3.8) rotate(-70deg); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tms-smoke { display: none; }
 }

@@ -3711,6 +3711,30 @@ function LoadListHistory({ onRestore }) {
   );
 }
 
+// Compact list: smaller load cards so many more fit on screen. Remembered per browser.
+const compactListKey = 'landstar_compactList';
+
+function CompactListToggle() {
+  const [compact, setCompact] = useState(() => {
+    try { return localStorage.getItem(compactListKey) === 'true'; } catch { return false; }
+  });
+  useEffect(() => {
+    if (typeof document !== 'undefined') document.body.classList.toggle('tms-compact-list', compact);
+    try { localStorage.setItem(compactListKey, String(compact)); } catch { /* storage unavailable */ }
+  }, [compact]);
+  return (
+    <button
+      type="button"
+      onClick={() => setCompact(on => !on)}
+      aria-pressed={compact}
+      title={compact ? 'Show full load cards' : 'Show more loads at once (compact cards)'}
+      className={`rounded border px-2 text-xs font-semibold whitespace-nowrap ${compact ? 'bg-cyan-600 border-cyan-400 text-white' : 'bg-[#0b132b] border-[#1c2541] text-white hover:border-cyan-500'}`}
+    >
+      {compact ? '▤ Compact' : '▦ Full cards'}
+    </button>
+  );
+}
+
 function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
   return (
     <div className="fixed right-4 top-16 z-40 w-[26rem] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto bg-[#121829] border border-purple-500 rounded-lg shadow-2xl p-3 normal-case tracking-normal text-left" role="dialog" aria-label="Driver inquiries">
@@ -6636,7 +6660,12 @@ export default function App({ sharing = null } = {}) {
             </button>
             {showHeader && (
             <div className="tms-sidebar-logos">
-              <img className="tms-logo" src="/landstar-wordmark.png" alt="Landstar" width="180" height="47" />
+              <div className="tms-landstar-mark" role="img" aria-label="Landstar">
+                <span className="tms-landstar-word">Landstar</span>
+                <svg className="tms-landstar-star" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 1.8l3.05 6.55 7.15.86-5.27 4.93 1.38 7.1L12 17.75l-6.31 3.49 1.38-7.1L1.8 9.21l7.15-.86z" />
+                </svg>
+              </div>
               <img className="tms-eagles-logo" src="/eagles-sidebar.png" alt="Eagles artwork" width="474" height="475" />
             </div>
             )}
@@ -6689,19 +6718,6 @@ export default function App({ sharing = null } = {}) {
                     title="Search Gmail for loads"
                   >
                     Import Gmail
-                  </button>
-                </div>
-              </div>
-              <div className="tms-tool-group">
-                <span className="tms-tool-label">Post</span>
-                <div className="tms-tool-row">
-                  <button
-                    onClick={handleExportToLandstar}
-                    className="tms-tool tms-tool--primary"
-                    data-accent="violet"
-                    title="Export the selected (or shown) loads to a Landstar bulk file; the bot uploads it"
-                  >
-                    🚀 Export to Landstar
                   </button>
                 </div>
               </div>
@@ -6991,11 +7007,12 @@ export default function App({ sharing = null } = {}) {
             ))}
           </div>
 
-          <div className="mt-2">
+          <div className="mt-2 flex gap-1.5">
+            <CompactListToggle />
             <button
               type="button"
               onClick={() => setLaneSort(current => current === 'pickup-asc' ? 'pickup-desc' : 'pickup-asc')}
-              className={`w-full rounded border p-1.5 text-xs font-semibold ${laneSort.startsWith('pickup') ? 'bg-blue-600 border-blue-500 text-white' : 'bg-[#0b132b] border-[#1c2541] text-white hover:border-blue-500'}`}
+              className={`flex-1 rounded border p-1.5 text-xs font-semibold ${laneSort.startsWith('pickup') ? 'bg-blue-600 border-blue-500 text-white' : 'bg-[#0b132b] border-[#1c2541] text-white hover:border-blue-500'}`}
             >
               {laneSort === 'pickup-asc' ? 'Pickup date: earliest first ↑' : laneSort === 'pickup-desc' ? 'Pickup date: latest first ↓' : 'Sort by pickup date'}
             </button>
@@ -7127,11 +7144,13 @@ export default function App({ sharing = null } = {}) {
                       className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-1.5 py-0.5 rounded text-[10px] cursor-pointer"
                     >📋</button>
                   </div>
-                  <div className="text-[11px] text-gray-400">{ord.puDate} {ord.delDate}</div>
-                  <div aria-label={`Rate for load ${ord.id}`} className="mt-1 text-xs text-emerald-400 font-bold">
+                  <div className="tms-card-meta">
+                  <div className="tms-card-dates text-[11px] text-gray-400">{ord.puDate} {ord.delDate}</div>
+                  <div aria-label={`Rate for load ${ord.id}`} className="tms-card-rate mt-1 text-xs text-emerald-400 font-bold">
                     Rate: ${(Number(String(ord.rateInput || '').replace(/[$,]/g, '')) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                   </div>
-                  {ord.planningComment && <div className="mt-1 text-[11px] text-amber-300 font-semibold truncate">{ord.planningComment}</div>}
+                  </div>
+                  {ord.planningComment && <div className="tms-card-comment mt-1 text-[11px] text-amber-300 font-semibold truncate">{ord.planningComment}</div>}
                 </div>
               </div>
             ))

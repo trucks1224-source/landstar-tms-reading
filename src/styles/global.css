@@ -263,10 +263,12 @@ body {
     linear-gradient(rgba(56, 189, 248, 0.035) 1px, transparent 1px),
     linear-gradient(90deg, rgba(56, 189, 248, 0.035) 1px, transparent 1px),
     linear-gradient(rgba(5, 11, 23, 0.3), rgba(5, 11, 23, 0.3)),
+    /* Fades the photo's gray table edges and shadows into the background */
+    radial-gradient(ellipse 31% 50% at 51% 52%, transparent 52%, var(--fx-bg) 100%),
     url('/broski-background.png');
-  background-size: auto, auto, 44px 44px, 44px 44px, auto, contain;
-  background-position: center, center, -1px -1px, -1px -1px, center, center;
-  background-repeat: no-repeat, no-repeat, repeat, repeat, no-repeat, no-repeat;
+  background-size: auto, auto, 44px 44px, 44px 44px, auto, auto, contain;
+  background-position: center, center, -1px -1px, -1px -1px, center, center, center;
+  background-repeat: no-repeat, no-repeat, repeat, repeat, no-repeat, no-repeat, no-repeat;
 }
 
 /* ---- Sidebar ---- */

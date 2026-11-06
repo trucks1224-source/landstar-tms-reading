@@ -245,8 +245,10 @@ async function findBcoThread(accessToken, freightBill) {
     const messages = (thread.messages || []).sort((a, b) => Number(a.internalDate) - Number(b.internalDate));
     if (messages.length && parseBcoSubject(header(messages[0], 'Subject')) === freightBill) threads.push({ id: thread.id, messages });
   }
-  // A reassigned load has one thread per driver: the newest dispatch is the current driver.
-  return threads.sort((a, b) => Number(b.messages[0].internalDate) - Number(a.messages[0].internalDate))[0] || null;
+  // A reassigned (or re-sent) load has several threads: the newest dispatch is the one emails go
+  // to, but drivers may answer on any of them, so all are returned too.
+  const sorted = threads.sort((a, b) => Number(b.messages[0].internalDate) - Number(a.messages[0].internalDate));
+  return sorted[0] ? { ...sorted[0], all: sorted } : null;
 }
 
 async function handleDriverEmail({ action, freightBill, since, text }) {
@@ -258,7 +260,10 @@ async function handleDriverEmail({ action, freightBill, since, text }) {
   const { id: threadId, messages } = found;
   const recipients = buildDriverRecipients(messages[0], myEmail);
   if (action === 'driverThread') {
-    return { status: 200, body: { threadId, ...recipients, replies: findDriverReplies(messages.slice(1), myEmail, Date.parse(since) || 0) } };
+    // Replies on every BCO email for this freight bill, each with the thread it is in.
+    const replies = found.all.flatMap(thread => findDriverReplies(thread.messages.slice(1), myEmail, Date.parse(since) || 0)
+      .map(reply => ({ ...reply, threadId: thread.id })));
+    return { status: 200, body: { threadId, ...recipients, replies: replies.sort((a, b) => a.at.localeCompare(b.at)) } };
   }
   const body = String(text || '').trim();
   if (!body || body.length > 20000) return { status: 400, body: { error: 'The email text is empty or too long.' } };

@@ -28,7 +28,7 @@ export {
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult,
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
@@ -2699,4 +2699,15 @@ test('MercuryGate: new Paramount bookings are filled in once, the PDF after pick
   assert.match(done.notes, /MercuryGate: Added Customer Reference Number 2283700\nMercuryGate: Saved pickup: X/);
   const failed = policy.applyMercuryGateResult(booked, { step: 'booked', ok: false, message: 'Could not read the pickup', at: 2, results: [] });
   assert.match(failed.notes, /NOT finished - Could not read the pickup\. Finish it by hand\./);
+});
+
+test('arrived / left-shipper emails to Paramount always wait for Daniel, even after 3 approvals', () => {
+  assert.equal(policy.paramountMaySendItself('arrived'), false);
+  assert.equal(policy.paramountMaySendItself('departed'), false);
+});
+
+test('MercuryGate starts right after Assign Capacity, by the Landstar load number', () => {
+  const booked = { ...load, id: '2282514', status: 'BOOKED', bookedAt: '2026-11-06T17:53:16Z', landstarAssignment: { ok: true, landstarLoadId: '187603287' } };
+  assert.equal(policy.getDueMercuryGateStep(booked, {}), 'booked', 'no freight bill needed');
+  assert.equal(policy.getDueMercuryGateStep({ ...booked, landstarAssignment: { ok: false, landstarLoadId: '' } }, {}), '');
 });

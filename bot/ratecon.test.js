@@ -23,3 +23,13 @@ test('reads order, BOL, reference and both stops from a Paramount rate confirmat
 test('says what it could not read instead of guessing', () => {
   assert.match(parseParamountRateCon('Load Confirmation 2282980\nnothing else').error, /pickup, delivery/);
 });
+
+test('a misread date ("1170972026") and an empty Reference are handled', () => {
+  const r = parseParamountRateCon("Paramount Logistics\nParamount Transportation Logistics Svcs Page 1\n315 NE 14th Street\nOcala, FL 34470\n877-510-9133 239-267-1910 Load Confirmation 2282514\nCarrier: LANDSTAR RANGER Contact: DANIEL URDANETA\nJACKSONVILLE FL 32224 Phone: 484-650-8300\nDate: 11/06/2026 Fax:\nOrder Order: 2282514 Commodity: DIMETHRYL SULFOXIDE\nMiles: 781.0 Weight: 20723.0 LB\nTemp: Trailer: Van (DAT)\nBOL: EGLV142603334817 Reference:\nCustoms Broker Info:\nPU1 Name: CODA LOGISTICS Date: 11/06/2026 0800\nAddress: 1501 WEST EDGAR ROAD MAN DOCR 7 11/06/2026 1500\nLINDEN NJ 07036 Driver Load: No driver loading or unload\nS02 Name: OAKWOOD PRODUCTS Date: 1170972026 0800\nAddress: 280 COMMERCIAL DRIVE 11/09/2026 1700\nESTILL SC 29918 Driver Load: No driver loading or unload\n");
+  assert.equal(r.error, undefined);
+  assert.equal(r.reference, '', 'empty Reference: nothing from the next line');
+  assert.equal(r.pickup.comments, 'BOL number EGLV142603334817');
+  assert.deepEqual(r.drop.early, { date: '11/09/2026', time: '08:00' });
+  assert.deepEqual(r.drop.late, { date: '11/09/2026', time: '17:00' });
+  assert.deepEqual([r.drop.city, r.drop.state, r.drop.zip], ['ESTILL', 'SC', '29918']);
+});

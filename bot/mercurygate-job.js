@@ -54,7 +54,8 @@ async function runMercuryGateJob(context, job, { dryRun = true, log = console.lo
 // Runs the first queued job (status-server's mercurygate-queue.json) and reports the result.
 async function runNextMercuryGateJob(context, log = console.log) {
   const { readMercuryGateQueue, writeMercuryGateQueue, reportMercuryGateResult } = require('./status-server');
-  const job = readMercuryGateQueue()[0];
+  // Jobs waiting for a retry (MercuryGate down) are skipped until their time comes.
+  const job = readMercuryGateQueue().find(item => !item.nextAt || item.nextAt <= Date.now());
   if (!job) return;
   const key = `${job.loadId}|${job.step}`;
   let outcome;
@@ -64,7 +65,12 @@ async function runNextMercuryGateJob(context, log = console.log) {
     outcome = { ok: false, message: error.message, results: [] };
   }
   const left = readMercuryGateQueue().filter(item => `${item.loadId}|${item.step}` !== key || item.mode !== job.mode);
-  if (!outcome.ok && (job.attempts || 0) + 1 < 2) left.push({ ...job, attempts: (job.attempts || 0) + 1 });
+  // MercuryGate down or not signing in: try again every 10 minutes for about 2 hours.
+  // Anything else (e.g. a form that didn't open): one more try right away.
+  const attempts = (job.attempts || 0) + 1;
+  const outage = /not signed in|HTTP 5dd|Internal Server Error|timed out|Timeout/i.test(outcome.message || '');
+  if (!outcome.ok && outage && attempts < 12) left.push({ ...job, attempts, nextAt: Date.now() + 10 * 60 * 1000 });
+  else if (!outcome.ok && attempts < 2) left.push({ ...job, attempts });
   writeMercuryGateQueue(left);
   reportMercuryGateResult({
     customer: job.customer, loadId: job.loadId, freightBill: job.freightBill, step: job.step, mode: job.mode,
@@ -74,7 +80,13 @@ async function runNextMercuryGateJob(context, log = console.log) {
   log(`  MercuryGate ${job.mode} for order ${job.loadId}: ${outcome.ok ? 'done' : `failed - ${outcome.message}`}`);
 }
 
-module.exports = { runMercuryGateJob, runNextMercuryGateJob, PARAMOUNT_NOTES };
+// A queued job that is due now (not waiting for a retry).
+function hasDueMercuryGateJob() {
+  const { readMercuryGateQueue } = require('./status-server');
+  return readMercuryGateQueue().some(item => !item.nextAt || item.nextAt <= Date.now());
+}
+
+module.exports = { runMercuryGateJob, runNextMercuryGateJob, hasDueMercuryGateJob, PARAMOUNT_NOTES };
 
 if (require.main === module) {
   (async () => {

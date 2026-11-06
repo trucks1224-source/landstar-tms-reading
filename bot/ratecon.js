@@ -24,8 +24,18 @@ function parseStop(block) {
   const addressIndex = lines.findIndex(line => /Address:/i.test(line));
   const addressLine = lines[addressIndex] || '';
   const cityLine = lines.slice(addressIndex + 1).find(line => /\b[A-Z]{2}\s+\d{5}\b/.test(line)) || '';
-  const start = nameLine.match(/Date:\s*(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{4})/i);
-  const end = addressLine.match(/(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{4})\s*$/);
+  // OCR sometimes reads "/" as 7 or 1 ("11/09/2026" -> "1170972026"); dates are MM/DD/YYYY.
+  const DATE = String.raw`(\d{2}[\/71|]\d{2}[\/71|]20\d{2}|\d{1,2}\/\d{1,2}\/\d{4})`;
+  const start = nameLine.match(new RegExp(String.raw`Date:\s*${DATE}\s+(\d{4})`, 'i'));
+  const end = addressLine.match(new RegExp(String.raw`${DATE}\s+(\d{4})\s*$`));
+  const fixDate = text => {
+    const plain = String(text).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (plain) return text;
+    const ocr = String(text).match(/^(\d{2}).(\d{2}).(\d{4})$/);
+    return ocr ? `${ocr[1]}/${ocr[2]}/${ocr[3]}` : text;
+  };
+  if (start) start[1] = fixDate(start[1]);
+  if (end) end[1] = fixDate(end[1]);
   const place = cityLine.match(/^(.*?)\s+([A-Z]{2})\s+(\d{5})(?:-\d{4})?\b/);
   return {
     name: clean(nameLine.replace(/^.*?Name:\s*/i, '').replace(/\s*Date:.*$/i, '').replace(/[-–—]+\s*$/, '')),
@@ -42,8 +52,9 @@ function parseStop(block) {
 function parseParamountRateCon(text) {
   const value = String(text || '').replace(/\r/g, '');
   const order = value.match(/Order:\s*(\d{6,})/i)?.[1] || value.match(/Load Confirmation\s+(\d{6,})/i)?.[1] || '';
-  const bol = value.match(/BOL:\s*([A-Z0-9-]{4,})/i)?.[1] || '';
-  const reference = value.match(/Reference:\s*[^A-Za-z0-9\n]*([A-Z0-9-]{4,})/i)?.[1] || '';
+  // Same line only: an empty "Reference:" must not pick up the next line's words.
+  const bol = value.match(/BOL:[ \t]*([A-Z0-9-]{4,})/i)?.[1] || '';
+  const reference = value.match(/Reference:[ \t]*[^A-Za-z0-9\n]*?(\d[A-Z0-9-]{3,})/i)?.[1] || '';
   // Stop blocks start with PU1 / SO2 (OCR may read SO as S0 or 50).
   const starts = [...value.matchAll(/^\s*(PU|SO|S0|50)\s*(\d)\b/gim)].map(match => ({ index: match.index, kind: /PU/i.test(match[1]) ? 'pickup' : 'drop' }));
   const stops = starts.map((start, i) => ({ kind: start.kind, ...parseStop(value.slice(start.index, starts[i + 1]?.index ?? value.search(/^\s*\w*ayment\b|^\s*Special Instructions/im) >>> 0)) }));
@@ -90,7 +101,7 @@ async function renderFirstPage(context, pdfFile) {
       const data = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
       const doc = await pdfjs.getDocument({ data }).promise;
       const first = await doc.getPage(1);
-      const viewport = first.getViewport({ scale: 2 });
+      const viewport = first.getViewport({ scale: 3 }) // higher resolution: fewer misread dates and words;
       const canvas = document.getElementById('c');
       canvas.width = viewport.width;
       canvas.height = viewport.height;

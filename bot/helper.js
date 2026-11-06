@@ -18,7 +18,56 @@ const { setStatus, readAssignQueue, readTrackingWatch, readTrackingBills, report
 const { openBoard } = require('./rate-check');
 const { processAssignQueue } = require('./assign');
 const { checkTracking } = require('./clarity');
-const { runNextMercuryGateJob } = require('./mercurygate-job');
+const { runNextMercuryGateJob, hasDueMercuryGateJob } = require('./mercurygate-job');
+const { checkFiles } = require('./rate-check');
+const { isPrechecked, markPrechecked, isLockedByHelper, claim, release } = require('./prechecked');
+const os = require('os');
+
+// ---------- Helping with big exports ----------
+// When idle, the helper rate-checks export files from the BACK of the list (the main bot
+// uploads from the front), a few at a time; the main bot then uploads them without checking.
+const DOWNLOADS = path.join(os.homedir(), 'Downloads');
+const FILE_PATTERN = /^Landstar_Bulk_.*\.(xlsx|xls)$/i;
+const HELP_BATCH = 3;
+const HELP_MIN_WAITING = 6; // only when an export is big enough to be worth sharing
+
+function filesToHelpWith() {
+  let names = [];
+  try { names = fs.readdirSync(DOWNLOADS).filter(name => FILE_PATTERN.test(name)); } catch { return []; }
+  const files = names.map(name => path.join(DOWNLOADS, name)).filter(file => {
+    try {
+      const stat = fs.statSync(file);
+      return stat.isFile() && stat.size > 0 && Date.now() - stat.mtimeMs > 5000;
+    } catch { return false; }
+  }).sort((a, b) => path.basename(a).localeCompare(path.basename(b), undefined, { numeric: true }));
+  if (files.length < HELP_MIN_WAITING) return [];
+  // Leave the front of the list to the main bot.
+  return files.slice(HELP_BATCH * 2).filter(file => !isPrechecked(file) && !isLockedByHelper(file)).slice(-HELP_BATCH);
+}
+
+async function helpWithExports(context, log) {
+  const files = filesToHelpWith().filter(claim);
+  if (!files.length) return false;
+  try {
+    log(`  Rate-checking ${files.length} file(s) for the main bot: ${files.map(file => path.basename(file)).join(', ')}`);
+    const boardPage = await openBoard(context, () => {});
+    const results = await checkFiles(boardPage, files, { apply: true, log: () => {} });
+    const skippedFolder = path.join(DOWNLOADS, 'landstar-skipped-atz');
+    for (const result of results) {
+      if (result.remaining === 0 && result.skips && result.skips.length) {
+        // Every load already posted by ATZ: not uploaded (same as the main bot does).
+        fs.mkdirSync(skippedFolder, { recursive: true });
+        fs.renameSync(result.filePath, path.join(skippedFolder, path.basename(result.filePath)));
+        log(`  ${path.basename(result.filePath)}: every load is already posted by ATZ; not uploaded.`);
+      } else {
+        markPrechecked(result.filePath);
+      }
+    }
+    return true;
+  } finally {
+    files.forEach(release);
+  }
+}
 
 const PROFILE_DIR = path.join(__dirname, 'browser-profile-helper');
 const LOOP_MS = 5000;
@@ -90,7 +139,7 @@ const off = () => { try { fs.writeFileSync(HELPER_STATUS_FILE, JSON.stringify({ 
         console.log(`\n[${timeNow()}] Assigning capacity on booked loads...`);
         await processAssignQueue(context, { log: line => console.log(line) });
         lastActivity = Date.now();
-      } else if (readMercuryGateQueue().length) {
+      } else if (hasDueMercuryGateJob()) {
         setStatus('working', 'Filling in MercuryGate');
         console.log(`\n[${timeNow()}] MercuryGate: filling in a booked Paramount load...`);
         await runNextMercuryGateJob(context, line => console.log(line));
@@ -100,6 +149,10 @@ const off = () => { try { fs.writeFileSync(HELPER_STATUS_FILE, JSON.stringify({ 
         setStatus('working', 'Checking Clarity');
         console.log(`\n[${timeNow()}] Checking Clarity for booked loads...`);
         reportTrackingResults(await checkTracking(context, readTrackingWatch(), { log: line => console.log(line), candidateBills: readTrackingBills() }));
+        lastActivity = Date.now();
+      } else if (filesToHelpWith().length) {
+        setStatus('working', 'Rate-checking an export');
+        await helpWithExports(context, line => console.log(line));
         lastActivity = Date.now();
       } else if (Date.now() - lastActivity > KEEP_ALIVE_MS) {
         await openBoard(context, () => {}); // keeps the Landstar sign-in alive

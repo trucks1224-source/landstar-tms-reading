@@ -3641,6 +3641,15 @@ function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapac
           ← Back to loads
         </button>
       </div>
+      {emails && emails.replies.some(reply => !reply.loadId) && (
+        <div className="rounded-lg border border-sky-500 p-3 bg-[#121829]">
+          <p className="text-sm font-bold text-sky-200">💬 Driver replies on loads not booked in the TMS</p>
+          {emails.replies.filter(reply => !reply.loadId).map(reply => (
+            <p key={`fb-${reply.id}`} className="text-xs text-gray-300 mt-1">Freight bill {reply.freightBill}</p>
+          ))}
+          <LoadEmailBox drafts={[]} replies={emails.replies.filter(reply => !reply.loadId)} onDismissReply={emails.onDismissReply} />
+        </div>
+      )}
       {entries.length === 0 && (
         <p className="text-sm text-gray-300 bg-[#121829] border border-[#1c2541] rounded-lg p-6 text-center">
           No booked loads yet. Open a load, enter the driver, and click 📦 Book Load.
@@ -4120,7 +4129,7 @@ function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip,
           <div className="flex flex-wrap gap-2 mt-1 items-center">
             <button type="button" disabled={draft.sending} onClick={() => onSend(draft)} className="bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white px-3 py-0.5 rounded font-semibold cursor-pointer">{draft.sending ? 'Sending…' : 'Send'}</button>
             <button type="button" disabled={draft.sending} onClick={() => onSkip(draft)} className="bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded cursor-pointer">Don&apos;t send</button>
-            <span className="text-gray-400">{approvalsLeft(draft) ? `${approvalsLeft(draft)} more approval${approvalsLeft(draft) === 1 ? '' : 's'}, then these send automatically` : 'Sending automatically'}</span>
+            <span className="text-gray-400">{paramountAlwaysAskKinds.has(draft.kind) ? 'Always waits for your Send' : approvalsLeft(draft) ? `${approvalsLeft(draft)} more approval${approvalsLeft(draft) === 1 ? '' : 's'}, then these send automatically` : 'Sending automatically'}</span>
           </div>
         </div>
       ))}
@@ -4260,6 +4269,9 @@ const PARAMOUNT_EMAIL_URL = '/api/paramount-email';
 const paramountTrackingCustomers = new Set(['PARA1522166ATZ', 'PARA1522166ATZH']);
 const paramountApprovedKey = 'landstar_paramountApprovedSends';
 const PARAMOUNT_AUTO_SEND_AFTER = 3;
+// Arrived at / left the shipper: always wait for Daniel's Send click (his rule, 2026-11-06).
+const paramountAlwaysAskKinds = new Set(['arrived', 'departed']);
+const paramountMaySendItself = kind => !paramountAlwaysAskKinds.has(kind) && readParamountApprovedCount() >= PARAMOUNT_AUTO_SEND_AFTER;
 const PARAMOUNT_WATCH_DAYS = 5;
 const paramountEmailKinds = ['initial', 'arrived', 'departed'];
 const paramountSignatureName = 'Daniel Gomez';
@@ -4272,6 +4284,57 @@ const paramountResultSeen = new Map();
 const fuelEmailSeenKey = 'landstar_fuelEmailSeen';
 // Freight bills from recent BCO Load Detail emails (refreshed every few minutes).
 const bcoBillsCache = { at: 0, bills: [] };
+// Driver replies must be seen right away: a Windows notification (even when the TMS tab is in the
+// background), a sound, and a blinking tab title until the TMS is looked at.
+function alertDriverReply(title, body, gmailThreadId) {
+  try {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      const note = new Notification(title, { body, requireInteraction: true, tag: `driver-${gmailThreadId || title}` });
+      note.onclick = () => {
+        window.focus();
+        if (gmailThreadId) window.open(`https://mail.google.com/mail/u/0/#all/${gmailThreadId}`, '_blank');
+        note.close();
+      };
+    }
+  } catch { /* the banner still shows */ }
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    const audio = new AudioContext();
+    [0, 0.25, 0.5].forEach(start => {
+      const tone = audio.createOscillator();
+      const gain = audio.createGain();
+      tone.frequency.value = 880;
+      gain.gain.value = 0.25;
+      tone.connect(gain).connect(audio.destination);
+      tone.start(audio.currentTime + start);
+      tone.stop(audio.currentTime + start + 0.15);
+    });
+  } catch { /* no sound */ }
+  if (!blinkTimer) {
+    const original = document.title;
+    let on = false;
+    blinkTimer = setInterval(() => {
+      if (document.visibilityState === 'visible' && document.hasFocus()) {
+        clearInterval(blinkTimer);
+        blinkTimer = null;
+        document.title = original;
+        return;
+      }
+      on = !on;
+      document.title = on ? '💬 DRIVER REPLIED' : original;
+    }, 1000);
+  }
+}
+let blinkTimer = null;
+
+// Driver replies already shown for loads that aren't booked in the TMS.
+const driverReplySeenKey = 'landstar_driverReplySeenIds';
+function readSeenDriverReplies() {
+  try { const parsed = JSON.parse(localStorage.getItem(driverReplySeenKey)); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+}
+function markSeenDriverReplies(ids) {
+  try { localStorage.setItem(driverReplySeenKey, JSON.stringify([...readSeenDriverReplies(), ...ids].slice(-300))); } catch { /* shown again next time */ }
+}
 
 function isParamountTrackingCustomer(name) {
   return paramountTrackingCustomers.has(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
@@ -4570,8 +4633,14 @@ const MERCURYGATE_FROM = Date.parse('2026-11-06T16:55:00Z');
 const mercurygateSeenKey = 'landstar_mercurygateSeenAt';
 
 // The MercuryGate step due for a booked Paramount load, or ''.
+// The number MercuryGate is searched by: the Landstar freight bill (from Clarity / the BCO email)
+// or, right after booking, the Landstar load number from Assign Capacity (also a reference there).
+function getMercuryGateSearchNumber(load, tracking = {}) {
+  return String(tracking.freightBill || (load.landstarAssignment?.ok ? load.landstarAssignment.landstarLoadId : '') || '');
+}
+
 function getDueMercuryGateStep(load, tracking = {}) {
-  if (load.status !== 'BOOKED' || !tracking.freightBill) return '';
+  if (load.status !== 'BOOKED' || !getMercuryGateSearchNumber(load, tracking)) return '';
   if (!(Date.parse(load.bookedAt) >= MERCURYGATE_FROM)) return '';
   const done = load.mercurygate || {};
   if (!done.booked) return 'booked';
@@ -7009,7 +7078,7 @@ export default function App({ sharing = null } = {}) {
         if (cancelled) return;
         const text = buildParamountEmail(kind, load, info, { greetingName: greetingNameFrom(thread.to?.[0]), phone: paramountLatest.phone });
         const draft = { id, customer, loadId: String(load.id), kind, text, to: thread.to || [], cc: thread.cc || [] };
-        if (readParamountApprovedCount() >= PARAMOUNT_AUTO_SEND_AFTER) {
+        if (paramountMaySendItself(kind)) {
           await sendParamountDraft(draft, { auto: true });
         } else {
           setParamountDrafts(current => (current.some(item => item.id === id) ? current : [...current, draft]));
@@ -7032,21 +7101,29 @@ export default function App({ sharing = null } = {}) {
       }
       if (!isParamountTrackingCustomer(info.customer)) return; // RXO: kept for update-request replies
       // MercuryGate: once the freight bill is known (and again after pickup for the PDF).
-      const mgStep = getDueMercuryGateStep(updated, { ...updated.paramountTracking, ...info });
-      if (mgStep) {
-        const id = `mg|${info.customer}|${info.loadId}|${mgStep}`;
-        if (!paramountBusy.has(id)) {
-          paramountBusy.add(id);
-          fetch(BOT_MERCURYGATE_URL, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jobs: [{ customer: info.customer, loadId: String(info.loadId), freightBill: String(info.freightBill), step: mgStep, mode: 'save' }] })
-          }).then(response => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            patchParamountLoad(info.customer, info.loadId, current => ({ ...current, mercurygate: { ...(current.mercurygate || {}), [mgStep]: new Date().toISOString() } }));
-          }).catch(() => paramountBusy.delete(id));
-        }
-      }
+      queueMercuryGateJobs();
       getDueParamountEmails(updated, info).forEach(kind => { void prepare(info.customer, updated, kind, { ...updated.paramountTracking, ...info }); });
+    };
+    // MercuryGate jobs for booked Paramount loads: as soon as the truck is assigned on Landstar
+    // (or the freight bill is known), and the PDF upload after pickup. Checked every minute.
+    const queueMercuryGateJobs = () => {
+      if (!canStartBotHere()) return;
+      for (const { customer, load } of getBookedLoads(paramountLatest.map)) {
+        if (!isParamountTrackingCustomer(customer)) continue;
+        const tracking = load.paramountTracking || {};
+        const step = getDueMercuryGateStep(load, tracking);
+        if (!step) continue;
+        const id = `mg|${customer}|${load.id}|${step}`;
+        if (paramountBusy.has(id)) continue;
+        paramountBusy.add(id);
+        fetch(BOT_MERCURYGATE_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobs: [{ customer, loadId: String(load.id), freightBill: getMercuryGateSearchNumber(load, tracking), step, mode: 'save' }] })
+        }).then(response => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          patchParamountLoad(customer, load.id, current => ({ ...current, mercurygate: { ...(current.mercurygate || {}), [step]: new Date().toISOString() } }));
+        }).catch(() => paramountBusy.delete(id));
+      }
     };
     const checkReplies = async () => {
       if (!canStartBotHere()) return;
@@ -7145,7 +7222,8 @@ export default function App({ sharing = null } = {}) {
       if (!canStartBotHere()) return;
       for (const { customer, load } of getBookedLoads(paramountLatest.map)) {
         const freightBill = load.paramountTracking?.freightBill;
-        const firstSent = Object.values(load.driverEmails || {}).filter(item => !item.skipped).map(item => item.at).sort()[0];
+        // From the first driver email the TMS sent, or from booking when Daniel emails the driver himself.
+        const firstSent = Object.values(load.driverEmails || {}).filter(item => !item.skipped).map(item => item.at).sort()[0] || load.bookedAt;
         if (!freightBill || !firstSent) continue;
         try {
           const result = await callParamountEmail({ action: 'driverThread', freightBill, since: firstSent });
@@ -7163,7 +7241,7 @@ export default function App({ sharing = null } = {}) {
             driverReplyIds: [...(current.driverReplyIds || []), ...replies.map(reply => reply.id)].slice(-30),
             notes: [current.notes, ...replies.map(reply => `Driver reply from ${reply.from.replace(/<[^>]*>/, '').trim()}: ${reply.snippet}`)].filter(Boolean).join('\n')
           }));
-          replies.forEach(reply => alert(`Driver replied on load #${load.id} (${customer}):\n\n${reply.from.replace(/<[^>]*>/, '').trim()}: ${reply.snippet}`));
+          replies.forEach(reply => alertDriverReply(`Driver replied · load #${load.id}`, `${reply.from.replace(/<[^>]*>/, '').trim()}: ${reply.snippet}`, result.threadId));
           }
           // An ETA in the driver's reply on a Paramount load goes to Paramount's email thread.
           if (isParamountTrackingCustomer(customer)) {
@@ -7194,6 +7272,38 @@ export default function App({ sharing = null } = {}) {
         }
       }
     };
+    // Driver replies on every BCO Load Detail email Daniel sent lately, also for loads that aren't
+    // booked in the TMS (no load card): one pop-up, and a list at the top of Booked Loads.
+    const checkOtherDriverReplies = async () => {
+      if (!canStartBotHere()) return;
+      if (!bcoBillsCache.bills.length) {
+        try {
+          bcoBillsCache.bills = (await callParamountEmail({ action: 'bcoBills' })).bills || [];
+          bcoBillsCache.at = Date.now();
+        } catch (error) {
+          console.warn(`Could not list the BCO Load Detail emails: ${error.message}`);
+          return;
+        }
+      }
+      const bookedBills = new Set(getBookedLoads(paramountLatest.map).map(({ load }) => String(load.paramountTracking?.freightBill || '')).filter(Boolean));
+      const seen = new Set(readSeenDriverReplies());
+      const fresh = [];
+      for (const bill of bcoBillsCache.bills.filter(item => !bookedBills.has(String(item)))) {
+        try {
+          const result = await callParamountEmail({ action: 'driverThread', freightBill: bill, since: new Date(Date.now() - 36 * 3600000).toISOString() });
+          (result.replies || []).filter(reply => !seen.has(reply.id)).forEach(reply => fresh.push({ ...reply, freightBill: String(bill), threadId: result.threadId }));
+        } catch (error) {
+          console.warn(`Could not check driver replies on freight bill ${bill}: ${error.message}`);
+        }
+        if (cancelled) return;
+      }
+      if (!fresh.length) return;
+      markSeenDriverReplies(fresh.map(reply => reply.id));
+      setParamountReplies(current => [...current, ...fresh
+        .filter(reply => !current.some(item => item.id === reply.id))
+        .map(reply => ({ ...reply, customer: '', loadId: '', driver: true }))]);
+      fresh.forEach(reply => alertDriverReply(`Driver replied · freight bill ${reply.freightBill}`, `${reply.from.replace(/<[^>]*>/, '').trim()}: ${reply.snippet}`, reply.threadId));
+    };
     // The weekly fuel surcharge email: checked shortly after opening and every hour.
     const checkFuelEmail = async () => {
       if (!canStartBotHere()) return;
@@ -7207,10 +7317,11 @@ export default function App({ sharing = null } = {}) {
     const fuelFirst = setTimeout(() => { void checkFuelEmail(); }, 15 * 1000);
     const fuelTimer = setInterval(() => { void checkFuelEmail(); }, 60 * 60 * 1000);
     void pushWatchList();
-    const watchTimer = setInterval(() => { void pushWatchList(); }, 60 * 1000);
+    const watchTimer = setInterval(() => { void pushWatchList(); queueMercuryGateJobs(); }, 60 * 1000);
     // First checks soon after the page opens (it reloads after every TMS update), then every 2 minutes.
-    const driverFirst = setTimeout(() => { void checkDriverEmails(); void checkDriverReplies(); void checkReplies(); }, 30 * 1000);
-    const driverTimer = setInterval(() => { void checkDriverEmails(); void checkDriverReplies(); }, 2 * 60 * 1000);
+    // Driver replies first (most urgent), soon after the page opens.
+    const driverFirst = setTimeout(() => { void checkOtherDriverReplies(); void checkDriverReplies(); void checkDriverEmails(); void checkReplies(); }, 15 * 1000);
+    const driverTimer = setInterval(() => { void checkDriverEmails(); void checkDriverReplies(); void checkOtherDriverReplies(); }, 2 * 60 * 1000);
     const rxoFirst = setTimeout(() => { void checkRxoRequests(); }, 20 * 1000);
     const replyTimer = setInterval(() => { void checkReplies(); void checkRxoRequests(); }, 2 * 60 * 1000);
     window.addEventListener('landstar-tracking-result', onTrackingResult);
@@ -8739,6 +8850,24 @@ export default function App({ sharing = null } = {}) {
                     <button type="button" onClick={() => setPastedImage(null)} className="text-gray-300 hover:text-white text-xs mt-1 cursor-pointer">Cancel</button>
                   </div>
                 </div>
+              </div>
+            )}
+            {paramountReplies.some(reply => reply.driver) && (
+              <div className="fixed left-1/2 -translate-x-1/2 top-2 z-50 w-[46rem] max-w-[calc(100vw-1rem)] bg-red-600 text-white rounded-lg shadow-2xl border-2 border-red-300 p-3 normal-case tracking-normal text-left" role="alert">
+                <p className="font-bold text-base">💬 Driver replied - answer right away</p>
+                {paramountReplies.filter(reply => reply.driver).map(reply => (
+                  <div key={`banner-${reply.id}`} className="mt-2 bg-red-700/60 rounded p-2 text-sm">
+                    <p className="font-semibold">{reply.loadId ? `Load #${reply.loadId}` : `Freight bill ${reply.freightBill}`} · {String(reply.from || '').replace(/<[^>]*>/, '').trim()} · {formatCheckTime(reply.at)}</p>
+                    <p className="mt-0.5">“{reply.snippet}”</p>
+                    <div className="flex gap-2 mt-1">
+                      <a href={`https://mail.google.com/mail/u/0/#all/${reply.threadId}`} target="_blank" rel="noreferrer" className="bg-white text-red-700 px-3 py-0.5 rounded font-bold">Open in Gmail</a>
+                      <button type="button" onClick={() => setParamountReplies(current => current.filter(item => item.id !== reply.id))} className="bg-red-900 hover:bg-red-950 px-3 py-0.5 rounded font-semibold cursor-pointer">Got it</button>
+                    </div>
+                  </div>
+                ))}
+                {typeof Notification !== 'undefined' && Notification.permission === 'default' && (
+                  <button type="button" onClick={() => Notification.requestPermission()} className="mt-2 bg-yellow-300 text-black px-3 py-1 rounded font-bold cursor-pointer">Turn on Windows notifications for driver replies</button>
+                )}
               </div>
             )}
             {(paramountDrafts.length > 0 || paramountReplies.length > 0) && (

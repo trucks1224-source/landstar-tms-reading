@@ -46,7 +46,8 @@ async function openMercuryGate(page, log = () => {}) {
     }
     await page.waitForTimeout(2000);
   }
-  throw new Error('MercuryGate is not signed in (is the bot signed in to Landstar Online?).');
+  await saveDebug(page, 'not-signed-in');
+  throw new Error(`MercuryGate is not signed in (is the bot signed in to Landstar Online?). Last page: ${page.url()}`);
 }
 
 // MercuryGate's id for the load (the "route"), from the search box: its search asks the server

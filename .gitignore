@@ -22,3 +22,4 @@ bot/ratecons/
 bot/mercurygate-shots/
 bot/.tesseract-cache/
 bot/debug*
+bot/prechecked.json

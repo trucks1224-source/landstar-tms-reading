@@ -32,7 +32,7 @@ const { checkTracking } = require('./clarity');
 const { readTrackingWatch, reportTrackingResults, readTrackingBills } = require('./status-server');
 const TRACKING_CHECK_MS = 5 * 60 * 1000;
 const { readMercuryGateQueue } = require('./status-server');
-const { runNextMercuryGateJob } = require('./mercurygate-job');
+const { runNextMercuryGateJob, hasDueMercuryGateJob } = require('./mercurygate-job');
 // While the helper bot (helper.js) runs, it does Assign Capacity, Clarity and MercuryGate.
 const { helperActive } = require('./status-server');
 
@@ -114,6 +114,8 @@ const uploadedFolder = path.join(sourceFolder, 'landstar-uploaded');
 // Only pick up the app's Landstar bulk export spreadsheets:
 //   Landstar_Bulk_<broker>.xlsx   or   Landstar_Bulk_<broker>_1of2.xlsx
 const FILE_PATTERN = /^Landstar_Bulk_.*\.(xlsx|xls)$/i;
+// Big exports are shared with the helper bot: it rate-checks files from the back of the list.
+const { isPrechecked, isLockedByHelper } = require('./prechecked');
 
 function findPendingFiles() {
   if (!fs.existsSync(sourceFolder)) return [];
@@ -273,10 +275,13 @@ async function openBulkPostings(context, page, { waitForever = false } = {}) {
 // "landstar-uploaded" folder. Returns the files that could not be uploaded.
 // Throws if the rate check fails, so nothing posts unchecked.
 async function processFiles(context, page, files, { waitForever = false } = {}) {
-  if (runRateCheck) {
+  // Files the helper bot already rate-checked (and that haven't changed since) skip the check.
+  const toCheck = files.filter(file => !isPrechecked(file));
+  if (toCheck.length < files.length) console.log(`  ${files.length - toCheck.length} file(s) already rate-checked by the helper bot.`);
+  if (runRateCheck && toCheck.length) {
     const boardPage = await openBoard(context);
-    const checked = await checkFiles(boardPage, files, { apply: true });
-    if (checked.length !== files.length) throw new Error('Rate check did not cover every file.');
+    const checked = await checkFiles(boardPage, toCheck, { apply: true });
+    if (checked.length !== toCheck.length) throw new Error('Rate check did not cover every file.');
     // Files left with no loads (every one already posted by ATZ) are not uploaded.
     const skippedFolder = path.join(sourceFolder, 'landstar-skipped-atz');
     for (const result of checked) {
@@ -497,11 +502,12 @@ async function runWatch() {
     uploadProgress.waiting = waiting;
     setProgress(waiting || uploadProgress.uploaded ? uploadProgress : null);
     files = files
+      .filter(file => !isLockedByHelper(file)) // the helper is rate-checking these right now
       .sort((a, b) => path.basename(a).localeCompare(path.basename(b), undefined, { numeric: true })) // 3of108 before 10of108
       .slice(0, WATCH_BATCH_FILES);
 
     const helperOn = helperActive();
-    if (!helperOn && readMercuryGateQueue().length && !readAssignQueue().length) {
+    if (!helperOn && hasDueMercuryGateJob() && !readAssignQueue().length) {
       console.log(`
 [${timeNow()}] MercuryGate: filling in a booked Paramount load...`);
       setStatus('logged-in', 'Filling in MercuryGate');

@@ -2131,19 +2131,25 @@ function getRatePerMile(rate, miles) {
   return (rateValue / mileValue).toFixed(2);
 }
 
-// Weekly fuel surcharge report ($/mile) by pickup region; everything not listed uses the national average.
+// Weekly fuel surcharge ($/mile) by pickup region, the same four regions as the weekly
+// fuel email ("East .86 Midwest .88 West 1.03 New England .89"). The Gulf states use the
+// Midwest rate; anything not listed (Canada, blank) uses Midwest too.
 const fuelSurchargeRegions = {
-  national: { label: 'National Average', states: [] },
-  newEngland: { label: 'New England (PADD 1A)', states: ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'] },
-  rockyMountain: { label: 'Rocky Mountain (PADD 4)', states: ['CO', 'ID', 'MT', 'UT', 'WY'] },
-  westCoast: { label: 'West Coast (PADD 5)', states: ['AK', 'AZ', 'CA', 'HI', 'NV', 'OR', 'WA'] }
+  east: { label: 'East', states: ['NY', 'NJ', 'PA', 'DE', 'MD', 'DC', 'VA', 'WV', 'NC', 'SC', 'GA', 'FL'] },
+  midwest: { label: 'Midwest (and Gulf: TX LA AR MS AL NM)', states: ['OH', 'MI', 'IN', 'IL', 'WI', 'MN', 'IA', 'MO', 'KY', 'TN', 'KS', 'NE', 'SD', 'ND', 'OK', 'TX', 'LA', 'AR', 'MS', 'AL', 'NM'] },
+  west: { label: 'West', states: ['CO', 'ID', 'MT', 'UT', 'WY', 'AZ', 'NV', 'CA', 'OR', 'WA', 'AK', 'HI'] },
+  newEngland: { label: 'New England', states: ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'] }
 };
 
-const defaultFuelSurchargeRates = { national: '0.87', newEngland: '0.89', rockyMountain: '0.90', westCoast: '1.04' };
+const defaultFuelSurchargeRates = { east: '0.86', midwest: '0.88', west: '1.03', newEngland: '0.89' };
 
 function normalizeFuelSurchargeRates(value) {
   const rates = { ...defaultFuelSurchargeRates };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return rates;
+  // Settings saved before the four email regions: National -> East and Midwest, West Coast -> West.
+  if (!['east', 'midwest', 'west'].some(key => key in value) && ('national' in value || 'westCoast' in value)) {
+    value = { east: value.national, midwest: value.national, west: value.westCoast, newEngland: value.newEngland };
+  }
   Object.keys(rates).forEach(key => {
     const parsed = Number(String(value[key] ?? '').replace(/[$,]/g, ''));
     rates[key] = parsed > 0 ? String(Math.round(parsed * 100) / 100) : '';
@@ -2155,16 +2161,31 @@ function getFuelSurchargeRegion(state) {
   const code = String(state || '').trim().toUpperCase();
   const match = Object.entries(fuelSurchargeRegions)
     .find(([, info]) => info.states.includes(code));
-  return match ? match[0] : 'national';
+  return match ? match[0] : 'midwest';
 }
 
-// $/mile for a pickup state; a blank regional rate falls back to the national average.
+// $/mile for a pickup state; a blank regional rate falls back to the Midwest rate.
 function getFuelSurchargeRate(rates, state) {
   if (!rates || typeof rates !== 'object') return null;
   const parse = value => Number(String(value || '').replace(/[$,]/g, ''));
   const regional = parse(rates[getFuelSurchargeRegion(state)]);
-  const rate = regional > 0 ? regional : parse(rates.national);
+  const rate = regional > 0 ? regional : parse(rates.midwest);
   return rate > 0 ? rate : null;
+}
+
+// The weekly fuel email: "11/3/2026   East .86  Midwest .88   West 1.03 New England .89".
+// Returns { date, rates } or null (all four rates must be there and look like $/mile).
+function parseFuelSurchargeEmail(text) {
+  const value = String(text || '');
+  const rate = name => {
+    const match = value.match(new RegExp(`${name}\\s*[:=]?\\s*\\$?(\\d*\\.\\d+|\\d+(?:\\.\\d+)?)`, 'i'));
+    const number = match ? Number(match[1]) : NaN;
+    return number >= 0.3 && number <= 2.5 ? String(Math.round(number * 100) / 100) : '';
+  };
+  const rates = { east: rate('(?<!north)east'), midwest: rate('midwest'), west: rate('(?<!mid)west'), newEngland: rate('new\\s*england') };
+  if (Object.values(rates).some(item => !item)) return null;
+  const date = value.match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/)?.[1] || '';
+  return { date, rates };
 }
 
 // Team comes from the Team switch when set; otherwise team equipment (VM/VT) means team.
@@ -4247,6 +4268,8 @@ const paramountLatest = {};
 const paramountBusy = new Set();
 // Clarity results already handed to the App (the bot repeats them on every status check).
 const paramountResultSeen = new Map();
+// The fuel surcharge email last applied (Gmail message id).
+const fuelEmailSeenKey = 'landstar_fuelEmailSeen';
 
 function isParamountTrackingCustomer(name) {
   return paramountTrackingCustomers.has(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
@@ -6741,6 +6764,29 @@ export default function App({ sharing = null } = {}) {
   const [paramountDrafts, setParamountDrafts] = useState([]);
   const [paramountReplies, setParamountReplies] = useState([]);
   const [pastedImage, setPastedImage] = useState(null);
+  paramountLatest.profile = profile;
+  // Applies the weekly fuel email's rates to My Settings (once per email).
+  const applyFuelSurchargeEmail = found => {
+    const parsed = parseFuelSurchargeEmail(found?.subject) || parseFuelSurchargeEmail(found?.text);
+    if (!parsed || !found.messageId) return;
+    let seen = '';
+    try { seen = localStorage.getItem(fuelEmailSeenKey) || ''; } catch { /* first time */ }
+    if (seen === found.messageId) return;
+    const current = paramountLatest.profile || getUserProfile();
+    const nextRates = normalizeFuelSurchargeRates(parsed.rates);
+    const changed = JSON.stringify(normalizeFuelSurchargeRates(current.fuelSurcharge)) !== JSON.stringify(nextRates);
+    try { localStorage.setItem(fuelEmailSeenKey, found.messageId); } catch { /* applied again next time */ }
+    if (!changed) return;
+    const nextProfile = { ...current, fuelSurcharge: nextRates };
+    try {
+      writeSyncedKey('landstar_profile', JSON.stringify(nextProfile));
+    } catch (error) {
+      console.error('Could not save the new fuel surcharge:', error);
+      return;
+    }
+    setProfile(nextProfile);
+    alert(`⛽ Fuel surcharge updated from the ${parsed.date || 'latest'} fuel email:\n\nEast ${nextRates.east} · Midwest ${nextRates.midwest} · West ${nextRates.west} · New England ${nextRates.newEngland}`);
+  };
   const importPastedImage = (customer) => {
     const image = pastedImage;
     setPastedImage(null);
@@ -6971,6 +7017,18 @@ export default function App({ sharing = null } = {}) {
         }
       }
     };
+    // The weekly fuel surcharge email: checked shortly after opening and every hour.
+    const checkFuelEmail = async () => {
+      if (!canStartBotHere()) return;
+      try {
+        const found = await callParamountEmail({ action: 'fuelRates' });
+        if (!cancelled) applyFuelSurchargeEmail(found);
+      } catch (error) {
+        console.warn(`Could not check the fuel surcharge email: ${error.message}`);
+      }
+    };
+    const fuelFirst = setTimeout(() => { void checkFuelEmail(); }, 15 * 1000);
+    const fuelTimer = setInterval(() => { void checkFuelEmail(); }, 60 * 60 * 1000);
     void pushWatchList();
     const watchTimer = setInterval(() => { void pushWatchList(); }, 60 * 1000);
     const driverFirst = setTimeout(() => { void checkDriverEmails(); }, 30 * 1000);
@@ -6984,6 +7042,8 @@ export default function App({ sharing = null } = {}) {
       clearInterval(replyTimer);
       clearTimeout(rxoFirst);
       clearTimeout(driverFirst);
+      clearTimeout(fuelFirst);
+      clearInterval(fuelTimer);
       clearInterval(driverTimer);
       window.removeEventListener('landstar-tracking-result', onTrackingResult);
     };
@@ -8572,7 +8632,7 @@ export default function App({ sharing = null } = {}) {
               </label>
               <fieldset className="border border-[#1c2541] rounded p-3">
                 <legend className="text-xs text-gray-300 px-1">⛽ Fuel surcharge ($/mile, by pickup region)</legend>
-                <p className="text-[11px] text-gray-400 mb-2">Exported as a Per Mile surcharge on each load. Update weekly from your fuel surcharge report. Blank regions use the National Average; blank National exports no surcharge.</p>
+                <p className="text-[11px] text-gray-400 mb-2">Exported as a Per Mile surcharge on each load. Updated automatically from the weekly fuel email (East / Midwest / West / New England). Blank regions use the Midwest rate; blank Midwest exports no surcharge.</p>
                 <div className="grid grid-cols-2 gap-2">
                   {Object.entries(fuelSurchargeRegions).map(([key, region]) => (
                     <label key={key} className="block text-xs text-gray-400">

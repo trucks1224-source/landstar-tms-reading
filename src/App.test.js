@@ -22,7 +22,7 @@ export {
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
   getPastedImage, readClipboardImage, getImportedLoadSelection,
-  getFuelSurchargeRegion, getFuelSurchargeRate, normalizeFuelSurchargeRates,
+  getFuelSurchargeRegion, getFuelSurchargeRate, normalizeFuelSurchargeRates, parseFuelSurchargeEmail,
   writeSyncedKey, initSyncGuardFromStorage, readDataVersions, getChangedSyncedKeys,
   isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted, classifyChangedSyncedKeys,
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
@@ -1402,44 +1402,42 @@ test('rate per mile is calculated from rate and miles', () => {
   assert.equal(policy.getRatePerMile('1500', '0'), '');
 });
 
-test('fuel surcharge region follows the pickup state', () => {
-  for (const state of ['CT', 'ME', 'MA', 'NH', 'RI', 'VT', 'vt']) {
-    assert.equal(policy.getFuelSurchargeRegion(state), 'newEngland', state);
-  }
-  for (const state of ['CO', 'ID', 'MT', 'UT', 'WY']) {
-    assert.equal(policy.getFuelSurchargeRegion(state), 'rockyMountain', state);
-  }
-  for (const state of ['AK', 'AZ', 'CA', 'HI', 'NV', 'OR', 'WA']) {
-    assert.equal(policy.getFuelSurchargeRegion(state), 'westCoast', state);
-  }
-  for (const state of ['IL', 'TX', 'NY', 'PA', 'FL', 'ON', '', undefined]) {
-    assert.equal(policy.getFuelSurchargeRegion(state), 'national', String(state));
-  }
+test('fuel surcharge region follows the pickup state (the weekly email\'s four regions)', () => {
+  for (const state of ['CT', 'ME', 'MA', 'NH', 'RI', 'VT', 'vt']) assert.equal(policy.getFuelSurchargeRegion(state), 'newEngland', state);
+  for (const state of ['NY', 'NJ', 'PA', 'MD', 'VA', 'NC', 'SC', 'GA', 'FL']) assert.equal(policy.getFuelSurchargeRegion(state), 'east', state);
+  for (const state of ['OH', 'IL', 'MI', 'TN', 'OK', 'TX', 'LA', 'AR', 'MS', 'AL', 'NM']) assert.equal(policy.getFuelSurchargeRegion(state), 'midwest', state);
+  for (const state of ['CO', 'UT', 'AZ', 'CA', 'WA', 'NV']) assert.equal(policy.getFuelSurchargeRegion(state), 'west', state);
+  for (const state of ['ON', '', undefined]) assert.equal(policy.getFuelSurchargeRegion(state), 'midwest', String(state));
 });
 
-test('fuel surcharge rate resolves per mile by region with national fallback', () => {
-  const rates = { national: '0.87', newEngland: '0.89', rockyMountain: '0.90', westCoast: '1.04' };
-  assert.equal(policy.getFuelSurchargeRate(rates, 'IL'), 0.87);
+test('fuel surcharge rate resolves per mile by region with Midwest fallback', () => {
+  const rates = { east: '0.86', midwest: '0.88', west: '1.03', newEngland: '0.89' };
+  assert.equal(policy.getFuelSurchargeRate(rates, 'PA'), 0.86);
+  assert.equal(policy.getFuelSurchargeRate(rates, 'TX'), 0.88);
   assert.equal(policy.getFuelSurchargeRate(rates, 'MA'), 0.89);
-  assert.equal(policy.getFuelSurchargeRate(rates, 'WY'), 0.90);
-  assert.equal(policy.getFuelSurchargeRate(rates, 'CA'), 1.04);
-  assert.equal(policy.getFuelSurchargeRate({ ...rates, westCoast: '' }, 'CA'), 0.87);
-  assert.equal(policy.getFuelSurchargeRate({ national: '', newEngland: '', rockyMountain: '', westCoast: '' }, 'IL'), null);
+  assert.equal(policy.getFuelSurchargeRate(rates, 'CA'), 1.03);
+  assert.equal(policy.getFuelSurchargeRate({ ...rates, west: '' }, 'CA'), 0.88);
+  assert.equal(policy.getFuelSurchargeRate({ east: '', midwest: '', west: '', newEngland: '' }, 'IL'), null);
   assert.equal(policy.getFuelSurchargeRate(undefined, 'IL'), null);
-  assert.equal(policy.getFuelSurchargeRate({ national: '$0.87' }, 'tx'), 0.87);
+  assert.equal(policy.getFuelSurchargeRate({ midwest: '$0.88' }, 'tx'), 0.88);
 });
 
-test('fuel surcharge rates normalize to cents per mile and keep intentional blanks', () => {
+test('fuel surcharge rates normalize to cents per mile, keep blanks, and move old settings over', () => {
   const normalized = value => JSON.parse(JSON.stringify(policy.normalizeFuelSurchargeRates(value)));
-  assert.deepEqual(normalized(undefined), {
-    national: '0.87', newEngland: '0.89', rockyMountain: '0.90', westCoast: '1.04'
-  });
-  assert.deepEqual(normalized({ national: '$0.875', westCoast: '1.04' }), {
-    national: '0.88', newEngland: '', rockyMountain: '', westCoast: '1.04'
-  });
-  assert.deepEqual(normalized({ national: '', newEngland: '', rockyMountain: '', westCoast: '' }), {
-    national: '', newEngland: '', rockyMountain: '', westCoast: ''
-  });
+  assert.deepEqual(normalized(undefined), { east: '0.86', midwest: '0.88', west: '1.03', newEngland: '0.89' });
+  assert.deepEqual(normalized({ east: '$0.875', west: '1.04' }), { east: '0.88', midwest: '', west: '1.04', newEngland: '' });
+  assert.deepEqual(normalized({ national: '0.87', newEngland: '0.89', rockyMountain: '0.90', westCoast: '1.04' }),
+    { east: '0.87', midwest: '0.87', west: '1.04', newEngland: '0.89' });
+});
+
+test('the weekly fuel email updates the rates', () => {
+  const parsed = policy.parseFuelSurchargeEmail('Fw: 11/3/2026   East .86  Midwest .88   West 1.03 New England .89');
+  assert.equal(parsed.date, '11/3/2026');
+  assert.deepEqual({ ...parsed.rates }, { east: '0.86', midwest: '0.88', west: '1.03', newEngland: '0.89' });
+  const body = policy.parseFuelSurchargeEmail('Good morning everyone please use the updated fuel rates below\n\n11/3/2026\nEast .86\nMidwest .88\nWest 1.03\nNew England .89');
+  assert.equal(body.rates.west, '1.03');
+  assert.equal(policy.parseFuelSurchargeEmail('East .86 Midwest .88 West 1.03'), null, 'all four needed');
+  assert.equal(policy.parseFuelSurchargeEmail('East 86 Midwest .88 West 1.03 New England .89'), null, 'not a $/mile number');
 });
 
 test('load cards have a copy button for the pickup and delivery city/state', () => {

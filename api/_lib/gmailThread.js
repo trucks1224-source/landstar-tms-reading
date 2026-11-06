@@ -1,7 +1,7 @@
 // Paramount tracking emails: find the "Rate Confirmation for order: <order#>" thread in
 // the connected Gmail account, reply-all inside it, and list replies from other people.
 // Used by the local TMS server (vite.config.js -> /api/paramount-email).
-import { getAccessToken, getServiceClient } from './server.js';
+import { getAccessToken, getMessageText, getServiceClient } from './server.js';
 
 const GMAIL = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const oneLine = value => String(value || '').replace(/[\r\n]+/g, ' ').trim();
@@ -274,6 +274,25 @@ async function handleDriverEmail({ action, freightBill, since, text }) {
   return { status: 200, body: { ok: true, id: sent.id, threadId, ...recipients } };
 }
 
+// ---------- Weekly fuel surcharge email ----------
+// "Fw: 11/3/2026   East .86  Midwest .88   West 1.03 New England .89" (Ryan Huber, forwarded
+// by Jorge Farinhas). Returns the newest one's subject and text; the TMS reads the rates.
+async function findFuelEmail() {
+  const { accessToken } = await connect();
+  const query = 'subject:(East Midwest West "New England") newer_than:30d';
+  const list = await gmailJson(accessToken, `${GMAIL}/messages?q=${encodeURIComponent(query)}&maxResults=5`);
+  const first = (list.messages || [])[0];
+  if (!first) return { status: 404, body: { error: 'No fuel surcharge email in the last 30 days.' } };
+  const message = await gmailJson(accessToken, `${GMAIL}/messages/${encodeURIComponent(first.id)}?format=full`);
+  return {
+    status: 200,
+    body: {
+      messageId: message.id, subject: header(message, 'Subject'), from: header(message, 'From'),
+      at: new Date(Number(message.internalDate)).toISOString(), text: getMessageText(message.payload || {}).slice(0, 4000)
+    }
+  };
+}
+
 // action "thread": who a reply-all goes to, plus replies from others since `since`.
 // action "send": reply-all inside the thread with `text`.
 // action "rxoRequests" / "rxoSend": RXO update requests (see handleRxoEmail).
@@ -281,6 +300,7 @@ export async function handleParamountEmail(request = {}) {
   const { action, orderNumber, since, text } = request;
   if (action === 'rxoRequests' || action === 'rxoSend') return handleRxoEmail(request);
   if (action === 'driverThread' || action === 'driverSend') return handleDriverEmail(request);
+  if (action === 'fuelRates') return findFuelEmail();
   const order = String(orderNumber || '').trim();
   if (!/^\d{4,}$/.test(order)) return { status: 400, body: { error: 'A Paramount order number is needed.' } };
   const { accessToken, myEmail } = await connect();

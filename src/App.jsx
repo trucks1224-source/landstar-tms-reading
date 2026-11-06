@@ -3603,7 +3603,7 @@ function formatCheckTime(iso) {
   return new Date(time).toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: 'numeric', minute: '2-digit' });
 }
 
-function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapacity }) {
+function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapacity, emails = null }) {
   const activeCount = entries.filter(({ load }) => load.trackingStage !== 'Delivered').length;
   const alertCount = entries.filter(({ load }) => getTrackingAlert(load, now)).length;
   const phoneDigits = value => String(value || '').replace(/[^\d+]/g, '');
@@ -3683,6 +3683,16 @@ function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapac
                 </div>
               </div>
             </div>
+            {emails && (
+              <LoadEmailBox
+                drafts={emails.drafts.filter(draft => draft.customer === customer && String(draft.loadId) === String(load.id))}
+                replies={emails.replies.filter(reply => reply.customer === customer && String(reply.loadId) === String(load.id))}
+                onChangeText={emails.onChangeText}
+                onSend={emails.onSend}
+                onSkip={emails.onSkip}
+                onDismissReply={emails.onDismissReply}
+              />
+            )}
             <form
               className="flex gap-2 mt-3"
               onSubmit={event => {
@@ -4029,6 +4039,74 @@ function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
   );
 }
 
+// Tracking emails for one load (Paramount / RXO), shown inside its Booked Loads card:
+// a warning badge while an email waits for Send, which opens the email to review.
+function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip, onDismissReply }) {
+  const [open, setOpen] = useState(false);
+  if (!drafts.length && !replies.length) return null;
+  const kindLabel = { initial: 'Tracking link + pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', rxo: 'Reply to update request' };
+  const approvalsLeft = draft => Math.max(0, PARAMOUNT_AUTO_SEND_AFTER
+    - readApprovedCount(draft.kind === 'driver' ? driverApprovedKey : draft.kind === 'rxo' ? rxoApprovedKey : paramountApprovedKey));
+  const who = draft => (draft.kind === 'driver' ? 'Driver' : draft.kind === 'rxo' ? 'RXO' : 'Paramount');
+  return (
+    <div className="mt-3 text-xs text-white normal-case tracking-normal text-left">
+      <div className="flex flex-wrap gap-2">
+        {drafts.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setOpen(value => !value)}
+            aria-expanded={open}
+            title="An email is waiting for you to review and send"
+            className="bg-amber-400 hover:bg-amber-300 text-black px-2 py-0.5 rounded font-bold cursor-pointer"
+          >
+            ⚠ {drafts.length === 1 ? 'Email ready to send' : `${drafts.length} emails ready to send`} · {open ? 'Hide' : 'Review'}
+          </button>
+        )}
+        {replies.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setOpen(value => !value)}
+            className="bg-sky-500 hover:bg-sky-400 text-black px-2 py-0.5 rounded font-bold cursor-pointer"
+          >
+            💬 {replies.length === 1 ? 'New reply' : `${replies.length} new replies`} · {open ? 'Hide' : 'Read'}
+          </button>
+        )}
+      </div>
+      {open && replies.map(reply => (
+        <div key={reply.id} className="border border-sky-400 bg-sky-950/30 rounded p-2 mt-2">
+          <p className="font-bold text-sky-200">💬 {reply.driver ? 'Driver · ' : ''}{reply.from} · {formatCheckTime(reply.at)}</p>
+          <p className="mt-1 text-gray-100">“{reply.snippet}”</p>
+          <div className="flex gap-2 mt-1">
+            <a href={`https://mail.google.com/mail/u/0/#all/${reply.threadId}`} target="_blank" rel="noreferrer" className="bg-sky-600 hover:bg-sky-500 text-white px-2 py-0.5 rounded font-semibold">Open in Gmail</a>
+            <button type="button" onClick={() => onDismissReply(reply)} className="bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded cursor-pointer">Dismiss</button>
+          </div>
+        </div>
+      ))}
+      {open && drafts.map(draft => (
+        <div key={draft.id} className="border border-amber-400 rounded p-2 mt-2">
+          <p className="font-bold text-amber-200">✉️ {who(draft)} email · {draft.kind === 'driver' ? driverEmailLabels[draft.driverKind] : kindLabel[draft.kind]}</p>
+          {draft.request && <p className="text-amber-100 mt-0.5">They asked: “{draft.request}”</p>}
+          {draft.kind === 'rxo' && !draft.complete && <p className="text-amber-300 mt-0.5">Fill in the blanks (like the pickup ETA) before sending.</p>}
+          <p className="text-gray-300">Reply all to: {[...draft.to, ...draft.cc].join(', ')}</p>
+          <textarea
+            value={draft.text}
+            onChange={event => onChangeText(draft, event.target.value)}
+            rows={10}
+            className="w-full mt-1 bg-[#0b1020] border border-[#1c2541] rounded p-1.5 text-xs text-white font-sans"
+            aria-label={`Email text for order ${draft.loadId}`}
+          />
+          {draft.error && <p className="text-red-300 mt-1">Not sent: {draft.error}</p>}
+          <div className="flex flex-wrap gap-2 mt-1 items-center">
+            <button type="button" disabled={draft.sending} onClick={() => onSend(draft)} className="bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white px-3 py-0.5 rounded font-semibold cursor-pointer">{draft.sending ? 'Sending…' : 'Send'}</button>
+            <button type="button" disabled={draft.sending} onClick={() => onSkip(draft)} className="bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded cursor-pointer">Don&apos;t send</button>
+            <span className="text-gray-400">{approvalsLeft(draft) ? `${approvalsLeft(draft)} more approval${approvalsLeft(draft) === 1 ? '' : 's'}, then these send automatically` : 'Sending automatically'}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // The Landstar upload bot (bot/status-server.js) reports its login status on
 // this computer while it runs. No answer means the bot is not running.
 const BOT_STATUS_URL = 'http://127.0.0.1:47615/status';
@@ -4066,6 +4144,434 @@ function addToUnpostQueue(droppedPostings) {
   writeUnpostQueue(queue);
   return queue.length;
 }
+// Loads booked in the TMS: the bot assigns the truck (BCO tractor number) to the load's
+// Landstar posting. Kept in this browser until the bot confirms it has them.
+const BOT_ASSIGN_URL = 'http://127.0.0.1:47615/assign';
+const assignQueueKey = 'landstar_assignQueue';
+const assignSeenKey = 'landstar_assignSeenAt';
+
+// What the bot needs to assign a booked load on Landstar, or why it can't.
+function buildAssignRequest(customer, load) {
+  const truck = String(load?.truck || '').trim();
+  if (!truck) return { reason: 'There is no truck number on this load.' };
+  if (!load?.landstarPosting?.originZip) {
+    return { reason: 'This load was not posted to Landstar by the bot, so its posting can\'t be found automatically.' };
+  }
+  return {
+    item: {
+      customer, loadId: String(load.id), truck,
+      driver: String(load.driver || '').trim(), posting: load.landstarPosting
+    }
+  };
+}
+function readAssignQueue() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(assignQueueKey));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function addToAssignQueue(item) {
+  const key = `${item.customer}|${item.loadId}`;
+  const queue = readAssignQueue().filter(existing => `${existing.customer}|${existing.loadId}` !== key);
+  try {
+    localStorage.setItem(assignQueueKey, JSON.stringify([...queue, { ...item, queuedAt: new Date().toISOString() }]));
+  } catch (error) {
+    console.error('Could not save the Landstar assign queue:', error);
+  }
+}
+// Hands booked loads to the bot; returns how many it accepted (0 if the bot is off).
+async function sendAssignQueueToBot() {
+  const queue = readAssignQueue();
+  if (!queue.length) return 0;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(BOT_ASSIGN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bookings: queue }),
+      signal: controller.signal
+    });
+    if (!response.ok) return 0;
+    const sent = new Set(queue.map(item => `${item.customer}|${item.loadId}|${item.truck}`));
+    const left = readAssignQueue().filter(item => !sent.has(`${item.customer}|${item.loadId}|${item.truck}`));
+    localStorage.setItem(assignQueueKey, JSON.stringify(left));
+    return queue.length;
+  } catch {
+    return 0;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+// Results the bot reports that this browser hasn't shown yet.
+function takeNewAssignResults(results) {
+  if (!Array.isArray(results) || !results.length) return [];
+  let seenAt = 0;
+  try { seenAt = Number(localStorage.getItem(assignSeenKey)) || 0; } catch { /* first time */ }
+  const fresh = results.filter(result => Number(result?.at) > seenAt);
+  if (fresh.length) {
+    try { localStorage.setItem(assignSeenKey, String(Math.max(...fresh.map(result => Number(result.at))))); } catch { /* shown again next time */ }
+  }
+  return fresh;
+}
+// The load's note after the bot's assignment: "Landstar: Assigned 420371 - LDWY ..." or why not.
+function applyAssignResult(load, result) {
+  const line = result.ok
+    ? `Landstar: ${result.message}`
+    : `Landstar: truck ${result.truck} NOT assigned - ${result.message}. Assign it by hand.`;
+  return {
+    ...load,
+    landstarAssignment: { ok: Boolean(result.ok), truck: result.truck, landstarLoadId: result.landstarLoadId || '', message: result.message, at: result.at },
+    notes: load.notes ? `${load.notes}\n${line}` : line
+  };
+}
+
+// ---------- Paramount tracking emails ----------
+// Booked Paramount loads (Para 1522166 - ATZ and - ATZ H): the bot reads Clarity for the
+// tracking link, pickup ETA and shipper arrival/departure (bot/clarity.js); the TMS replies
+// all on Paramount's "Rate Confirmation for order: <order#>" email with them
+// (/api/paramount-email), and flags replies from Paramount. The first few emails wait for
+// a Send click; after that they go out on their own.
+const BOT_TRACKING_URL = 'http://127.0.0.1:47615/tracking';
+const PARAMOUNT_EMAIL_URL = '/api/paramount-email';
+const paramountTrackingCustomers = new Set(['PARA1522166ATZ', 'PARA1522166ATZH']);
+const paramountApprovedKey = 'landstar_paramountApprovedSends';
+const PARAMOUNT_AUTO_SEND_AFTER = 3;
+const PARAMOUNT_WATCH_DAYS = 5;
+const paramountEmailKinds = ['initial', 'arrived', 'departed'];
+const paramountSignatureName = 'Daniel Gomez';
+// The App's latest loads/profile for the email timers, and drafts already being handled.
+const paramountLatest = {};
+const paramountBusy = new Set();
+// Clarity results already handed to the App (the bot repeats them on every status check).
+const paramountResultSeen = new Map();
+
+function isParamountTrackingCustomer(name) {
+  return paramountTrackingCustomers.has(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
+}
+
+// Booked Paramount loads with a truck, not delivered, booked in the last few days.
+function getParamountWatchList(customerOrdersMap, now = Date.now()) {
+  return Object.entries(customerOrdersMap || {})
+    .filter(([customer]) => isParamountTrackingCustomer(customer))
+    .flatMap(([customer, loads]) => (loads || [])
+      .filter(load => load.status === 'BOOKED' && String(load.truck || '').trim()
+        && load.trackingStage !== 'Delivered'
+        && (!Date.parse(load.bookedAt) || now - Date.parse(load.bookedAt) < PARAMOUNT_WATCH_DAYS * 86400000))
+      .map(load => ({
+        key: `${customer}|${load.id}`, customer, loadId: String(load.id), truck: String(load.truck).trim(),
+        pickupCity: load.origCity || '', pickupState: load.origSt || '', billTo: 'paramount'
+      })));
+}
+
+// "11/06 at 08:00 CST" in the stop's own time zone.
+function formatParamountTime(iso, timeZone) {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return '';
+  const options = { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' };
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat('en-US', { ...options, timeZone: timeZone || undefined }).formatToParts(new Date(at));
+  } catch {
+    parts = new Intl.DateTimeFormat('en-US', options).formatToParts(new Date(at));
+  }
+  const get = type => parts.find(part => part.type === type)?.value || '';
+  const hour = get('hour') === '24' ? '00' : get('hour');
+  return `${get('month')}/${get('day')} at ${hour}:${get('minute')} ${get('timeZoneName')}`.trim();
+}
+
+const titleCase = text => String(text || '').toLowerCase().replace(/\b[a-z]/g, letter => letter.toUpperCase());
+
+function paramountSignature(phone) {
+  return ['Best regards,', paramountSignatureName, 'Landstar', formatPhone(phone) || '484-575-6486'].join('\n');
+}
+
+// The email text for one update. info = the bot's Clarity result; greetingName from the thread.
+function buildParamountEmail(kind, load, info = {}, { greetingName = '', phone = '' } = {}) {
+  const order = String(load.id);
+  const hello = greetingName ? `Hi ${greetingName} and team,` : 'Hello team,';
+  const driver = titleCase(info.driver || load.driver || '') || 'our driver';
+  const pickupPlace = info.pickupCity || [titleCase(load.origCity), load.origSt].filter(Boolean).join(', ');
+  const deliveryPlace = info.deliveryCity || [titleCase(load.destCity), load.destSt].filter(Boolean).join(', ');
+  // Pickup ETA: only what Daniel typed in the load's Pickup ETA box, never Clarity's (often wrong).
+  const pickupEta = String(load.pickupEta || '').trim();
+  const deliveryEta = formatParamountTime(info.deliveryEta || info.deliveryScheduled, info.deliveryTimezone);
+  const link = info.trackingLink ? `\n\nHere is the live tracking link for this load, so you can follow the truck at any time:\n${info.trackingLink}` : '';
+  const sign = `\n\n${paramountSignature(phone)}`;
+  if (kind === 'initial') {
+    const status = info.leftShipperAt
+      ? `Our driver, ${driver}, has already picked up in ${pickupPlace} and is on the way to ${deliveryPlace}${deliveryEta ? `, with an estimated arrival of ${deliveryEta}` : ''}.`
+      : `Our driver, ${driver}, is scheduled to pick up in ${pickupPlace}${pickupEta ? `, with an estimated arrival of ${pickupEta}` : ''}.`;
+    return `${hello}\n\nThank you so much for trusting us with order ${order}! We truly appreciate the business.${link}\n\n${status}\n\n`
+      + 'We will keep you updated right here on this thread when the driver arrives at the shipper and once the truck is loaded and rolling. '
+      + 'If you need anything at all, please don\'t hesitate to reach out. We\'re always happy to help.\n\nThank you again, and have a wonderful day!'
+      + sign;
+  }
+  if (kind === 'arrived') {
+    return `${hello}\n\nQuick update on order ${order}: ${driver} has arrived at the shipper in ${pickupPlace}`
+      + `${info.arrivedShipperAt ? ` (${formatParamountTime(info.arrivedShipperAt, info.pickupTimezone)})` : ''}. `
+      + 'We\'ll let you know as soon as the truck is loaded and on the way.'
+      + `${info.trackingLink ? `\n\nLive tracking: ${info.trackingLink}` : ''}\n\nThank you!${sign}`;
+  }
+  return `${hello}\n\nGreat news on order ${order}: the truck is loaded and has left the shipper in ${pickupPlace}`
+    + `${info.leftShipperAt ? ` (${formatParamountTime(info.leftShipperAt, info.pickupTimezone)})` : ''}, heading to ${deliveryPlace}.`
+    + `${deliveryEta ? ` The estimated arrival at delivery is ${deliveryEta}.` : ''}`
+    + `${info.trackingLink ? `\n\nLive tracking: ${info.trackingLink}` : ''}\n\nThank you for working with us, and please reach out if you need anything!${sign}`;
+}
+
+// Which tracking emails are due for a load, given the bot's latest Clarity result.
+// The first email needs the tracking link; once the truck has left the shipper, a
+// not-yet-sent "arrived" email is skipped (the "left" one covers it).
+function getDueParamountEmails(load, info) {
+  if (!info?.ok) return [];
+  const sent = load.paramountTracking?.emails || {};
+  const due = [];
+  if (!sent.initial) {
+    if (info.trackingLink) due.push('initial');
+    return due;
+  }
+  if (info.leftShipperAt && !sent.departed) return ['departed'];
+  if (info.arrivedShipperAt && !sent.arrived && !info.leftShipperAt) due.push('arrived');
+  return due;
+}
+
+// Records a sent (or skipped) email on the load, with a line in its notes.
+function markParamountEmail(load, kind, { at = new Date().toISOString(), skipped = false } = {}) {
+  const tracking = load.paramountTracking || {};
+  const emails = { ...(tracking.emails || {}), [kind]: { at, ...(skipped ? { skipped: true } : {}) } };
+  // Sending "left the shipper" also settles the "arrived" email.
+  if (kind === 'departed' && !emails.arrived) emails.arrived = { at, skipped: true };
+  if (kind === 'initial' && !skipped && tracking.leftShipperAt) {
+    emails.arrived = emails.arrived || { at, skipped: true };
+    emails.departed = emails.departed || { at, skipped: true };
+  }
+  const label = { initial: 'tracking link + pickup ETA', arrived: 'arrived at shipper', departed: 'left shipper + delivery ETA' }[kind];
+  const line = `Paramount email ${skipped ? 'skipped' : 'sent'}: ${label}`;
+  return { ...load, paramountTracking: { ...tracking, emails }, notes: load.notes ? `${load.notes}\n${line}` : line };
+}
+
+// Saves the bot's Clarity result on the load and moves its tracking stage forward.
+function applyParamountTrackingInfo(load, info) {
+  if (!info?.ok) return load;
+  const { key, customer, loadId, ok, at, ...rest } = info;
+  const next = { ...load, paramountTracking: { ...(load.paramountTracking || {}), ...rest, checkedAt: at || Date.now() } };
+  const order = trackingStages.indexOf(load.trackingStage || 'Booked');
+  const target = info.deliveredAt ? 'Delivered' : info.leftShipperAt ? 'Loaded' : info.arrivedShipperAt ? 'At Pickup' : null;
+  if (target && trackingStages.indexOf(target) > order) next.trackingStage = target;
+  return next;
+}
+
+function readParamountApprovedCount() {
+  try { return Number(localStorage.getItem(paramountApprovedKey)) || 0; } catch { return 0; }
+}
+
+async function callParamountEmail(body) {
+  const response = await fetch(PARAMOUNT_EMAIL_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || `Email request failed (HTTP ${response.status}).`);
+  return result;
+}
+
+// ---------- Driver emails ----------
+// Every booked load whose Landstar freight bill the bot found in Clarity: the TMS replies
+// in Daniel's "BCO Load Detail" email to the driver (Cc his Landstar address):
+//   pickupMorning   7:00 AM on pickup day: good to go? ETA to the shipper?
+//   pickedUp        once Clarity shows the truck left the shipper: ETA for delivery?
+//   deliveryMorning 7:00 AM on delivery day (picked up on an earlier day): good? ETA?
+//   pod             once delivered: please send the POD.
+// The first few wait for a Send click; driver replies show on the load with a pop-up.
+const driverApprovedKey = 'landstar_driverApprovedSends';
+const DRIVER_EMAIL_HOUR = 7;
+const TRACKING_WATCH_DAYS = 10;
+const driverEmailLabels = {
+  pickupMorning: 'Pickup day: good to go + ETA',
+  pickedUp: 'Picked up: delivery ETA',
+  deliveryMorning: 'Delivery day: good to go + ETA',
+  pod: 'Delivered: send the POD'
+};
+
+// Every booked load with a truck for the bot to find in Clarity (Paramount, RXO, all others).
+function getTrackingWatchList(customerOrdersMap, now = Date.now()) {
+  const entries = Object.entries(customerOrdersMap || {})
+    .filter(([customer]) => !isParamountTrackingCustomer(customer) && !isRxoTrackingCustomer(customer))
+    .flatMap(([customer, loads]) => (loads || [])
+      .filter(load => load.status === 'BOOKED' && String(load.truck || '').trim()
+        && load.trackingStage !== 'Delivered'
+        && (!Date.parse(load.bookedAt) || now - Date.parse(load.bookedAt) < TRACKING_WATCH_DAYS * 86400000))
+      .map(load => ({
+        key: `${customer}|${load.id}`, customer, loadId: String(load.id), truck: String(load.truck).trim(),
+        pickupCity: load.origCity || '', pickupState: load.origSt || '', billTo: 'any'
+      })));
+  return [...getParamountWatchList(customerOrdersMap, now), ...getRxoWatchList(customerOrdersMap, now), ...entries].slice(0, 50);
+}
+
+const atHourOf = (time, hour) => {
+  const date = new Date(time);
+  date.setHours(hour, 0, 0, 0);
+  return date.getTime();
+};
+const sameLocalDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
+
+// Which driver email is due now (at most one), given the load and the bot's Clarity data.
+function getDueDriverEmails(load, tracking = {}, now = Date.now()) {
+  if (load.status !== 'BOOKED' || !tracking.freightBill) return [];
+  const sent = load.driverEmails || {};
+  const stage = load.trackingStage || 'Booked';
+  const delivered = Boolean(tracking.deliveredAt) || stage === 'Delivered';
+  if (delivered) return sent.pod ? [] : ['pod'];
+  const pickedUp = Boolean(tracking.leftShipperAt) || ['Loaded', 'In Transit', 'At Delivery'].includes(stage);
+  const morning = atHourOf(now, DRIVER_EMAIL_HOUR);
+  if (pickedUp) {
+    if (!sent.pickedUp) return ['pickedUp'];
+    const deliveryAt = parseScheduleStart(load.deliveryTime);
+    const askedToday = Date.parse(sent.pickedUp.at) >= morning;
+    if (deliveryAt && sameLocalDay(deliveryAt, now) && now >= morning && !sent.deliveryMorning && !askedToday) return ['deliveryMorning'];
+    return [];
+  }
+  const pickupAt = parseScheduleStart(load.pickupTime);
+  // Booked after 7 AM on pickup day: the driver was just dispatched, no morning check.
+  const bookedBefore = !Date.parse(load.bookedAt) || Date.parse(load.bookedAt) < morning;
+  if (pickupAt && sameLocalDay(pickupAt, now) && now >= morning && !sent.pickupMorning && bookedBefore) return ['pickupMorning'];
+  return [];
+}
+
+function buildDriverEmail(kind, load, tracking = {}, { phone = '' } = {}) {
+  const first = titleCase(String(load.driver || '').trim().split(/\s+/)[0] || '');
+  const hello = first ? `Hi ${first},` : 'Hi,';
+  const bill = tracking.freightBill ? `load ${tracking.freightBill}` : `load #${load.id}`;
+  const pickupPlace = tracking.pickupCity || [titleCase(load.origCity), load.origSt].filter(Boolean).join(', ');
+  const deliveryPlace = tracking.deliveryCity || [titleCase(load.destCity), load.destSt].filter(Boolean).join(', ');
+  const appt = value => (String(value || '').trim() ? ` (appointment ${String(value).trim()})` : '');
+  const sign = `\n\nThank you!\n\n${paramountSignature(phone)}`;
+  if (kind === 'pickupMorning') {
+    return `Good morning ${first || ''}`.trim() + `!\n\nJust checking in on ${bill}, picking up today in ${pickupPlace}${appt(load.pickupTime)}. `
+      + 'Are you good to go for pickup? What is your ETA to the shipper?\n\nPlease keep the tracking app on for the entire trip.' + sign;
+  }
+  if (kind === 'pickedUp') {
+    return `${hello}\n\nThank you for picking up ${bill} in ${pickupPlace}! What is your ETA for delivery in ${deliveryPlace}${appt(load.deliveryTime)}?` + sign;
+  }
+  if (kind === 'deliveryMorning') {
+    return `Good morning ${first || ''}`.trim() + `!\n\n${bill.charAt(0).toUpperCase()}${bill.slice(1)} delivers today in ${deliveryPlace}${appt(load.deliveryTime)}. `
+      + 'Are you good for delivery? What is your ETA?' + sign;
+  }
+  return `${hello}\n\nThank you for delivering ${bill} in ${deliveryPlace}! Please send the signed POD as soon as you can. `
+    + 'Just reply to this email with a clear photo or scan of it.' + sign;
+}
+
+// Records a sent (or skipped) driver email on the load, with a line in its notes.
+function markDriverEmail(load, kind, { at = new Date().toISOString(), skipped = false } = {}) {
+  const line = `Driver email ${skipped ? 'skipped' : 'sent'}: ${driverEmailLabels[kind] || kind}`;
+  return {
+    ...load,
+    driverEmails: { ...(load.driverEmails || {}), [kind]: { at, ...(skipped ? { skipped: true } : {}) } },
+    notes: load.notes ? `${load.notes}\n${line}` : line
+  };
+}
+
+// Ctrl+V of a picture: which list it is. Para lists come from Heather in Google Chat:
+// the account ending in H is hazmat, the other one non-hazmat.
+const pasteImportChoices = [
+  { label: 'Para 1522166 - ATZ · non-hazmat list', customer: 'Para 1522166 - ATZ', className: 'bg-sky-700 hover:bg-sky-600' },
+  { label: 'Para 1522166 - ATZ H · hazmat list', customer: 'Para 1522166 - ATZ H', className: 'bg-red-700 hover:bg-red-600' },
+  { label: 'NTG load cards', customer: '', className: 'bg-slate-700 hover:bg-slate-600' }
+];
+
+// ---------- RXO update requests ----------
+// RXO tracking (chatracking2@rxo.com) emails "Update Request - Order # <order#>" asking where
+// the truck is. For booked loads of R X O 2429200 - ATZ and - ATZ P, the TMS drafts a
+// reply-all with the status and location from Clarity, the pickup ETA Daniel typed (never
+// Clarity's), the delivery ETA once loaded, and the tracking link. The first few wait for
+// a Send click; after that a reply goes out on its own only when nothing is missing.
+const rxoTrackingCustomers = new Set(['RXO2429200ATZ', 'RXO2429200ATZP']);
+const rxoApprovedKey = 'landstar_rxoApprovedSends';
+const rxoHandledKey = 'landstar_rxoHandledRequests';
+const RXO_ETA_BLANK = '____';
+
+function isRxoTrackingCustomer(name) {
+  return rxoTrackingCustomers.has(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
+}
+
+// Booked RXO loads with a truck, for the bot to find in Clarity.
+function getRxoWatchList(customerOrdersMap, now = Date.now()) {
+  return Object.entries(customerOrdersMap || {})
+    .filter(([customer]) => isRxoTrackingCustomer(customer))
+    .flatMap(([customer, loads]) => (loads || [])
+      .filter(load => load.status === 'BOOKED' && String(load.truck || '').trim()
+        && load.trackingStage !== 'Delivered'
+        && (!Date.parse(load.bookedAt) || now - Date.parse(load.bookedAt) < PARAMOUNT_WATCH_DAYS * 86400000))
+      .map(load => ({
+        key: `${customer}|${load.id}`, customer, loadId: String(load.id), truck: String(load.truck).trim(),
+        pickupCity: load.origCity || '', pickupState: load.origSt || '', billTo: 'rxo'
+      })));
+}
+
+// The booked RXO load an update request is about (same order number), or null.
+function findRxoLoadForRequest(customerOrdersMap, orderNumber) {
+  const order = String(orderNumber || '').trim();
+  for (const [customer, loads] of Object.entries(customerOrdersMap || {})) {
+    if (!isRxoTrackingCustomer(customer)) continue;
+    const load = (loads || []).find(item => String(item.id).trim() === order && item.status === 'BOOKED');
+    if (load) return { customer, load };
+  }
+  return null;
+}
+
+// The reply to an RXO update request. complete = nothing left to fill in (may send on its own).
+function buildRxoUpdateEmail(load, tracking = {}, { phone = '' } = {}) {
+  const order = String(load.id);
+  const known = Boolean(tracking.freightBill);
+  const pickupPlace = tracking.pickupCity || [titleCase(load.origCity), load.origSt].filter(Boolean).join(', ');
+  const deliveryPlace = tracking.deliveryCity || [titleCase(load.destCity), load.destSt].filter(Boolean).join(', ');
+  const loaded = Boolean(tracking.leftShipperAt) || ['Loaded', 'In Transit', 'At Delivery'].includes(load.trackingStage);
+  const atShipper = !loaded && (Boolean(tracking.arrivedShipperAt) || load.trackingStage === 'At Pickup');
+  const typedEta = String(load.pickupEta || '').trim();
+  const lines = [];
+  if (loaded) lines.push(`The truck is loaded and on the way to ${deliveryPlace}.`);
+  else if (atShipper) lines.push(`The driver is at the shipper in ${pickupPlace}.`);
+  else lines.push(`The driver is empty and heading to the shipper in ${pickupPlace}.`);
+  if (tracking.lastLocation) {
+    const asOf = formatParamountTime(tracking.lastLocationAt, tracking.pickupTimezone);
+    lines.push(`Current location: ${tracking.lastLocation}${asOf ? ` (as of ${asOf})` : ''}`);
+  }
+  if (!loaded && !atShipper) lines.push(`Pickup ETA: ${typedEta || RXO_ETA_BLANK}`);
+  if (loaded) {
+    const deliveryEta = formatParamountTime(tracking.deliveryEta || tracking.deliveryScheduled, tracking.deliveryTimezone);
+    if (deliveryEta) lines.push(`Delivery ETA: ${deliveryEta}`);
+  }
+  if (tracking.trackingLink) lines.push(`Live tracking: ${tracking.trackingLink}`);
+  const text = `Hello team,\n\nThank you for checking in on order ${order}.\n\n${lines.join('\n')}\n\n`
+    + `Please let us know if you need anything else.\n\n${paramountSignature(phone)}`;
+  const complete = known && Boolean(tracking.trackingLink) && Boolean(tracking.lastLocation)
+    && (loaded || atShipper || Boolean(typedEta));
+  return { text, complete };
+}
+
+function readRxoHandled() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(rxoHandledKey));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function markRxoHandled(messageId) {
+  try { localStorage.setItem(rxoHandledKey, JSON.stringify([...readRxoHandled(), messageId].slice(-300))); } catch { /* asked again next time */ }
+}
+
+function readApprovedCount(key) {
+  try { return Number(localStorage.getItem(key)) || 0; } catch { return 0; }
+}
+
+// "Heather Locke <heather.locke@rlglobal.com>" -> "Heather"
+function greetingNameFrom(address) {
+  const name = String(address || '').replace(/<[^>]*>/, '').replace(/"/g, '').trim();
+  const first = name.includes(',') ? name.split(',')[1]?.trim().split(/\s+/)[0] : name.split(/\s+/)[0];
+  return /^[A-Za-z][A-Za-z'-]+$/.test(first || '') && !/@/.test(name) ? titleCase(first) : '';
+}
+
 // Hands the queue to the bot; returns how many it accepted (0 if the bot is off).
 async function sendUnpostQueueToBot() {
   const queue = readUnpostQueue();
@@ -4118,6 +4624,16 @@ export function BotStatusLight() {
         const response = await fetch(BOT_STATUS_URL, { cache: 'no-store', signal: controller.signal });
         const next = await response.json();
         if (!cancelled) setStatus(botStatusStyles[next.state] ? next : offStatus());
+        // Assign Capacity results for booked loads: the TMS adds them to the load's notes.
+        takeNewAssignResults(next.assignResults).forEach(result => {
+          window.dispatchEvent(new CustomEvent('landstar-assign-result', { detail: result }));
+        });
+        // Clarity results for booked Paramount loads (tracking emails).
+        (Array.isArray(next.trackingResults) ? next.trackingResults : []).forEach(result => {
+          if (paramountResultSeen.get(result.key) === result.at) return;
+          paramountResultSeen.set(result.key, result.at);
+          window.dispatchEvent(new CustomEvent('landstar-tracking-result', { detail: result }));
+        });
       } catch {
         if (!cancelled) setStatus(offStatus());
       } finally {
@@ -4610,12 +5126,25 @@ export default function App({ sharing = null } = {}) {
     saveLoad(removeCapacity(selectedOrder));
   };
 
+  // Booking also sends the truck to the bot, which assigns it on Landstar (Assign Capacity).
   const handleBookLoad = () => {
     if (!selectedOrder) return;
+    let booked;
     try {
-      saveLoad(bookLoad(selectedOrder));
+      booked = bookLoad(selectedOrder);
     } catch (error) {
       alert(error.message);
+      return;
+    }
+    const request = buildAssignRequest(selectedBroker, booked);
+    if (request.item) {
+      saveLoad(booked);
+      addToAssignQueue(request.item);
+      void sendAssignQueueToBot();
+    } else {
+      // No pop-up: the note says why the bot can't assign it (e.g. a load posted by hand).
+      const line = `Landstar: not assigned automatically - ${request.reason} Assign it by hand.`;
+      saveLoad({ ...booked, notes: booked.notes ? `${booked.notes}\n${line}` : line });
     }
   };
 
@@ -5515,9 +6044,9 @@ export default function App({ sharing = null } = {}) {
     await importScreenshotFile(file, importMode);
   };
 
-  const importScreenshotFile = async (file, importMode) => {
+  const importScreenshotFile = async (file, importMode, customerOverride = '') => {
     if (!file) return;
-    const brokerName = selectedBroker;
+    const brokerName = customerOverride || selectedBroker;
     let worker;
     let imageUrl;
 
@@ -6107,7 +6636,8 @@ export default function App({ sharing = null } = {}) {
       if (!image) return;
       event.preventDefault();
       if (isImportingScreenshot) return;
-      void importScreenshotFile(image, 'ntg');
+      // Para lists come from Heather in Google Chat: ask which account (or NTG cards).
+      setPastedImage(image);
     };
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
@@ -6165,9 +6695,282 @@ export default function App({ sharing = null } = {}) {
   // Hands loads that dropped off a customer's list to the upload bot, which removes
   // their Landstar postings. Retries every 30 seconds while the bot is off.
   // Keep this the last effect: tests address earlier effects by position.
+  // Also hands booked loads to the bot for Landstar Assign Capacity (every 5 seconds while
+  // any are waiting) and writes the bot's results onto the loads.
   useEffect(() => {
     const timer = setInterval(() => { void sendUnpostQueueToBot(); }, 30 * 1000);
-    return () => clearInterval(timer);
+    const assignTimer = setInterval(() => { void sendAssignQueueToBot(); }, 5 * 1000);
+    const onAssignResult = event => {
+      const result = event.detail || {};
+      setCustomerOrdersMap(prev => {
+        const loads = prev[result.customer];
+        if (!Array.isArray(loads) || !loads.some(load => String(load.id) === String(result.loadId))) return prev;
+        return { ...prev, [result.customer]: loads.map(load => (String(load.id) === String(result.loadId) ? applyAssignResult(load, result) : load)) };
+      });
+      setSelectedOrder(current => (current && String(current.id) === String(result.loadId)
+        ? applyAssignResult(current, result) : current));
+      if (!result.ok) {
+        alert(`Landstar Assign Capacity: load #${result.loadId} (truck ${result.truck}) was NOT assigned.\n\n${result.message}\n\nAssign it by hand on Landstar.`);
+      }
+    };
+    window.addEventListener('landstar-assign-result', onAssignResult);
+    return () => {
+      clearInterval(timer);
+      clearInterval(assignTimer);
+      window.removeEventListener('landstar-assign-result', onAssignResult);
+    };
+  }, []);
+
+  // ---------- Paramount tracking emails ----------
+  const [paramountDrafts, setParamountDrafts] = useState([]);
+  const [paramountReplies, setParamountReplies] = useState([]);
+  const [pastedImage, setPastedImage] = useState(null);
+  const importPastedImage = (customer) => {
+    const image = pastedImage;
+    setPastedImage(null);
+    if (!image) return;
+    if (!customer) {
+      void importScreenshotFile(image, 'ntg');
+      return;
+    }
+    if (customer !== selectedBroker) handleSelectBroker(customer);
+    void importScreenshotFile(image, 'ai', customer);
+  };
+  paramountLatest.map = customerOrdersMap;
+  paramountLatest.phone = profile.phone;
+  paramountLatest.selectedBroker = selectedBroker;
+
+  const patchParamountLoad = (customer, id, change) => {
+    setCustomerOrdersMap(prev => {
+      const loads = prev[customer];
+      if (!Array.isArray(loads) || !loads.some(load => String(load.id) === String(id))) return prev;
+      return { ...prev, [customer]: loads.map(load => (String(load.id) === String(id) ? change(load) : load)) };
+    });
+    setSelectedOrder(current => (current && paramountLatest.selectedBroker === customer && String(current.id) === String(id)
+      ? change(current) : current));
+  };
+
+  const findParamountLoad = (customer, id) => (paramountLatest.map?.[customer] || []).find(load => String(load.id) === String(id));
+
+  // Sends one draft (reply-all on the rate confirmation thread) and records it on the load.
+  const sendParamountDraft = async (draft, { auto = false } = {}) => {
+    setParamountDrafts(current => current.map(item => (item.id === draft.id ? { ...item, sending: true, error: '' } : item)));
+    const isRxo = draft.kind === 'rxo';
+    const isDriver = draft.kind === 'driver';
+    try {
+      if (isDriver) {
+        await callParamountEmail({ action: 'driverSend', freightBill: draft.freightBill, text: draft.text });
+        patchParamountLoad(draft.customer, draft.loadId, load => markDriverEmail(load, draft.driverKind));
+      } else if (isRxo) {
+        await callParamountEmail({ action: 'rxoSend', threadId: draft.threadId, text: draft.text });
+        markRxoHandled(draft.messageId);
+        patchParamountLoad(draft.customer, draft.loadId, load => ({ ...load, notes: [load.notes, 'RXO update request answered'].filter(Boolean).join('\n') }));
+      } else {
+        await callParamountEmail({ action: 'send', orderNumber: draft.loadId, text: draft.text });
+        patchParamountLoad(draft.customer, draft.loadId, load => markParamountEmail(load, draft.kind));
+      }
+      if (!auto) {
+        const key = isDriver ? driverApprovedKey : isRxo ? rxoApprovedKey : paramountApprovedKey;
+        try { localStorage.setItem(key, String(readApprovedCount(key) + 1)); } catch { /* counts again next time */ }
+      }
+      setParamountDrafts(current => current.filter(item => item.id !== draft.id));
+    } catch (error) {
+      // Shown in the panel so nothing goes missing silently.
+      setParamountDrafts(current => (current.some(item => item.id === draft.id)
+        ? current.map(item => (item.id === draft.id ? { ...item, sending: false, error: error.message } : item))
+        : [...current, { ...draft, sending: false, error: error.message }]));
+    }
+  };
+
+  const skipParamountDraft = draft => {
+    if (draft.kind === 'rxo') markRxoHandled(draft.messageId);
+    else if (draft.kind === 'driver') patchParamountLoad(draft.customer, draft.loadId, load => markDriverEmail(load, draft.driverKind, { skipped: true }));
+    else patchParamountLoad(draft.customer, draft.loadId, load => markParamountEmail(load, draft.kind, { skipped: true }));
+    setParamountDrafts(current => current.filter(item => item.id !== draft.id));
+  };
+
+  // Paramount tracking emails: tells the bot which booked Paramount loads to read in
+  // Clarity, turns its results into emails (approved by hand for the first few, then sent
+  // automatically) and checks the email threads for Paramount's replies.
+  // Keep this the last effect: tests address earlier effects by position.
+  useEffect(() => {
+    let cancelled = false;
+    const pushWatchList = async () => {
+      if (!canStartBotHere()) return;
+      try {
+        await fetch(BOT_TRACKING_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loads: getTrackingWatchList(paramountLatest.map) })
+        });
+      } catch { /* bot off: try again next minute */ }
+    };
+    const prepare = async (customer, load, kind, info) => {
+      const id = `${customer}|${load.id}|${kind}`;
+      if (paramountBusy.has(id)) return;
+      paramountBusy.add(id);
+      try {
+        const thread = await callParamountEmail({ action: 'thread', orderNumber: String(load.id) });
+        if (cancelled) return;
+        const text = buildParamountEmail(kind, load, info, { greetingName: greetingNameFrom(thread.to?.[0]), phone: paramountLatest.phone });
+        const draft = { id, customer, loadId: String(load.id), kind, text, to: thread.to || [], cc: thread.cc || [] };
+        if (readParamountApprovedCount() >= PARAMOUNT_AUTO_SEND_AFTER) {
+          await sendParamountDraft(draft, { auto: true });
+        } else {
+          setParamountDrafts(current => (current.some(item => item.id === id) ? current : [...current, draft]));
+        }
+      } catch (error) {
+        // Usually the rate confirmation email isn't in Gmail yet: try again with the next result.
+        console.warn(`Paramount email for order ${load.id} not ready: ${error.message}`);
+        paramountBusy.delete(id);
+      }
+    };
+    const onTrackingResult = event => {
+      const info = event.detail || {};
+      const load = findParamountLoad(info.customer, info.loadId);
+      if (!load || !info.ok) return;
+      const updated = applyParamountTrackingInfo(load, info);
+      const { checkedAt: oldChecked, ...before } = load.paramountTracking || {};
+      const { checkedAt: newChecked, ...after } = updated.paramountTracking || {};
+      if (JSON.stringify(before) !== JSON.stringify(after) || updated.trackingStage !== load.trackingStage) {
+        patchParamountLoad(info.customer, info.loadId, current => applyParamountTrackingInfo(current, info));
+      }
+      if (!isParamountTrackingCustomer(info.customer)) return; // RXO: kept for update-request replies
+      getDueParamountEmails(updated, info).forEach(kind => { void prepare(info.customer, updated, kind, { ...updated.paramountTracking, ...info }); });
+    };
+    const checkReplies = async () => {
+      if (!canStartBotHere()) return;
+      for (const entry of getParamountWatchList(paramountLatest.map)) {
+        const load = findParamountLoad(entry.customer, entry.loadId);
+        const tracking = load?.paramountTracking;
+        const firstSent = Object.values(tracking?.emails || {}).filter(item => !item.skipped).map(item => item.at).sort()[0];
+        if (!firstSent) continue;
+        try {
+          const result = await callParamountEmail({ action: 'thread', orderNumber: entry.loadId, since: tracking.repliesSeenAt || firstSent });
+          const replies = (result.replies || []).filter(reply => !(tracking.replyIds || []).includes(reply.id));
+          if (cancelled || !replies.length) continue;
+          setParamountReplies(current => [...current, ...replies
+            .filter(reply => !current.some(item => item.id === reply.id))
+            .map(reply => ({ ...reply, customer: entry.customer, loadId: entry.loadId, threadId: result.threadId }))]);
+          patchParamountLoad(entry.customer, entry.loadId, current => {
+            const lines = replies.map(reply => `Paramount reply from ${reply.from.replace(/<[^>]*>/, '').trim()}: ${reply.snippet}`);
+            const seen = current.paramountTracking || {};
+            return {
+              ...current,
+              paramountTracking: {
+                ...seen,
+                repliesSeenAt: replies.map(reply => reply.at).sort().pop(),
+                replyIds: [...(seen.replyIds || []), ...replies.map(reply => reply.id)].slice(-30)
+              },
+              notes: [current.notes, ...lines].filter(Boolean).join('\n')
+            };
+          });
+        } catch (error) {
+          console.warn(`Could not check Paramount replies for order ${entry.loadId}: ${error.message}`);
+        }
+      }
+    };
+    // RXO "Update Request - Order #" emails about booked RXO loads: draft (or send) a reply.
+    const checkRxoRequests = async () => {
+      if (!canStartBotHere()) return;
+      let requests = [];
+      try {
+        requests = (await callParamountEmail({ action: 'rxoRequests' })).requests || [];
+      } catch (error) {
+        console.warn(`Could not check RXO update requests: ${error.message}`);
+        return;
+      }
+      const handled = new Set(readRxoHandled());
+      for (const request of requests) {
+        const id = `rxo|${request.messageId}`;
+        if (cancelled || handled.has(request.messageId) || paramountBusy.has(id)) continue;
+        const match = findRxoLoadForRequest(paramountLatest.map, request.orderNumber);
+        if (!match) continue; // not one of your booked RXO loads
+        paramountBusy.add(id);
+        const { text, complete } = buildRxoUpdateEmail(match.load, match.load.paramountTracking || {}, { phone: paramountLatest.phone });
+        const draft = {
+          id, kind: 'rxo', customer: match.customer, loadId: String(match.load.id), threadId: request.threadId,
+          messageId: request.messageId, request: request.snippet, text, complete, to: request.to || [], cc: request.cc || []
+        };
+        if (complete && readApprovedCount(rxoApprovedKey) >= PARAMOUNT_AUTO_SEND_AFTER) {
+          await sendParamountDraft(draft, { auto: true });
+        } else {
+          setParamountDrafts(current => (current.some(item => item.id === id) ? current : [...current, draft]));
+        }
+      }
+    };
+    // Driver emails for every booked load the bot found in Clarity (morning checks, picked up,
+    // delivered). Runs every few minutes, so a 7:00 AM email goes out on the first check after 7.
+    const checkDriverEmails = async () => {
+      if (!canStartBotHere()) return;
+      const now = Date.now();
+      for (const { customer, load } of getBookedLoads(paramountLatest.map)) {
+        const tracking = load.paramountTracking || {};
+        for (const driverKind of getDueDriverEmails(load, tracking, now)) {
+          const id = `driver|${customer}|${load.id}|${driverKind}`;
+          if (cancelled || paramountBusy.has(id)) continue;
+          paramountBusy.add(id);
+          try {
+            const thread = await callParamountEmail({ action: 'driverThread', freightBill: tracking.freightBill });
+            const draft = {
+              id, kind: 'driver', driverKind, customer, loadId: String(load.id), freightBill: tracking.freightBill,
+              text: buildDriverEmail(driverKind, load, tracking, { phone: paramountLatest.phone }),
+              to: thread.to || [], cc: thread.cc || []
+            };
+            if (readApprovedCount(driverApprovedKey) >= PARAMOUNT_AUTO_SEND_AFTER) {
+              await sendParamountDraft(draft, { auto: true });
+            } else {
+              setParamountDrafts(current => (current.some(item => item.id === id) ? current : [...current, draft]));
+            }
+          } catch (error) {
+            // Usually no BCO Load Detail email for that freight bill: try again next time.
+            console.warn(`Driver email for load ${load.id} not ready: ${error.message}`);
+            paramountBusy.delete(id);
+          }
+        }
+      }
+    };
+    // Driver replies in the BCO Load Detail threads: badge on the load, a note, and a pop-up.
+    const checkDriverReplies = async () => {
+      if (!canStartBotHere()) return;
+      for (const { customer, load } of getBookedLoads(paramountLatest.map)) {
+        const freightBill = load.paramountTracking?.freightBill;
+        const firstSent = Object.values(load.driverEmails || {}).filter(item => !item.skipped).map(item => item.at).sort()[0];
+        if (!freightBill || !firstSent) continue;
+        try {
+          const result = await callParamountEmail({ action: 'driverThread', freightBill, since: load.driverRepliesSeenAt || firstSent });
+          const replies = (result.replies || []).filter(reply => !(load.driverReplyIds || []).includes(reply.id));
+          if (cancelled || !replies.length) continue;
+          setParamountReplies(current => [...current, ...replies
+            .filter(reply => !current.some(item => item.id === reply.id))
+            .map(reply => ({ ...reply, customer, loadId: String(load.id), threadId: result.threadId, driver: true }))]);
+          patchParamountLoad(customer, load.id, current => ({
+            ...current,
+            driverRepliesSeenAt: replies.map(reply => reply.at).sort().pop(),
+            driverReplyIds: [...(current.driverReplyIds || []), ...replies.map(reply => reply.id)].slice(-30),
+            notes: [current.notes, ...replies.map(reply => `Driver reply from ${reply.from.replace(/<[^>]*>/, '').trim()}: ${reply.snippet}`)].filter(Boolean).join('\n')
+          }));
+          replies.forEach(reply => alert(`Driver replied on load #${load.id} (${customer}):\n\n${reply.from.replace(/<[^>]*>/, '').trim()}: ${reply.snippet}`));
+        } catch (error) {
+          console.warn(`Could not check driver replies for load ${load.id}: ${error.message}`);
+        }
+      }
+    };
+    void pushWatchList();
+    const watchTimer = setInterval(() => { void pushWatchList(); }, 60 * 1000);
+    const driverFirst = setTimeout(() => { void checkDriverEmails(); }, 30 * 1000);
+    const driverTimer = setInterval(() => { void checkDriverEmails(); void checkDriverReplies(); }, 5 * 60 * 1000);
+    const rxoFirst = setTimeout(() => { void checkRxoRequests(); }, 20 * 1000);
+    const replyTimer = setInterval(() => { void checkReplies(); void checkRxoRequests(); }, 3 * 60 * 1000);
+    window.addEventListener('landstar-tracking-result', onTrackingResult);
+    return () => {
+      cancelled = true;
+      clearInterval(watchTimer);
+      clearInterval(replyTimer);
+      clearTimeout(rxoFirst);
+      clearTimeout(driverFirst);
+      clearInterval(driverTimer);
+      window.removeEventListener('landstar-tracking-result', onTrackingResult);
+    };
   }, []);
 
   // Queues a full-list import's dropped loads for removal from Landstar. If an import
@@ -7656,6 +8459,40 @@ export default function App({ sharing = null } = {}) {
             >
               🚀 Export to Landstar
             </button>
+            {pastedImage && (
+              <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 normal-case tracking-normal text-left" role="dialog" aria-label="Which list is this?">
+                <div className="bg-[#121829] border border-purple-500 rounded-lg shadow-2xl p-4 w-[24rem] max-w-full">
+                  <h2 className="text-sm font-bold text-purple-200 mb-1">📋 Which list did you paste?</h2>
+                  <p className="text-xs text-gray-300 mb-3">The picture is imported into the account you pick.</p>
+                  <div className="flex flex-col gap-2">
+                    {pasteImportChoices.map(choice => (
+                      <button
+                        key={choice.label}
+                        type="button"
+                        onClick={() => importPastedImage(choice.customer)}
+                        className={`${choice.className} text-white text-sm px-3 py-2 rounded font-semibold cursor-pointer text-left`}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                    <button type="button" onClick={() => setPastedImage(null)} className="text-gray-300 hover:text-white text-xs mt-1 cursor-pointer">Cancel</button>
+                  </div>
+                </div>
+              </div>
+            )}
+            {(paramountDrafts.length > 0 || paramountReplies.length > 0) && (
+              <button
+                type="button"
+                onClick={() => setView('booked')}
+                title="Tracking emails waiting for you on Booked Loads"
+                className="bg-amber-400 hover:bg-amber-300 text-black text-xs px-2.5 py-1 rounded font-bold cursor-pointer normal-case tracking-normal"
+              >
+                ⚠ {[
+                  paramountDrafts.length ? `${paramountDrafts.length} email${paramountDrafts.length === 1 ? '' : 's'} to send` : '',
+                  paramountReplies.length ? `${paramountReplies.length} repl${paramountReplies.length === 1 ? 'y' : 'ies'}` : ''
+                ].filter(Boolean).join(' · ')}
+              </button>
+            )}
             {showInquiries && (
               <InquiriesPanel
                 inquiries={inquiries}
@@ -7860,6 +8697,14 @@ export default function App({ sharing = null } = {}) {
             onBack={() => setView('loads')}
             onOpen={openBookedLoad}
             onUpdate={updateCustomerLoad}
+            emails={{
+              drafts: paramountDrafts,
+              replies: paramountReplies,
+              onChangeText: (draft, text) => setParamountDrafts(current => current.map(item => (item.id === draft.id ? { ...item, text } : item))),
+              onSend: draft => { void sendParamountDraft(draft); },
+              onSkip: skipParamountDraft,
+              onDismissReply: reply => setParamountReplies(current => current.filter(item => item.id !== reply.id))
+            }}
             onRemoveCapacity={(customer, id) => {
               const load = (customerOrdersMap[customer] || []).find(o => String(o.id) === String(id));
               if (load && confirmRemoveCapacity(load)) updateCustomerLoad(customer, id, removeCapacity(load));

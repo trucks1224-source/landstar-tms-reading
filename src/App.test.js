@@ -28,7 +28,7 @@ export {
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, getRxoAtzDatVanDiscount, isRxoSameCityLoad,
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, getTrackingWatchList,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
@@ -2498,4 +2498,156 @@ test('Google miles are looked up once per lane and reused after that', async () 
   await getGoogleRoadMiles({ ...greenBay, destZip: '43604', destCity: 'TOLEDO' });
   assert.equal(lookups, 2, 'a different lane asks Google');
   assert.equal(getRoadMilesLaneKey({ origCity: 'Chicago', origSt: 'IL', destCity: 'Dallas', destSt: 'TX' }), 'CHICAGO,IL>DALLAS,TX', 'no ZIPs: city and state');
+});
+
+test('booking sends the truck and the exported posting to the bot for Landstar Assign Capacity', () => {
+  const posting = { originZip: '07032', destZip: '32207', pickupThru: '11/06/26 15:00', deliveryThru: '11/09/26 11:00', weight: 38000 };
+  const booked = { ...load, id: '2283600', truck: ' 420371 ', driver: 'David Carter', status: 'BOOKED', landstarPosting: posting };
+  const { item } = policy.buildAssignRequest('Para 1522166 - ATZ H', booked);
+  assert.equal(item.truck, '420371');
+  assert.equal(item.loadId, '2283600');
+  assert.deepEqual({ ...item.posting }, posting);
+  assert.match(policy.buildAssignRequest('Para 1522166 - ATZ H', { ...booked, truck: '' }).reason, /no truck number/);
+  assert.match(policy.buildAssignRequest('Para 1522166 - ATZ H', { ...booked, landstarPosting: undefined }).reason, /not posted to Landstar by the bot/);
+
+  const ok = policy.applyAssignResult({ ...booked, notes: 'Call before' }, { ok: true, truck: '420371', landstarLoadId: '187371843', message: 'Assigned 420371 - LDWY Rocway Xpress LLC to Landstar load #187371843', at: 1 });
+  assert.equal(ok.landstarAssignment.ok, true);
+  assert.equal(ok.notes, 'Call before\nLandstar: Assigned 420371 - LDWY Rocway Xpress LLC to Landstar load #187371843');
+  const failed = policy.applyAssignResult(booked, { ok: false, truck: '420371', message: 'no BCO found with tractor 420371', at: 2 });
+  assert.match(failed.notes, /NOT assigned - no BCO found/);
+});
+
+test('Paramount tracking emails: both Para accounts, the right emails at the right time', () => {
+  const now = Date.parse('2026-11-06T12:00:00Z');
+  const booked = { ...load, id: '2283600', status: 'BOOKED', truck: '420371', driver: 'DAVID CARTER', origCity: 'KEARNY', origSt: 'NJ', destCity: 'JACKSONVILLE', destSt: 'FL', bookedAt: '2026-11-06T10:00:00Z', notes: '' };
+  const watch = policy.getParamountWatchList({
+    'Para 1522166 - ATZ': [booked, { ...booked, id: '1', status: 'OPEN' }, { ...booked, id: '2', truck: '' }],
+    'Para 1522166 - ATZ H': [{ ...booked, id: '3' }, { ...booked, id: '4', trackingStage: 'Delivered' }, { ...booked, id: '5', bookedAt: '2026-10-20T10:00:00Z' }],
+    'R X O 2429200 - ATZ': [{ ...booked, id: '6' }]
+  }, now);
+  assert.deepEqual([...watch.map(item => item.key)], ['Para 1522166 - ATZ|2283600', 'Para 1522166 - ATZ H|3']);
+  assert.equal(watch[0].truck, '420371');
+  assert.equal(policy.isParamountTrackingCustomer('Para 1522166 - ATZ P'), false);
+
+  const info = {
+    key: 'Para 1522166 - ATZ|2283600', customer: 'Para 1522166 - ATZ', loadId: '2283600', ok: true, at: 5,
+    freightBill: '4431900', trackingLink: 'https://clarity.landstaronline.com/customer?token=abc%2B1', driver: 'David Carter',
+    pickupCity: 'Kearny, NJ', deliveryCity: 'Jacksonville, FL', pickupTimezone: 'America/New_York', deliveryTimezone: 'America/New_York',
+    pickupEta: '2026-11-06T13:00:00Z', pickupScheduled: '2026-11-06T13:00:00Z', arrivedShipperAt: null, leftShipperAt: null
+  };
+  assert.deepEqual([...policy.getDueParamountEmails(booked, { ...info, trackingLink: '' })], [], 'no link yet: wait');
+  assert.deepEqual([...policy.getDueParamountEmails(booked, info)], ['initial']);
+  const first = policy.buildParamountEmail('initial', booked, info, { greetingName: 'Heather', phone: '4845756486' });
+  assert.match(first, /^Hi Heather and team,/);
+  assert.match(first, /order 2283600/);
+  assert.match(first, /customer\?token=abc%2B1/);
+  assert.match(first, /scheduled to pick up in Kearny, NJ\./, 'no ETA from Clarity');
+  assert.doesNotMatch(first, /estimated arrival/);
+  const typed = policy.buildParamountEmail('initial', { ...booked, pickupEta: '11/06/2026 09:30' }, info, { greetingName: 'Heather' });
+  assert.match(typed, /pick up in Kearny, NJ, with an estimated arrival of 11\/06\/2026 09:30\./, 'the ETA typed in the TMS');
+  assert.match(first, /484-575-6486/);
+
+  const sent = policy.markParamountEmail(policy.applyParamountTrackingInfo(booked, info), 'initial', { at: '2026-11-06T12:01:00Z' });
+  assert.equal(sent.paramountTracking.freightBill, '4431900');
+  assert.match(sent.notes, /Paramount email sent: tracking link/);
+  assert.deepEqual([...policy.getDueParamountEmails(sent, info)], [], 'nothing new');
+  const arrived = { ...info, arrivedShipperAt: '2026-11-06T13:05:00Z' };
+  assert.deepEqual([...policy.getDueParamountEmails(sent, arrived)], ['arrived']);
+  assert.equal(policy.applyParamountTrackingInfo(sent, arrived).trackingStage, 'At Pickup');
+  const left = { ...arrived, leftShipperAt: '2026-11-06T15:00:00Z', deliveryEta: '2026-11-07T14:00:00Z' };
+  assert.deepEqual([...policy.getDueParamountEmails(sent, left)], ['departed'], 'left before the arrived email went out: one email covers both');
+  assert.equal(policy.applyParamountTrackingInfo(sent, left).trackingStage, 'Loaded');
+  assert.match(policy.buildParamountEmail('departed', booked, left), /left the shipper in Kearny, NJ .*heading to Jacksonville, FL\. The estimated arrival at delivery is 11\/07 at 09:00 EST/);
+  const done = policy.markParamountEmail(sent, 'departed');
+  assert.equal(done.paramountTracking.emails.arrived.skipped, true);
+  assert.deepEqual([...policy.getDueParamountEmails(done, left)], []);
+
+  assert.equal(policy.greetingNameFrom('Heather Locke <heather.locke@rlglobal.com>'), 'Heather');
+  assert.equal(policy.greetingNameFrom('"Locke, Heather" <heather.locke@rlglobal.com>'), 'Heather');
+  assert.equal(policy.greetingNameFrom('afterhoursatrltruckload@rlglobal.com'), '');
+});
+
+test('RXO update requests: reply with status, location, typed pickup ETA and tracking link', () => {
+  const booked = { ...load, id: '24474092', status: 'BOOKED', truck: '583737', origCity: 'COEYMANS', origSt: 'NY', destCity: 'PITTSTON', destSt: 'PA', notes: '' };
+  const map = {
+    'R X O 2429200 - ATZ': [booked, { ...booked, id: '24474085', status: 'OPEN' }],
+    'R X O 2429200 - ATZ P': [{ ...booked, id: '24544189' }],
+    'R X O 2429200 - ATZ H': [{ ...booked, id: '1' }]
+  };
+  assert.deepEqual([...policy.getRxoWatchList(map).map(item => `${item.customer}|${item.loadId}|${item.billTo}`)],
+    ['R X O 2429200 - ATZ|24474092|rxo', 'R X O 2429200 - ATZ P|24544189|rxo']);
+  assert.equal(policy.findRxoLoadForRequest(map, '24544189').customer, 'R X O 2429200 - ATZ P');
+  assert.equal(policy.findRxoLoadForRequest(map, '24474085'), null, 'not booked');
+  assert.equal(policy.findRxoLoadForRequest(map, '99999999'), null, 'not your load');
+
+  const tracking = {
+    freightBill: '4431900', trackingLink: 'https://clarity.landstaronline.com/customer?token=t', pickupCity: 'Coeymans, NY',
+    deliveryCity: 'Pittston, PA', lastLocation: 'Albany, NY', lastLocationAt: '2026-11-06T12:30:00Z', pickupTimezone: 'America/New_York',
+    pickupEta: '2026-11-06T13:00:00Z'
+  };
+  let email = policy.buildRxoUpdateEmail(booked, tracking);
+  assert.match(email.text, /order 24474092/);
+  assert.match(email.text, /empty and heading to the shipper in Coeymans, NY/);
+  assert.match(email.text, /Current location: Albany, NY \(as of 11\/06 at 07:30 EST\)/);
+  assert.match(email.text, /Pickup ETA: ____/, 'never Clarity\'s pickup ETA');
+  assert.match(email.text, /Live tracking: https:\/\/clarity/);
+  assert.equal(email.complete, false, 'missing pickup ETA: never sent on its own');
+  email = policy.buildRxoUpdateEmail({ ...booked, pickupEta: '11/06/2026 09:00' }, tracking);
+  assert.match(email.text, /Pickup ETA: 11\/06\/2026 09:00/);
+  assert.equal(email.complete, true);
+  email = policy.buildRxoUpdateEmail(booked, { ...tracking, leftShipperAt: 'done', deliveryEta: '2026-11-06T18:00:00Z', deliveryTimezone: 'America/New_York' });
+  assert.match(email.text, /loaded and on the way to Pittston, PA/);
+  assert.match(email.text, /Delivery ETA: 11\/06 at 13:00 EST/);
+  assert.doesNotMatch(email.text, /Pickup ETA/);
+  assert.equal(email.complete, true);
+  assert.equal(policy.buildRxoUpdateEmail(booked, {}).complete, false, 'not found in Clarity yet');
+});
+
+test('driver emails: 7 AM on pickup day, after pickup, 7 AM on delivery day, POD after delivery', () => {
+  const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
+  const booked = {
+    ...load, id: '2283600', status: 'BOOKED', truck: '420371', driver: 'DAVID CARTER', origCity: 'KEARNY', origSt: 'NJ',
+    destCity: 'JACKSONVILLE', destSt: 'FL', pickupTime: '11/06/2026 0800 - 1500', deliveryTime: '11/09/2026 0000 - 1100',
+    bookedAt: new Date(at(5, 16)).toISOString(), notes: ''
+  };
+  const tracking = { freightBill: '4574648', pickupCity: 'Kearny, NJ', deliveryCity: 'Jacksonville, FL' };
+  const due = (l, t, now) => [...policy.getDueDriverEmails(l, t, now)];
+  assert.deepEqual(due(booked, {}, at(6, 8)), [], 'no freight bill from Clarity yet: no BCO thread to reply in');
+  assert.deepEqual(due(booked, tracking, at(5, 20)), [], 'day before pickup');
+  assert.deepEqual(due(booked, tracking, at(6, 6, 59)), [], 'before 7 AM');
+  assert.deepEqual(due(booked, tracking, at(6, 7)), ['pickupMorning']);
+  assert.deepEqual(due({ ...booked, bookedAt: new Date(at(6, 9)).toISOString() }, tracking, at(6, 10)), [], 'booked this morning: just dispatched');
+  const morningText = policy.buildDriverEmail('pickupMorning', booked, tracking);
+  assert.match(morningText, /^Good morning David!/);
+  assert.match(morningText, /load 4574648, picking up today in Kearny, NJ \(appointment 11\/06\/2026 0800 - 1500\)/);
+  assert.match(morningText, /ETA to the shipper/);
+  assert.match(morningText, /Daniel Gomez\nLandstar/);
+
+  let sent = policy.markDriverEmail(booked, 'pickupMorning', { at: new Date(at(6, 7)).toISOString() });
+  assert.deepEqual(due(sent, tracking, at(6, 9)), []);
+  const loaded = { ...tracking, leftShipperAt: '2026-11-06T15:00:00Z' };
+  assert.deepEqual(due(sent, loaded, at(6, 11)), ['pickedUp']);
+  assert.match(policy.buildDriverEmail('pickedUp', booked, loaded), /ETA for delivery in Jacksonville, FL/);
+  sent = policy.markDriverEmail(sent, 'pickedUp', { at: new Date(at(6, 11)).toISOString() });
+  assert.deepEqual(due(sent, loaded, at(8, 9)), [], 'day before delivery');
+  assert.deepEqual(due(sent, loaded, at(9, 7, 5)), ['deliveryMorning']);
+  assert.match(policy.buildDriverEmail('deliveryMorning', booked, loaded), /Load 4574648 delivers today in Jacksonville, FL/);
+  sent = policy.markDriverEmail(sent, 'deliveryMorning');
+  assert.deepEqual(due(sent, loaded, at(9, 9)), []);
+  assert.deepEqual(due(sent, { ...loaded, deliveredAt: 'done' }, at(9, 12)), ['pod']);
+  assert.deepEqual(due({ ...sent, trackingStage: 'Delivered' }, loaded, at(9, 12)), ['pod'], 'marked delivered by hand');
+  assert.match(policy.buildDriverEmail('pod', booked, loaded), /send the signed POD/);
+  sent = policy.markDriverEmail(sent, 'pod');
+  assert.deepEqual(due(sent, { ...loaded, deliveredAt: 'done' }, at(9, 13)), []);
+  assert.match(sent.notes, /Driver email sent: Delivered: send the POD/);
+
+  const sameDay = { ...booked, deliveryTime: '11/06/2026 1700 - 1800' };
+  const pickedToday = policy.markDriverEmail(sameDay, 'pickedUp', { at: new Date(at(6, 12)).toISOString() });
+  assert.deepEqual(due(pickedToday, loaded, at(6, 13)), [], 'same-day delivery: the picked-up email already asked for the ETA');
+
+  const watch = policy.getTrackingWatchList({
+    'Para 1522166 - ATZ': [booked], 'R X O 2429200 - ATZ': [{ ...booked, id: '2' }], 'Nolan 965974': [{ ...booked, id: '3' }, { ...booked, id: '4', status: 'OPEN' }]
+  }, at(6, 8));
+  assert.deepEqual([...watch.map(item => `${item.loadId}|${item.billTo}`)], ['2283600|paramount', '2|rxo', '3|any']);
+  assert.equal(policy.applyParamountTrackingInfo(booked, { ok: true, deliveredAt: 'done', leftShipperAt: 'done' }).trackingStage, 'Delivered');
 });

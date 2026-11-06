@@ -4,10 +4,12 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { processRoadMilesRequest } from './api/road-miles.js'
 import { processDatRateRequest, getDatConfig } from './api/dat-rate.js'
+import { handleParamountEmail } from './api/_lib/gmailThread.js'
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  for (const key of ['GOOGLE_MAPS_API_KEY', 'DAT_USERNAME', 'DAT_PASSWORD', 'DAT_USER_USERNAME', 'DAT_AUTH_BASE', 'DAT_RATECAST_URL']) {
+  for (const key of ['GOOGLE_MAPS_API_KEY', 'DAT_USERNAME', 'DAT_PASSWORD', 'DAT_USER_USERNAME', 'DAT_AUTH_BASE', 'DAT_RATECAST_URL',
+    'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']) {
     if (!process.env[key] && env[key]) {
       process.env[key] = env[key]
     }
@@ -63,6 +65,33 @@ export default defineConfig(({ mode }) => {
               console.error('Could not start the Landstar bot:', error)
               lastBotStart = 0
               reply(500, { error: 'The bot could not be started. Double-click Start Landstar Bot.bat in the bot folder.' })
+            }
+          })
+
+          // Paramount tracking emails (reply-all on the rate confirmation thread, and
+          // replies to watch for). Only this computer's TMS can call it.
+          server.middlewares.use('/api/paramount-email', async (req, res) => {
+            const reply = (status, body) => {
+              res.statusCode = status
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify(body))
+            }
+            if (req.method !== 'POST') return reply(405, { error: 'Use POST.' })
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              return reply(403, { error: 'Only the TMS on this computer can send these emails.' })
+            }
+            let body = ''
+            for await (const chunk of req) {
+              body += chunk
+              if (body.length > 65_536) return reply(413, { error: 'The email is too large.' })
+            }
+            try {
+              const result = await handleParamountEmail(JSON.parse(body || '{}'))
+              reply(result.status, result.body)
+            } catch (error) {
+              console.error('Paramount email request failed:', error.message)
+              reply(502, { error: error.message || 'The Gmail request failed.' })
             }
           })
 

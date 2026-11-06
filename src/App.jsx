@@ -4270,6 +4270,8 @@ const paramountBusy = new Set();
 const paramountResultSeen = new Map();
 // The fuel surcharge email last applied (Gmail message id).
 const fuelEmailSeenKey = 'landstar_fuelEmailSeen';
+// Freight bills from recent BCO Load Detail emails (refreshed every few minutes).
+const bcoBillsCache = { at: 0, bills: [] };
 
 function isParamountTrackingCustomer(name) {
   return paramountTrackingCustomers.has(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
@@ -4400,6 +4402,7 @@ async function callParamountEmail(body) {
 // ---------- Driver emails ----------
 // Every booked load whose Landstar freight bill the bot found in Clarity: the TMS replies
 // in Daniel's "BCO Load Detail" email to the driver (Cc his Landstar address):
+//   dispatch        right after the BCO Load Detail email: turn on the tracking app, confirm.
 //   pickupMorning   7:00 AM on pickup day: good to go? ETA to the shipper?
 //   pickedUp        once Clarity shows the truck left the shipper: ETA for delivery?
 //   deliveryMorning 7:00 AM on delivery day (picked up on an earlier day): good? ETA?
@@ -4409,6 +4412,7 @@ const driverApprovedKey = 'landstar_driverApprovedSends';
 const DRIVER_EMAIL_HOUR = 7;
 const TRACKING_WATCH_DAYS = 10;
 const driverEmailLabels = {
+  dispatch: 'Dispatched: tracking app + confirm',
   pickupMorning: 'Pickup day: good to go + ETA',
   pickedUp: 'Picked up: delivery ETA',
   deliveryMorning: 'Delivery day: good to go + ETA',
@@ -4453,10 +4457,13 @@ function getDueDriverEmails(load, tracking = {}, now = Date.now()) {
     if (deliveryAt && sameLocalDay(deliveryAt, now) && now >= morning && !sent.deliveryMorning && !askedToday) return ['deliveryMorning'];
     return [];
   }
+  // Just dispatched (the BCO Load Detail email is the thread): tracking app, confirm the load.
+  if (!sent.dispatch && !sent.pickupMorning) return ['dispatch'];
   const pickupAt = parseScheduleStart(load.pickupTime);
-  // Booked after 7 AM on pickup day: the driver was just dispatched, no morning check.
+  // Booked after 7 AM on pickup day, or the dispatch email went out this morning: no morning check.
   const bookedBefore = !Date.parse(load.bookedAt) || Date.parse(load.bookedAt) < morning;
-  if (pickupAt && sameLocalDay(pickupAt, now) && now >= morning && !sent.pickupMorning && bookedBefore) return ['pickupMorning'];
+  const dispatchedToday = sent.dispatch && Date.parse(sent.dispatch.at) >= morning;
+  if (pickupAt && sameLocalDay(pickupAt, now) && now >= morning && !sent.pickupMorning && bookedBefore && !dispatchedToday) return ['pickupMorning'];
   return [];
 }
 
@@ -4484,6 +4491,10 @@ function buildDriverEmail(kind, load, tracking = {}, { phone = '', customer = ''
   const deliveryPlace = tracking.deliveryCity || [titleCase(load.destCity), load.destSt].filter(Boolean).join(', ');
   const appt = value => (String(value || '').trim() ? ` (appointment ${String(value).trim()})` : '');
   const sign = `\n\nThank you!\n\n${paramountSignature(phone)}`;
+  if (kind === 'dispatch') {
+    return `${hello}\n\nThank you for taking ${bill}! Pickup is in ${pickupPlace}${appt(load.pickupTime)} and delivery is in ${deliveryPlace}${appt(load.deliveryTime)}.\n\n`
+      + 'Please reply to confirm you received the load details, and let me know your ETA to the shipper.' + sign;
+  }
   if (kind === 'pickupMorning') {
     return `Good morning ${first || ''}`.trim() + `!\n\n${notice}Just checking in on ${bill}, picking up today in ${pickupPlace}${appt(load.pickupTime)}. `
       + 'Are you good to go for pickup? What is your ETA to the shipper?' + sign;
@@ -6859,10 +6870,16 @@ export default function App({ sharing = null } = {}) {
     let cancelled = false;
     const pushWatchList = async () => {
       if (!canStartBotHere()) return;
+      // Freight bills from the BCO Load Detail emails, read again every 5 minutes: the bot opens
+      // them in Clarity when a booked truck isn't in Clarity's freight list yet.
+      if (Date.now() - bcoBillsCache.at > 5 * 60 * 1000) {
+        bcoBillsCache.at = Date.now();
+        try { bcoBillsCache.bills = (await callParamountEmail({ action: 'bcoBills' })).bills || []; } catch { /* keep the last list */ }
+      }
       try {
         await fetch(BOT_TRACKING_URL, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ loads: getTrackingWatchList(paramountLatest.map) })
+          body: JSON.stringify({ loads: getTrackingWatchList(paramountLatest.map), candidateBills: bcoBillsCache.bills })
         });
       } catch { /* bot off: try again next minute */ }
     };

@@ -274,6 +274,22 @@ async function handleDriverEmail({ action, freightBill, since, text }) {
   return { status: 200, body: { ok: true, id: sent.id, threadId, ...recipients } };
 }
 
+// Freight bills Daniel dispatched in the last few days (from "BCO Load Detail" subjects),
+// newest first. The bot looks these up in Clarity when a booked load's truck isn't in
+// Clarity's freight list yet.
+async function listBcoBills() {
+  const { accessToken } = await connect();
+  const query = 'subject:"BCO Load Detail for" newer_than:5d';
+  const list = await gmailJson(accessToken, `${GMAIL}/messages?q=${encodeURIComponent(query)}&maxResults=30`);
+  const bills = [];
+  for (const { id } of list.messages || []) {
+    const message = await gmailJson(accessToken, `${GMAIL}/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=Subject`);
+    const bill = parseBcoSubject(header(message, 'Subject'));
+    if (bill && !bills.includes(bill)) bills.push(bill);
+  }
+  return { status: 200, body: { bills: bills.slice(0, 20) } };
+}
+
 // ---------- Weekly fuel surcharge email ----------
 // "Fw: 11/3/2026   East .86  Midwest .88   West 1.03 New England .89" (Ryan Huber, forwarded
 // by Jorge Farinhas). Returns the newest one's subject and text; the TMS reads the rates.
@@ -301,6 +317,7 @@ export async function handleParamountEmail(request = {}) {
   if (action === 'rxoRequests' || action === 'rxoSend') return handleRxoEmail(request);
   if (action === 'driverThread' || action === 'driverSend') return handleDriverEmail(request);
   if (action === 'fuelRates') return findFuelEmail();
+  if (action === 'bcoBills') return listBcoBills();
   const order = String(orderNumber || '').trim();
   if (!/^\d{4,}$/.test(order)) return { status: 400, body: { error: 'A Paramount order number is needed.' } };
   const { accessToken, myEmail } = await connect();

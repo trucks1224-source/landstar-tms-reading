@@ -2651,3 +2651,15 @@ test('driver emails: 7 AM on pickup day, after pickup, 7 AM on delivery day, POD
   assert.deepEqual([...watch.map(item => `${item.loadId}|${item.billTo}`)], ['2283600|paramount', '2|rxo', '3|any']);
   assert.equal(policy.applyParamountTrackingInfo(booked, { ok: true, deliveredAt: 'done', leftShipperAt: 'done' }).trackingStage, 'Delivered');
 });
+
+test('driver emails tell the driver to turn on the customer\'s tracking app, at the top', () => {
+  const booked = { ...load, id: '24466147', status: 'BOOKED', driver: 'ISMAEL BAILON', origCity: 'ABILENE', origSt: 'TX', destCity: 'SAN ANTONIO', destSt: 'TX', pickupTime: '11/10/2026 1300' };
+  const tracking = { freightBill: '4532973' };
+  const rxo = policy.buildDriverEmail('pickupMorning', booked, tracking, { customer: 'R X O 2429200 - ATZ P' });
+  assert.match(rxo, /^Good morning Ismael!\n\n\*\*\* IMPORTANT: PLEASE TURN ON THE MACROPOINT TRACKING APP NOW \*\*\*\nKeep MacroPoint on and tracking for the ENTIRE trip/);
+  const para = policy.buildDriverEmail('pickedUp', booked, tracking, { customer: 'Para 1522166 - ATZ H' });
+  assert.match(para, /^Hi Ismael,\n\n\*\*\* IMPORTANT: PLEASE TURN ON THE TRUCKER TOOLS TRACKING APP NOW \*\*\*/);
+  assert.match(policy.buildDriverEmail('deliveryMorning', booked, tracking, { customer: 'Para 1522166 - ATZ' }), /TRUCKER TOOLS/);
+  assert.match(policy.buildDriverEmail('pickupMorning', booked, tracking, { customer: 'Nolan 965974' }), /PLEASE TURN ON YOUR TRACKING APP NOW/);
+  assert.doesNotMatch(policy.buildDriverEmail('pod', booked, tracking, { customer: 'R X O 2429200 - ATZ' }), /IMPORTANT/, 'not after delivery');
+});

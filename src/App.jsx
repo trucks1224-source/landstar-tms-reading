@@ -4437,23 +4437,39 @@ function getDueDriverEmails(load, tracking = {}, now = Date.now()) {
   return [];
 }
 
-function buildDriverEmail(kind, load, tracking = {}, { phone = '' } = {}) {
+// The tracking app each customer uses: RXO = MacroPoint, Paramount = Trucker Tools.
+function getTrackingAppName(customer) {
+  if (isRxoTrackingCustomer(customer)) return 'MacroPoint';
+  if (isParamountTrackingCustomer(customer)) return 'Trucker Tools';
+  return '';
+}
+
+// Very visible at the top of every driver email until delivery.
+function trackingAppNotice(customer) {
+  const app = getTrackingAppName(customer);
+  const name = app ? `the ${app.toUpperCase()} tracking app` : 'your tracking app';
+  return `*** IMPORTANT: PLEASE TURN ON ${name.toUpperCase()} NOW ***\n`
+    + `Keep ${app || 'it'} on and tracking for the ENTIRE trip, from pickup to delivery. The customer charges back if tracking is not used.\n\n`;
+}
+
+function buildDriverEmail(kind, load, tracking = {}, { phone = '', customer = '' } = {}) {
   const first = titleCase(String(load.driver || '').trim().split(/\s+/)[0] || '');
-  const hello = first ? `Hi ${first},` : 'Hi,';
+  const notice = kind === 'pod' ? '' : trackingAppNotice(customer);
+  const hello = `${first ? `Hi ${first},` : 'Hi,'}\n\n${notice}`.trimEnd();
   const bill = tracking.freightBill ? `load ${tracking.freightBill}` : `load #${load.id}`;
   const pickupPlace = tracking.pickupCity || [titleCase(load.origCity), load.origSt].filter(Boolean).join(', ');
   const deliveryPlace = tracking.deliveryCity || [titleCase(load.destCity), load.destSt].filter(Boolean).join(', ');
   const appt = value => (String(value || '').trim() ? ` (appointment ${String(value).trim()})` : '');
   const sign = `\n\nThank you!\n\n${paramountSignature(phone)}`;
   if (kind === 'pickupMorning') {
-    return `Good morning ${first || ''}`.trim() + `!\n\nJust checking in on ${bill}, picking up today in ${pickupPlace}${appt(load.pickupTime)}. `
-      + 'Are you good to go for pickup? What is your ETA to the shipper?\n\nPlease keep the tracking app on for the entire trip.' + sign;
+    return `Good morning ${first || ''}`.trim() + `!\n\n${notice}Just checking in on ${bill}, picking up today in ${pickupPlace}${appt(load.pickupTime)}. `
+      + 'Are you good to go for pickup? What is your ETA to the shipper?' + sign;
   }
   if (kind === 'pickedUp') {
     return `${hello}\n\nThank you for picking up ${bill} in ${pickupPlace}! What is your ETA for delivery in ${deliveryPlace}${appt(load.deliveryTime)}?` + sign;
   }
   if (kind === 'deliveryMorning') {
-    return `Good morning ${first || ''}`.trim() + `!\n\n${bill.charAt(0).toUpperCase()}${bill.slice(1)} delivers today in ${deliveryPlace}${appt(load.deliveryTime)}. `
+    return `Good morning ${first || ''}`.trim() + `!\n\n${notice}${bill.charAt(0).toUpperCase()}${bill.slice(1)} delivers today in ${deliveryPlace}${appt(load.deliveryTime)}. `
       + 'Are you good for delivery? What is your ETA?' + sign;
   }
   return `${hello}\n\nThank you for delivering ${bill} in ${deliveryPlace}! Please send the signed POD as soon as you can. `
@@ -6913,7 +6929,7 @@ export default function App({ sharing = null } = {}) {
             const thread = await callParamountEmail({ action: 'driverThread', freightBill: tracking.freightBill });
             const draft = {
               id, kind: 'driver', driverKind, customer, loadId: String(load.id), freightBill: tracking.freightBill,
-              text: buildDriverEmail(driverKind, load, tracking, { phone: paramountLatest.phone }),
+              text: buildDriverEmail(driverKind, load, tracking, { phone: paramountLatest.phone, customer }),
               to: thread.to || [], cc: thread.cc || []
             };
             if (readApprovedCount(driverApprovedKey) >= PARAMOUNT_AUTO_SEND_AFTER) {

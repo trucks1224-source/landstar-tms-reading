@@ -9,3 +9,16 @@ eng.traineddata
 # Upload bot: Landstar login session and browser profile (never commit)
 bot/auth.json
 bot/browser-profile/
+bot/browser-profile-helper/
+# Upload bot: live queues, results and status (change every few seconds)
+bot/*-queue.json
+bot/unpost-queue.backup-*.json
+bot/bot-results.json
+bot/helper-status.json
+bot/tracking-watch.json
+bot/tracking-bills.json
+# Customer rate confirmations, MercuryGate screenshots, OCR cache, debugging leftovers
+bot/ratecons/
+bot/mercurygate-shots/
+bot/.tesseract-cache/
+bot/debug*

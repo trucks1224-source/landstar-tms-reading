@@ -326,6 +326,21 @@ export async function handleParamountEmail(request = {}) {
   const { threadId, messages } = found;
   const recipients = buildReplyAll(messages, myEmail);
   const subject = header(messages[0], 'Subject');
+  if (action === 'rateConPdf') {
+    // The newest PDF attached in the thread (Paramount's "has been Accepted" email: semail.pdf).
+    for (const message of [...messages].reverse()) {
+      const full = await gmailJson(accessToken, `${GMAIL}/messages/${encodeURIComponent(message.id)}?format=full`);
+      const parts = [];
+      const walk = part => { if (part) { parts.push(part); (part.parts || []).forEach(walk); } };
+      walk(full.payload);
+      const pdf = parts.find(part => /\.pdf$/i.test(part.filename || '') && part.body?.attachmentId);
+      if (!pdf) continue;
+      const attachment = await gmailJson(accessToken, `${GMAIL}/messages/${encodeURIComponent(message.id)}/attachments/${encodeURIComponent(pdf.body.attachmentId)}`);
+      const data = Buffer.from(String(attachment.data || '').replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('base64');
+      return { status: 200, body: { filename: pdf.filename, messageId: message.id, data } };
+    }
+    return { status: 404, body: { error: `No PDF in the "Rate Confirmation for order: ${order}" emails yet.` } };
+  }
   if (action === 'thread') {
     return { status: 200, body: { threadId, subject, ...recipients, replies: findNewReplies(messages.slice(1), myEmail, Date.parse(since) || 0) } };
   }

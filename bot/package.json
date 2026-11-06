@@ -1,0 +1,20 @@
+{
+  "name": "bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "upload.js",
+  "scripts": {
+    "login": "node login.js",
+    "upload": "node upload.js",
+    "ratecheck": "node rate-check.js",
+    "watch": "node upload.js --watch"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "pdfjs-dist": "^4.10.38",
+    "playwright": "^1.64.1"
+  }
+}

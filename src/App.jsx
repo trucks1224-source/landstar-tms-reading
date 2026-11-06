@@ -4065,7 +4065,7 @@ function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
 function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip, onDismissReply }) {
   const [open, setOpen] = useState(false);
   if (!drafts.length && !replies.length) return null;
-  const kindLabel = { initial: 'Tracking link + pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', rxo: 'Reply to update request' };
+  const kindLabel = { initial: 'Tracking link + pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', rxo: 'Reply to update request', driverEta: 'Driver ETA update' };
   const approvalsLeft = draft => Math.max(0, PARAMOUNT_AUTO_SEND_AFTER
     - readApprovedCount(draft.kind === 'driver' ? driverApprovedKey : draft.kind === 'rxo' ? rxoApprovedKey : paramountApprovedKey));
   const who = draft => (draft.kind === 'driver' ? 'Driver' : draft.kind === 'rxo' ? 'RXO' : 'Paramount');
@@ -4528,6 +4528,68 @@ const pasteImportChoices = [
   { label: 'NTG load cards', customer: '', className: 'bg-slate-700 hover:bg-slate-600' }
 ];
 
+// ---------- Driver ETA -> Paramount ----------
+// A driver's reply like "ETA 11 to 11:30 AM" or "I'll be there at 1130": the ETA, or ''.
+// Only the driver's own words count (the quoted email below "On ... wrote:" is cut off), and a
+// time needs AM/PM or the word ETA next to it, so dates and appointment windows aren't taken.
+function findDriverEta(text) {
+  const own = String(text || '').split(/\bOn\b[^\n]{0,120}\bwrote:|-{2,}\s*Original Message|\bFrom:\s|Sent from my|Get Outlook for/i)[0];
+  const ampm = value => String(value || '').toUpperCase().replace(/\./g, '');
+  const time = (hour, minute) => `${Number(hour)}:${minute || '00'}`;
+  const range = own.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\s*(?:-|–|to|and)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)/i);
+  if (range && Number(range[1]) <= 12 && Number(range[4]) <= 12) {
+    const first = `${time(range[1], range[2])}${range[3] && ampm(range[3]) !== ampm(range[6]) ? ` ${ampm(range[3])}` : ''}`;
+    return `${first} to ${time(range[4], range[5])} ${ampm(range[6])}`;
+  }
+  const single = own.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)/i);
+  if (single && Number(single[1]) <= 12) return `${time(single[1], single[2])} ${ampm(single[3])}`;
+  const military = own.match(/\beta\b[^\d\n]{0,15}(\d{1,2}):?(\d{2})\b/i);
+  if (military && Number(military[1]) <= 23 && Number(military[2]) <= 59) return `${String(military[1]).padStart(2, '0')}:${military[2]}`;
+  return '';
+}
+
+// The email to Paramount's thread with the ETA the driver gave (pickup, or delivery once loaded).
+function buildParamountEtaEmail(load, tracking = {}, eta, { greetingName = '', phone = '' } = {}) {
+  const hello = greetingName ? `Hi ${greetingName} and team,` : 'Hello team,';
+  const loaded = Boolean(tracking.leftShipperAt) || ['Loaded', 'In Transit', 'At Delivery'].includes(load.trackingStage);
+  const place = loaded
+    ? tracking.deliveryCity || [titleCase(load.destCity), load.destSt].filter(Boolean).join(', ')
+    : tracking.pickupCity || [titleCase(load.origCity), load.origSt].filter(Boolean).join(', ');
+  const link = tracking.trackingLink ? `\n\nLive tracking: ${tracking.trackingLink}` : '';
+  return `${hello}\n\nQuick update on order ${load.id}: our driver confirmed an ETA of ${eta} to the ${loaded ? 'receiver' : 'shipper'} in ${place}.`
+    + `${link}\n\nWe'll keep you posted. Thank you!\n\n${paramountSignature(phone)}`;
+}
+
+// ---------- MercuryGate (Landstar's TMS) for booked Paramount loads ----------
+// The helper bot fills MercuryGate the way Daniel does by hand (bot/mercurygate-job.js):
+// "booked": Customer Reference Number, pickup + drop from the rate confirmation PDF, special
+// instructions; "pickedUp": upload the PDF as a Customer Confirmation Sheet. Loads booked before
+// the bot started doing this (MERCURYGATE_FROM) were entered by hand and are left alone.
+const BOT_MERCURYGATE_URL = 'http://127.0.0.1:47615/mercurygate';
+const MERCURYGATE_FROM = Date.parse('2026-11-06T16:55:00Z');
+const mercurygateSeenKey = 'landstar_mercurygateSeenAt';
+
+// The MercuryGate step due for a booked Paramount load, or ''.
+function getDueMercuryGateStep(load, tracking = {}) {
+  if (load.status !== 'BOOKED' || !tracking.freightBill) return '';
+  if (!(Date.parse(load.bookedAt) >= MERCURYGATE_FROM)) return '';
+  const done = load.mercurygate || {};
+  if (!done.booked) return 'booked';
+  if (tracking.leftShipperAt && !done.pickedUp) return 'pickedUp';
+  return '';
+}
+
+// The load's notes after the bot's MercuryGate run.
+function applyMercuryGateResult(load, result) {
+  const lines = (result.results || []).map(item => `MercuryGate: ${item.message}`);
+  if (!result.ok) lines.push(`MercuryGate: NOT finished - ${String(result.message || '').split('\n')[0]}. Finish it by hand.`);
+  return {
+    ...load,
+    mercurygate: { ...(load.mercurygate || {}), [`${result.step}Result`]: { ok: Boolean(result.ok), at: result.at } },
+    notes: [load.notes, ...lines].filter(Boolean).join('\n')
+  };
+}
+
 // ---------- RXO update requests ----------
 // RXO tracking (chatracking2@rxo.com) emails "Update Request - Order # <order#>" asking where
 // the truck is. For booked loads of R X O 2429200 - ATZ and - ATZ P, the TMS drafts a
@@ -4678,6 +4740,14 @@ export function BotStatusLight() {
         takeNewAssignResults(next.assignResults).forEach(result => {
           window.dispatchEvent(new CustomEvent('landstar-assign-result', { detail: result }));
         });
+        // MercuryGate results (helper bot) -> load notes.
+        let mgSeen = 0;
+        try { mgSeen = Number(localStorage.getItem(mercurygateSeenKey)) || 0; } catch { /* first time */ }
+        const mgFresh = (Array.isArray(next.mercurygateResults) ? next.mercurygateResults : []).filter(result => Number(result.at) > mgSeen && result.mode === 'save');
+        if (mgFresh.length) {
+          try { localStorage.setItem(mercurygateSeenKey, String(Math.max(...mgFresh.map(result => Number(result.at))))); } catch { /* shown again */ }
+          mgFresh.forEach(result => window.dispatchEvent(new CustomEvent('landstar-mercurygate-result', { detail: result })));
+        }
         // Clarity results for booked Paramount loads (tracking emails).
         (Array.isArray(next.trackingResults) ? next.trackingResults : []).forEach(result => {
           if (paramountResultSeen.get(result.key) === result.at) return;
@@ -4730,15 +4800,58 @@ export function BotStatusLight() {
   }
   const detail = status.state === 'off' ? '' : describeBotProgress(status);
   return (
-    <span
-      className="inline-flex items-center gap-1.5 bg-slate-800 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal max-w-full"
-      title={[style.label, detail].filter(Boolean).join(' · ') || status.message}
-      role="status"
-      aria-live="polite"
-    >
+    <span className="inline-flex items-center gap-1.5 max-w-full">
+      <span
+        className="inline-flex items-center gap-1.5 bg-slate-800 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal max-w-full"
+        title={[style.label, detail].filter(Boolean).join(' · ') || status.message}
+        role="status"
+        aria-live="polite"
+      >
+        {dot}
+        {style.label}
+        {detail && <span className="text-slate-300 font-normal truncate max-w-[22rem]">· {detail}</span>}
+      </span>
+      {status.helper && <HelperBotLight helper={status.helper} />}
+    </span>
+  );
+}
+
+// The helper bot (bot/helper.js): Assign Capacity, Clarity and MercuryGate in its own window.
+// Its state comes through the main bot's status; when it's off, a click starts it.
+function HelperBotLight({ helper }) {
+  const [starting, setStarting] = useState(0);
+  const state = helper?.state || 'off';
+  const isOn = state === 'logged-in' || state === 'working';
+  const color = isOn ? '#22c55e' : state === 'signing-in' || (starting && Date.now() - starting < 60000) ? '#facc15' : '#64748b';
+  const dot = <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: '50%', background: color, boxShadow: color === '#64748b' ? 'none' : `0 0 8px ${color}`, display: 'inline-block' }} />;
+  const label = isOn ? `Helper ${state === 'working' ? `· ${helper.message || 'working'}` : 'on'}`
+    : state === 'signing-in' ? 'Helper · sign in to Landstar in its window' : starting ? 'Helper starting…' : 'Helper off · Start';
+  if (!isOn && state !== 'signing-in' && canStartBotHere()) {
+    return (
+      <button
+        type="button"
+        onClick={async () => {
+          setStarting(Date.now());
+          try {
+            const response = await fetch('/api/helper/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+            if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'The helper bot could not be started.');
+          } catch (error) {
+            setStarting(0);
+            alert(`${error.message}\n\nYou can also double-click "Start Helper Bot.bat" in the bot folder.`);
+          }
+        }}
+        title="The helper bot does Assign Capacity, Clarity checks and MercuryGate so the main bot can keep uploading. Click to start it."
+        className="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal cursor-pointer border border-slate-600"
+      >
+        {dot}
+        {label}
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 bg-slate-800 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal" title={helper?.message || label} role="status">
       {dot}
-      {style.label}
-      {detail && <span className="text-slate-300 font-normal truncate max-w-[22rem]">· {detail}</span>}
+      {label}
     </span>
   );
 }
@@ -6838,6 +6951,9 @@ export default function App({ sharing = null } = {}) {
         await callParamountEmail({ action: 'rxoSend', threadId: draft.threadId, text: draft.text });
         markRxoHandled(draft.messageId);
         patchParamountLoad(draft.customer, draft.loadId, load => ({ ...load, notes: [load.notes, 'RXO update request answered'].filter(Boolean).join('\n') }));
+      } else if (draft.kind === 'driverEta') {
+        await callParamountEmail({ action: 'send', orderNumber: draft.loadId, text: draft.text });
+        patchParamountLoad(draft.customer, draft.loadId, load => ({ ...load, notes: [load.notes, 'Paramount email sent: driver ETA'].filter(Boolean).join('\n') }));
       } else {
         await callParamountEmail({ action: 'send', orderNumber: draft.loadId, text: draft.text });
         patchParamountLoad(draft.customer, draft.loadId, load => markParamountEmail(load, draft.kind));
@@ -6857,6 +6973,7 @@ export default function App({ sharing = null } = {}) {
 
   const skipParamountDraft = draft => {
     if (draft.kind === 'rxo') markRxoHandled(draft.messageId);
+    else if (draft.kind === 'driverEta') { /* nothing to record */ }
     else if (draft.kind === 'driver') patchParamountLoad(draft.customer, draft.loadId, load => markDriverEmail(load, draft.driverKind, { skipped: true }));
     else patchParamountLoad(draft.customer, draft.loadId, load => markParamountEmail(load, draft.kind, { skipped: true }));
     setParamountDrafts(current => current.filter(item => item.id !== draft.id));
@@ -6914,6 +7031,21 @@ export default function App({ sharing = null } = {}) {
         patchParamountLoad(info.customer, info.loadId, current => applyParamountTrackingInfo(current, info));
       }
       if (!isParamountTrackingCustomer(info.customer)) return; // RXO: kept for update-request replies
+      // MercuryGate: once the freight bill is known (and again after pickup for the PDF).
+      const mgStep = getDueMercuryGateStep(updated, { ...updated.paramountTracking, ...info });
+      if (mgStep) {
+        const id = `mg|${info.customer}|${info.loadId}|${mgStep}`;
+        if (!paramountBusy.has(id)) {
+          paramountBusy.add(id);
+          fetch(BOT_MERCURYGATE_URL, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jobs: [{ customer: info.customer, loadId: String(info.loadId), freightBill: String(info.freightBill), step: mgStep, mode: 'save' }] })
+          }).then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            patchParamountLoad(info.customer, info.loadId, current => ({ ...current, mercurygate: { ...(current.mercurygate || {}), [mgStep]: new Date().toISOString() } }));
+          }).catch(() => paramountBusy.delete(id));
+        }
+      }
       getDueParamountEmails(updated, info).forEach(kind => { void prepare(info.customer, updated, kind, { ...updated.paramountTracking, ...info }); });
     };
     const checkReplies = async () => {
@@ -7016,9 +7148,12 @@ export default function App({ sharing = null } = {}) {
         const firstSent = Object.values(load.driverEmails || {}).filter(item => !item.skipped).map(item => item.at).sort()[0];
         if (!freightBill || !firstSent) continue;
         try {
-          const result = await callParamountEmail({ action: 'driverThread', freightBill, since: load.driverRepliesSeenAt || firstSent });
+          const result = await callParamountEmail({ action: 'driverThread', freightBill, since: firstSent });
+          if (cancelled) continue;
           const replies = (result.replies || []).filter(reply => !(load.driverReplyIds || []).includes(reply.id));
-          if (cancelled || !replies.length) continue;
+          // ETAs: every driver reply not used yet (also ones already shown before this was added).
+          const etaReplies = (result.replies || []).filter(reply => !(load.etaReplyIds || []).includes(reply.id));
+          if (replies.length) {
           setParamountReplies(current => [...current, ...replies
             .filter(reply => !current.some(item => item.id === reply.id))
             .map(reply => ({ ...reply, customer, loadId: String(load.id), threadId: result.threadId, driver: true }))]);
@@ -7029,6 +7164,31 @@ export default function App({ sharing = null } = {}) {
             notes: [current.notes, ...replies.map(reply => `Driver reply from ${reply.from.replace(/<[^>]*>/, '').trim()}: ${reply.snippet}`)].filter(Boolean).join('\n')
           }));
           replies.forEach(reply => alert(`Driver replied on load #${load.id} (${customer}):\n\n${reply.from.replace(/<[^>]*>/, '').trim()}: ${reply.snippet}`));
+          }
+          // An ETA in the driver's reply on a Paramount load goes to Paramount's email thread.
+          if (isParamountTrackingCustomer(customer)) {
+            for (const reply of etaReplies) {
+              const eta = findDriverEta(reply.snippet);
+              if (!eta) continue;
+              const id = `eta|${reply.id}`;
+              if (paramountBusy.has(id)) continue;
+              paramountBusy.add(id);
+              patchParamountLoad(customer, load.id, current => ({ ...current, etaReplyIds: [...(current.etaReplyIds || []), reply.id].slice(-30) }));
+              try {
+                const thread = await callParamountEmail({ action: 'thread', orderNumber: String(load.id) });
+                const draft = {
+                  id, kind: 'driverEta', customer, loadId: String(load.id), request: reply.snippet,
+                  text: buildParamountEtaEmail(load, load.paramountTracking || {}, eta, { greetingName: greetingNameFrom(thread.to?.[0]), phone: paramountLatest.phone }),
+                  to: thread.to || [], cc: thread.cc || []
+                };
+                if (readParamountApprovedCount() >= PARAMOUNT_AUTO_SEND_AFTER) await sendParamountDraft(draft, { auto: true });
+                else setParamountDrafts(current => (current.some(item => item.id === id) ? current : [...current, draft]));
+              } catch (error) {
+                console.warn(`Could not prepare the ETA email for order ${load.id}: ${error.message}`);
+                paramountBusy.delete(id);
+              }
+            }
+          }
         } catch (error) {
           console.warn(`Could not check driver replies for load ${load.id}: ${error.message}`);
         }
@@ -7048,12 +7208,20 @@ export default function App({ sharing = null } = {}) {
     const fuelTimer = setInterval(() => { void checkFuelEmail(); }, 60 * 60 * 1000);
     void pushWatchList();
     const watchTimer = setInterval(() => { void pushWatchList(); }, 60 * 1000);
-    const driverFirst = setTimeout(() => { void checkDriverEmails(); }, 30 * 1000);
-    const driverTimer = setInterval(() => { void checkDriverEmails(); void checkDriverReplies(); }, 5 * 60 * 1000);
+    // First checks soon after the page opens (it reloads after every TMS update), then every 2 minutes.
+    const driverFirst = setTimeout(() => { void checkDriverEmails(); void checkDriverReplies(); void checkReplies(); }, 30 * 1000);
+    const driverTimer = setInterval(() => { void checkDriverEmails(); void checkDriverReplies(); }, 2 * 60 * 1000);
     const rxoFirst = setTimeout(() => { void checkRxoRequests(); }, 20 * 1000);
-    const replyTimer = setInterval(() => { void checkReplies(); void checkRxoRequests(); }, 3 * 60 * 1000);
+    const replyTimer = setInterval(() => { void checkReplies(); void checkRxoRequests(); }, 2 * 60 * 1000);
     window.addEventListener('landstar-tracking-result', onTrackingResult);
+    const onMercuryGateResult = event => {
+      const result = event.detail || {};
+      patchParamountLoad(result.customer, result.loadId, current => applyMercuryGateResult(current, result));
+      if (!result.ok) alert(`MercuryGate: order #${result.loadId} was NOT fully filled in.\n\n${String(result.message || '').split('\n')[0]}\n\nPlease finish it by hand in MercuryGate.`);
+    };
+    window.addEventListener('landstar-mercurygate-result', onMercuryGateResult);
     return () => {
+      window.removeEventListener('landstar-mercurygate-result', onMercuryGateResult);
       cancelled = true;
       clearInterval(watchTimer);
       clearInterval(replyTimer);

@@ -31,6 +31,38 @@ export default defineConfig(({ mode }) => {
           // Only this computer's TMS can call it (the dev server listens on 127.0.0.1 and
           // requests from other web pages are refused by the Origin check).
           let lastBotStart = 0
+          // "Helper off" light -> starts the helper bot (bot/helper.js) in its own window.
+          let lastHelperStart = 0
+          server.middlewares.use('/api/helper/start', async (req, res) => {
+            const reply = (status, body) => {
+              res.statusCode = status
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify(body))
+            }
+            if (req.method !== 'POST') return reply(405, { error: 'Use POST.' })
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              return reply(403, { error: 'Only the TMS on this computer can start the helper bot.' })
+            }
+            if (process.platform !== 'win32') return reply(501, { error: 'Starting the helper bot only works on Windows.' })
+            if (Date.now() - lastHelperStart < 30_000) return reply(200, { ok: true, starting: true })
+            lastHelperStart = Date.now()
+            const botDir = path.resolve(process.cwd(), 'bot')
+            const launcher = path.join(botDir, 'Start Helper Bot.bat')
+            try {
+              const child = spawn('cmd.exe', ['/c', `start "Landstar Helper Bot" "${launcher}"`], {
+                cwd: botDir, detached: true, stdio: 'ignore', windowsVerbatimArguments: true
+              })
+              child.on('error', error => console.error('Could not start the helper bot:', error))
+              child.unref()
+              reply(200, { ok: true, started: true })
+            } catch (error) {
+              console.error('Could not start the helper bot:', error)
+              lastHelperStart = 0
+              reply(500, { error: 'The helper bot could not be started. Double-click Start Helper Bot.bat in the bot folder.' })
+            }
+          })
+
           server.middlewares.use('/api/bot/start', async (req, res) => {
             const reply = (status, body) => {
               res.statusCode = status

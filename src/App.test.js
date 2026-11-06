@@ -28,7 +28,7 @@ export {
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, getTrackingWatchList,
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
 };`, { loader: 'jsx', format: 'cjs' });
 const context = {
@@ -2668,4 +2668,35 @@ test('driver emails tell the driver to turn on the customer\'s tracking app, at 
   assert.match(policy.buildDriverEmail('deliveryMorning', booked, tracking, { customer: 'Para 1522166 - ATZ' }), /TRUCKER TOOLS/);
   assert.match(policy.buildDriverEmail('pickupMorning', booked, tracking, { customer: 'Nolan 965974' }), /PLEASE TURN ON YOUR TRACKING APP NOW/);
   assert.doesNotMatch(policy.buildDriverEmail('pod', booked, tracking, { customer: 'R X O 2429200 - ATZ' }), /IMPORTANT/, 'not after delivery');
+});
+
+test('a driver ETA reply becomes an update on Paramount\'s email thread', () => {
+  const reply = '11:00 to 11:30 am Get Outlook for iOS From: Daniel Urdaneta-Gomez <trucks1224@gmail.com> Sent: Friday, 06 November 2026 09:10:32 To: rocwayxpress@hotmail.com';
+  assert.equal(policy.findDriverEta(reply), '11:00 to 11:30 AM');
+  assert.equal(policy.findDriverEta('Yes sir, ETA 1130'), '11:30');
+  assert.equal(policy.findDriverEta('be there around 2pm'), '2:00 PM');
+  assert.equal(policy.findDriverEta('10:30am-11 am'), '10:30 to 11:00 AM');
+  assert.equal(policy.findDriverEta('Got it thanks On Fri, Nov 6, 2026 Daniel wrote: pickup 11/06/2026 0800 - 1500 ETA 9am'), '', 'nothing from the quoted email');
+  assert.equal(policy.findDriverEta('Received, thank you'), '');
+  const booked = { ...load, id: '2283600', origCity: 'KEARNY', origSt: 'NJ', destCity: 'JACKSONVILLE', destSt: 'FL' };
+  const text = policy.buildParamountEtaEmail(booked, { trackingLink: 'https://clarity.landstaronline.com/customer?token=t', pickupCity: 'Kearny, NJ' }, '11:00 to 11:30 AM', { greetingName: 'Heather' });
+  assert.match(text, /^Hi Heather and team,\n\nQuick update on order 2283600: our driver confirmed an ETA of 11:00 to 11:30 AM to the shipper in Kearny, NJ\./);
+  assert.match(text, /Live tracking: https:\/\/clarity/);
+  assert.match(policy.buildParamountEtaEmail({ ...booked, trackingStage: 'Loaded' }, {}, '3:00 PM'), /ETA of 3:00 PM to the receiver in Jacksonville, FL/);
+});
+
+test('MercuryGate: new Paramount bookings are filled in once, the PDF after pickup', () => {
+  const booked = { ...load, id: '2283700', status: 'BOOKED', bookedAt: '2026-11-06T17:30:00Z', notes: '' };
+  const tracking = { freightBill: '4600001' };
+  assert.equal(policy.getDueMercuryGateStep(booked, {}), '', 'no freight bill yet');
+  assert.equal(policy.getDueMercuryGateStep({ ...booked, bookedAt: '2026-11-05T17:30:00Z' }, tracking), '', 'booked before: entered by hand');
+  assert.equal(policy.getDueMercuryGateStep(booked, tracking), 'booked');
+  const queued = { ...booked, mercurygate: { booked: '2026-11-06T17:31:00Z' } };
+  assert.equal(policy.getDueMercuryGateStep(queued, tracking), '');
+  assert.equal(policy.getDueMercuryGateStep(queued, { ...tracking, leftShipperAt: 'done' }), 'pickedUp');
+  assert.equal(policy.getDueMercuryGateStep({ ...queued, mercurygate: { ...queued.mercurygate, pickedUp: 'x' } }, { ...tracking, leftShipperAt: 'done' }), '');
+  const done = policy.applyMercuryGateResult(booked, { step: 'booked', ok: true, at: 1, results: [{ message: 'Added Customer Reference Number 2283700' }, { message: 'Saved pickup: X' }] });
+  assert.match(done.notes, /MercuryGate: Added Customer Reference Number 2283700\nMercuryGate: Saved pickup: X/);
+  const failed = policy.applyMercuryGateResult(booked, { step: 'booked', ok: false, message: 'Could not read the pickup', at: 2, results: [] });
+  assert.match(failed.notes, /NOT finished - Could not read the pickup\. Finish it by hand\./);
 });

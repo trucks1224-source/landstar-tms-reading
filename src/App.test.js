@@ -26,12 +26,20 @@ export {
   writeSyncedKey, initSyncGuardFromStorage, readDataVersions, getChangedSyncedKeys,
   isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted, classifyChangedSyncedKeys,
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
-  getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart,
+  getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getLoadedTimeWarning, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
 };`, { loader: 'jsx', format: 'cjs' });
+// Test loads are dated October 2026, so "today" inside the TMS code is 10/1/2026:
+// those pickups are still ahead, and past-date rules use September dates.
+const TEST_NOW = new Date(2026, 9, 1, 12, 0).getTime();
+class TestDate extends Date {
+  constructor(...args) { super(...(args.length ? args : [TEST_NOW])); }
+  static now() { return TEST_NOW; }
+}
 const context = {
+  Date: TestDate,
   module: { exports: {} },
   require(name) {
     if (name === './lib/screenshotTable.js') return screenshotTable;
@@ -141,6 +149,22 @@ test('search finds load numbers, origin/destination cities and states across eve
   assert.equal(policy.getLoadSearchEntries(map, customers[0], '  ')[0].order, first);
   assert.equal(policy.getLoadSearchEntries(map, customers[0], '').length, 1);
   assert.equal(Object.hasOwn(second, 'customer'), false);
+});
+
+test('search forgives small city misspellings and finds driver, truck and freight bill', () => {
+  const booked = { ...load, origCity: 'SHEPHERDSVILLE', origSt: 'KY', destCity: 'LOUISVILLE', driver: 'Fred Smith', truck: '427021', paramountTracking: { freightBill: '4642273' } };
+  for (const query of ['Shepardsville', 'shepherdsvile', 'fred', '427021', '4642273', 'Lousville']) {
+    assert.equal(policy.loadMatchesSearch(booked, query), true, query);
+  }
+  for (const query of ['Nashville', 'missing', 'shep ky 9']) {
+    assert.equal(policy.loadMatchesSearch(booked, query), false, query);
+  }
+});
+
+test('a delivered load with paperwork received leaves the Booked Loads list', () => {
+  assert.equal(policy.isBookedLoadComplete({ trackingStage: 'Delivered', paperworkReceivedAt: '2026-11-06T20:00:00Z' }), true);
+  assert.equal(policy.isBookedLoadComplete({ trackingStage: 'Delivered', paperworkReceivedAt: '' }), false);
+  assert.equal(policy.isBookedLoadComplete({ trackingStage: 'In Transit', paperworkReceivedAt: '2026-11-06T20:00:00Z' }), false);
 });
 
 test('global search retains identical load numbers under separate customers', () => {
@@ -304,6 +328,37 @@ test('DAT re-import corrects screenshot rates but preserves manual rates and ass
     assert.equal(merged[0].driverPhone, prior.driverPhone);
     assert.equal(merged[0].status, 'OPEN');
   }
+});
+
+test('typed rates are saved for the lane and beat DAT; DAT rates are never saved for reuse', async () => {
+  const storage = new Map();
+  let datCalls = 0;
+  const ratePolicy = { module: { exports: {} } };
+  vm.runInNewContext(code, {
+    ...ratePolicy, Date: TestDate, require: context.require, console,
+    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    fetch: async () => { datCalls += 1; return { ok: true, status: 200, json: async () => ({ rate: 1800 }) }; }
+  });
+  const { rememberLaneRate, fetchDatRateForImport, getSavedLaneRate } = ratePolicy.module.exports;
+  const lane = { id: '1', origCity: 'Chicago', origSt: 'IL', destCity: 'Dallas', destSt: 'TX', eCode: 'V' };
+  // A DAT rate is not kept as the lane's rate: the next import asks DAT again.
+  assert.equal(JSON.stringify(rememberLaneRate({}, customers[0], lane, '1800', 'dat-api')), '{}');
+  assert.equal(JSON.stringify(rememberLaneRate({}, customers[0], lane, '1800', 'dat-screenshot')), '{}');
+  assert.equal(JSON.stringify(await fetchDatRateForImport(lane, customers[0], {})), JSON.stringify({ rateInput: '1800', rateSource: 'dat-api' }));
+  assert.equal(datCalls, 1);
+  // Your typed rate is saved, and the same lane on a new load uses it without asking DAT.
+  const saved = rememberLaneRate({}, customers[0], lane, '$2,150', 'manual');
+  assert.equal(getSavedLaneRate(saved, customers[0], { ...lane, id: '2', origZip: '60601' }), '2150');
+  assert.equal(JSON.stringify(await fetchDatRateForImport({ ...lane, id: '2' }, customers[0], saved)), JSON.stringify({ rateInput: '2150', rateSource: 'user-entered' }));
+  assert.equal(datCalls, 1);
+  // A load already in the TMS with a DAT rate switches to your typed lane rate on re-import.
+  const existing = [{ ...load, rateInput: '1800', rateSource: 'dat-api' }];
+  const reimported = policy.replaceImportedCustomerLoads(customers[0], [{ ...load, rateInput: '2150', rateSource: 'user-entered' }], existing).loads[0];
+  assert.equal(reimported.rateInput, '2150');
+  assert.equal(reimported.rateSource, 'user-entered');
+  // ...but a rate you typed on that load itself is kept.
+  const typed = [{ ...load, rateInput: '1900', rateSource: 'user-entered' }];
+  assert.equal(policy.replaceImportedCustomerLoads(customers[0], [{ ...load, rateInput: '2150', rateSource: 'user-entered' }], typed).loads[0].rateInput, '1900');
 });
 
 test('DAT imports accept temporary IDs and deduplicate lane/day without changing existing loads', () => {
@@ -705,14 +760,14 @@ for (const customer of customers) {
     const imported = [
       { ...load, id: '#123456', pickupTime: '10/28/2026 0800 - 1200', rateInput: '', notes: '' },
       { ...load, id: load.id, pickupTime: '10/29/2026 0800 - 1200' },
-      { ...load, id: '444444', destCity: 'Austin', status: 'ENT', tag: 'ENT' },
-      { ...load, id: '444444', destCity: 'Austin' }
+      { ...load, id: '444444', destCity: 'Austin', pickupTime: '09/27/2026 0800 - 1200', status: 'ENT', tag: 'ENT' },
+      { ...load, id: '444444', destCity: 'Austin', pickupTime: '09/27/2026 0800 - 1200' }
     ];
     const snapshot = JSON.stringify(existing);
     const result = policy.replaceImportedCustomerLoads(customer, imported, existing);
     assert.equal(result.loads.length, 3);
     assert.deepEqual(Array.from(result.loads, order => order.id), ['123456', '123456-ALTA', '444444']);
-    // Past-dated pickups (10/2026) import as ENT; re-imported existing loads reopen.
+    // Upcoming pickups (10/2026) reopen; the past-dated pickup (09/27) imports as ENT.
     assert.equal(result.loads[0].status, 'OPEN');
     assert.equal(result.loads[1].status, 'OPEN');
     assert.equal(result.loads[2].status, 'ENT');
@@ -770,7 +825,7 @@ test('previously exported loads reopen regardless of their existing status', () 
 });
 
 test('other customers also import OPEN instead of automatically marking schedule changes ENT', () => {
-  const customer = 'R X O 2429200 - ATZ';
+  const customer = 'Other customer';
   assert.equal(policy.preservesImportedLoadStatus(customer), false);
   const [result] = policy.markDifferentScheduleLoadsEnt(
     [load], [{ ...load, pickupTime: '10/27/2026 1400 - 1600' }], customer
@@ -830,14 +885,39 @@ test('Para keeps one Richmond to Arion load per pickup day and applies red scree
   const result = policy.replaceImportedCustomerLoads(customers[0], imported, []);
   assert.deepEqual(Array.from(result.loads, order => order.id), ['2279675']);
   assert.equal(result.laneDayDuplicateCount, 2);
-  // Past-dated pickup imports as ENT.
-  assert.equal(result.loads[0].status, 'ENT');
+  // Upcoming pickup imports as OPEN.
+  assert.equal(result.loads[0].status, 'OPEN');
   const red = policy.replaceImportedCustomerLoads(customers[0], imported.map(order => ({
     ...order, screenshotStatus: 'ON HOLD'
   })), result.loads);
   assert.equal(red.loads.length, 1);
   assert.equal(red.loads[0].status, 'ON HOLD');
   assert.equal(red.loads[0].tag, 'HOLD');
+});
+
+test('imported loads whose pickup date already passed stay on ENT, new or re-imported', () => {
+  for (const customer of customers) {
+    const existing = [
+      { ...load, id: '500001', pickupTime: '09/28/2026 0800 - 1200', status: 'OPEN', tag: 'OPEN' },
+      { ...load, id: '500002', destCity: 'Austin', pickupTime: '09/28/2026 0800 - 1200', status: 'ENT', tag: 'ENT' },
+      { ...load, id: '500003', destCity: 'Reno', pickupTime: '09/28/2026 0800 - 1200', status: 'BOOKED', tag: 'BOOKED', driver: 'Alex' }
+    ];
+    const imported = [
+      ...existing.map(order => ({ ...order, status: undefined, tag: undefined })),
+      { ...load, id: '500004', destCity: 'Tulsa', pickupTime: '09/29/2026 0800' },
+      { ...load, id: '500005', destCity: 'Omaha', pickupTime: '09/30/2026 0800 - 10/02/2026 1600' },
+      { ...load, id: '500006', destCity: 'Boise', pickupTime: '10/01/2026 0800' }
+    ];
+    const result = policy.replaceImportedCustomerLoads(customer, imported, existing);
+    const status = id => result.loads.find(order => order.id === id)?.status;
+    assert.equal(status('500001'), 'ENT', customer);
+    assert.equal(status('500002'), 'ENT', customer);
+    assert.equal(status('500003'), 'BOOKED', customer);
+    assert.equal(status('500004'), 'ENT', customer);
+    // A pickup window that runs through today or later is still open.
+    assert.equal(status('500005'), 'OPEN', customer);
+    assert.equal(status('500006'), 'OPEN', customer);
+  }
 });
 
 test('repeating a full-list import is idempotent and reopens existing ON HOLD numbers', () => {
@@ -876,6 +956,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
     useEffect(effect) { effects.push(effect); }
   };
   const appContext = {
+    Date: TestDate,
     module: { exports: {} },
     console: { ...console, error: (...args) => errors.push(args) },
     localStorage: {
@@ -1525,7 +1606,8 @@ test('Nolan Excel imports check only imported loads while other customers keep m
       ['222222', 'V', 'Chicago', 'IL', '60601', 'Austin', 'TX', '78701', '10/27/2099 0800', '10/28/2099 0800']
     ]);
     app.render();
-    assert.equal(JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customer].length, 3);
+    // The exported ENT load 999999 is not on the list: deleted.
+    assert.equal(JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customer].length, 2);
     for (const id of [load.id, '222222']) {
       const card = app.find(node => node.props?.id === `load-card-${id}`);
       const checkbox = card.props.children.flat(Infinity).find(node => node?.type === 'input'
@@ -1565,7 +1647,7 @@ test('DAT re-import reopens unchanged and manually priced ENT lanes while retain
   const rows = [
     { ...load, id: 'DAT-456-0', rateInput: '3000', rateSource: 'dat-screenshot' },
     { ...load, id: 'DAT-456-1' },
-    { ...load, id: 'DAT-456-2', pickupTime: '10/28/2026 0800' }
+    { ...load, id: 'DAT-456-2', pickupTime: '09/28/2026 0800' }
   ];
   const deduplicated = policy.deduplicateDatImports(rows, existing);
   assert.equal(deduplicated.skippedDuplicateCount, 1);
@@ -1583,7 +1665,7 @@ test('DAT re-import reopens unchanged and manually priced ENT lanes while retain
   assert.equal(result.loads.find(order => order.id === 'archive').status, 'ENT');
 });
 
-test('all customers retain missing exported ENT loads for exactly 30 days, but re-imports reopen', () => {
+test('full lists delete missing exported ENT loads; other customers keep them 30 days; re-imports reopen', () => {
   const now = Date.parse('2026-10-28T12:00:00Z');
   const day = 24 * 60 * 60 * 1000;
   for (const customer of [...customers, 'Other customer']) {
@@ -1594,12 +1676,12 @@ test('all customers retain missing exported ENT loads for exactly 30 days, but r
     const incoming = { ...load, id: 'new', destCity: 'Reno' };
     const existing = [recent, expired];
     const result = policy.replaceImportedCustomerLoads(customer, [incoming], existing, { now });
-    assert.equal(result.loads.find(order => order.id === 'recent').status, 'ENT', customer);
+    if (customer === 'Other customer') assert.equal(result.loads.find(order => order.id === 'recent').status, 'ENT', customer);
+    else assert.equal(result.loads.some(order => order.id === 'recent'), false, customer);
     assert.equal(result.loads.some(order => order.id === 'expired'), false, customer);
     const reopened = policy.replaceImportedCustomerLoads(customer, [load], [recent], { now }).loads[0];
-    // Named customers: the import is a new load with a past pickup, so it lands as ENT.
-    // Other customers: the import matches 'recent' by lane/day and reopens it.
-    assert.equal(reopened.status, customer === 'Other customer' ? 'OPEN' : 'ENT', customer);
+    // The pickup is still ahead, so the import lands as OPEN for every customer.
+    assert.equal(reopened.status, 'OPEN', customer);
     assert.equal(Object.hasOwn(reopened, 'landstarExportedAt'), false);
     const cleaned = policy.removeExpiredExportedLoads({ [customer]: [recent, expired] }, now);
     assert.deepEqual(Array.from(cleaned[customer], order => order.id), ['recent']);
@@ -1609,7 +1691,7 @@ test('all customers retain missing exported ENT loads for exactly 30 days, but r
   }
 });
 
-test('same load number on different pickup days survives beside a retained exported ENT record', () => {
+test('same load number on different pickup days: a full list keeps only the days on it', () => {
   const now = Date.parse('2026-10-28T12:00:00Z');
   const archive = { ...load, status: 'ENT', tag: 'ENT', landstarExportedAt: '2026-10-27T12:00:00Z' };
   const rows = [
@@ -1617,11 +1699,10 @@ test('same load number on different pickup days survives beside a retained expor
     { ...load, pickupTime: '10/29/2026 0800' }
   ];
   const result = policy.replaceImportedCustomerLoads(customers[2], rows, [archive], { now });
-  assert.equal(result.loads.length, 3);
-  assert.equal(new Set(result.loads.map(order => order.id)).size, 3);
+  assert.equal(result.loads.length, 2);
+  assert.equal(new Set(result.loads.map(order => order.id)).size, 2);
   assert.equal(result.loads.filter(order => order.status === 'OPEN').length, 2);
-  assert.equal(result.loads.find(order => order.id === load.id).status, 'ENT');
-  assert.equal(new Set(result.loads.map(policy.createLaneDayKey)).size, 3);
+  assert.equal(new Set(result.loads.map(policy.createLaneDayKey)).size, 2);
 });
 
 test('export marks only the exported pickup-day variant ENT, starts retention and persists through reload', () => {
@@ -1717,7 +1798,27 @@ test('manual rate persists and auto-fills a future Excel load with different ZIP
   assert.equal(reloaded.errors.length, 0);
 });
 
-test('DAT-fetched rate is remembered and reused for the next load in the same lane', async () => {
+test('an Excel import clears a leftover search and leaves Booked Loads so the new loads show', async () => {
+  const app = createAppHarness(customers[0], [
+    { ...load, id: '2', status: 'BOOKED', tag: 'BOOKED', driver: 'Alex Driver' }
+  ]);
+  const search = () => app.find(node => node.type === 'input' && node.props['aria-label'] === 'Search loads across all customers');
+  search().props.onChange({ target: { value: 'Shepardsville' } });
+  app.render();
+  app.find(node => node.type === 'button' && textOf(node) === 'BOOKED (1)').props.onClick();
+  app.render();
+  const bookedPage = () => app.find(node => typeof node.type === 'function' && node.type.name === 'BookedLoadsPage');
+  assert.ok(bookedPage());
+  await app.importExcel([
+    ['Load ID', 'Equipment', 'Origin City', 'Origin State', 'Origin Zip', 'Destination City', 'Destination State', 'Destination Zip'],
+    ['7654321', 'VZ', 'Chicago', 'IL', '60601', 'Dallas', 'TX', '75201']
+  ]);
+  app.render();
+  assert.equal(bookedPage(), null);
+  assert.equal(search().props.value, '');
+});
+
+test('a typed lane rate is reused on the next import; a DAT rate is not saved as yours', async () => {
   const app = createAppHarness(customers[0], []);
   await app.importExcel([
     ['Load ID', 'Equipment', 'Origin City', 'Origin State', 'Origin Zip', 'Destination City', 'Destination State', 'Destination Zip'],
@@ -1726,26 +1827,33 @@ test('DAT-fetched rate is remembered and reused for the next load in the same la
   const first = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[0]][0];
   assert.equal(first.rateInput, '2000');
   assert.equal(first.rateSource, 'dat-api');
-  const savedRates = JSON.parse(app.storage.get('landstar_laneRates'));
-  assert.equal(savedRates[policy.createLaneRateKey(customers[0], first)], '2000');
+  const savedRates = JSON.parse(app.storage.get('landstar_laneRates') || '{}');
+  assert.equal(savedRates[policy.createLaneRateKey(customers[0], first)], undefined);
 
-  // A later import of the same lane reuses the remembered rate without calling DAT again.
+  const row = ['7659999', 'VZ', 'Chicago', 'IL', '60602', 'Dallas', 'TX', '75202'];
+  const header = ['Load ID', 'Equipment', 'Origin City', 'Origin State', 'Origin Zip', 'Destination City', 'Destination State', 'Destination Zip'];
   let datCalls = 0;
-  const reloaded = createAppHarness(customers[0], [], null, savedRates, {
-    fetch: async url => {
-      if (url === '/api/road-miles') return { ok: true, json: async () => ({ miles: 500 }) };
-      if (url === '/api/dat-rate') { datCalls += 1; return { json: async () => ({ rate: 9999 }) }; }
-      throw new Error(`Unexpected fetch: ${url}`);
-    }
-  });
-  await reloaded.importExcel([
-    ['Load ID', 'Equipment', 'Origin City', 'Origin State', 'Origin Zip', 'Destination City', 'Destination State', 'Destination Zip'],
-    ['7659999', 'VZ', 'Chicago', 'IL', '60602', 'Dallas', 'TX', '75202']
-  ]);
-  const second = JSON.parse(reloaded.storage.get('landstar_customerOrdersMap'))[customers[0]][0];
-  assert.equal(second.rateInput, '2000');
-  assert.equal(second.rateSource, 'user-entered');
-  assert.equal(datCalls, 0);
+  const datFetch = async url => {
+    if (url === '/api/road-miles') return { ok: true, json: async () => ({ miles: 500 }) };
+    if (url === '/api/dat-rate') { datCalls += 1; return { json: async () => ({ rate: 9999 }) }; }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  // No typed rate for the lane: the next import gets a fresh DAT rate.
+  const fresh = createAppHarness(customers[0], [], null, savedRates, { fetch: datFetch });
+  await fresh.importExcel([header, row]);
+  const second = JSON.parse(fresh.storage.get('landstar_customerOrdersMap'))[customers[0]][0];
+  assert.equal(second.rateInput, '9999');
+  assert.equal(second.rateSource, 'dat-api');
+  assert.equal(datCalls, 1);
+
+  // You typed 2150 for this lane: the next import uses it and does not ask DAT.
+  const typedRates = { [policy.createLaneRateKey(customers[0], first)]: '2150' };
+  const reloaded = createAppHarness(customers[0], [], null, typedRates, { fetch: datFetch });
+  await reloaded.importExcel([header, row]);
+  const third = JSON.parse(reloaded.storage.get('landstar_customerOrdersMap'))[customers[0]][0];
+  assert.equal(third.rateInput, '2150');
+  assert.equal(third.rateSource, 'user-entered');
+  assert.equal(datCalls, 1);
 });
 
 for (const customer of [customers[0], customers[1]]) {
@@ -2023,7 +2131,9 @@ test('BOOKED tab opens the Booked Loads page; stage changes save and Open return
     return null;
   };
   assert.ok(findIn(page, node => node.type === 'a' && node.props.href === 'tel:5551234567'), 'Call link');
-  assert.ok(findIn(page, node => node.type === 'a' && node.props.href === 'sms:5551234567'), 'Text link');
+  const textButton = findIn(page, node => node.type === 'button' && /Opens Google Voice with this text copied/.test(node.props.title || ''));
+  assert.ok(textButton, 'Text button (Google Voice)');
+  assert.match(textButton.props.title, /Hi Alex, this is Daniel with Landstar/);
   const stage = findIn(page, node => node.type === 'select' && String(node.props.id).startsWith('stage-'));
   stage.props.onChange({ target: { value: 'Loaded' } });
   app.render();
@@ -2193,9 +2303,7 @@ test('posted loads missing from a list are handed to the bot once, Nolan include
   assert.deepEqual(Array.from(result.droppedPostings, item => item.loadId), ['222222']);
   assert.equal(result.droppedPostings[0].posting.originZip, '80202');
   assert.equal(result.droppedPostings[0].customer, customers[0]);
-  const kept = result.loads.find(item => item.id === '222222');
-  assert.ok(kept, 'the dropped ENT load stays in the 30-day archive');
-  assert.equal(kept.landstarPosting, undefined, 'and is not handed over again next import');
+  assert.equal(result.loads.some(item => item.id === '222222'), false, 'the dropped load is deleted from the TMS');
   assert.ok(result.loads.find(item => item.id === '111111').landstarPosting, 'loads still on the list keep their posting');
 
   assert.deepEqual(Array.from(policy.replaceImportedCustomerLoads(customers[2], imported, existing).droppedPostings, item => item.loadId), ['222222'], 'Nolan removals are automatic too');
@@ -2406,7 +2514,11 @@ test('a customer rule only applies to its exact account, not one with the same n
   assert.equal(policy.isParaCustomer('Para 1522166 - ATZ'), true);
   assert.equal(policy.isParaCustomer('Para 1522166 - ATZ H'), false, 'Para ATZ H is its own account');
   assert.equal(policy.preservesImportedLoadStatus('Para 1522166 - ATZ'), true);
-  assert.equal(policy.preservesImportedLoadStatus('Para 1522166 - ATZ H'), false);
+  // Every Para, RXO and Nolan account imports its full list (dropped loads are deleted).
+  for (const account of ['Para 1522166 - ATZ H', 'R X O 2429200 - ATZ', 'R X O 2429200 - ATZ P', 'Nolan 965974 - ATZ', 'Nolan 965974 - ATZ H']) {
+    assert.equal(policy.preservesImportedLoadStatus(account), true, account);
+  }
+  assert.equal(policy.preservesImportedLoadStatus('Para 1522166'), false, 'not an account name');
   const vanInOhio = { origSt: 'OH', eCode: 'VAN:VAN' };
   assert.equal(policy.isRxoSkippedVanLoad('R X O 2429200 - ATZ', vanInOhio), true);
   assert.equal(policy.isRxoSkippedVanLoad('R X O 2429200 - ATZ P', vanInOhio), false, 'the RXO van rule is ATZ only');
@@ -2601,6 +2713,46 @@ test('RXO update requests: reply with status, location, typed pickup ETA and tra
   assert.equal(policy.buildRxoUpdateEmail(booked, {}).complete, false, 'not found in Clarity yet');
 });
 
+test('no paperwork yet: the driver gets one reminder each morning for a week, about the 48-hour chargeback', () => {
+  const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
+  const tracking = { freightBill: '4574648', deliveredAt: new Date(at(9, 10)).toISOString(), deliveryCity: 'Jacksonville, FL' };
+  const delivered = policy.markDriverEmail({ ...load, id: '2283600', status: 'BOOKED', driver: 'DAVID CARTER', trackingStage: 'Delivered', notes: '' },
+    'pod', { at: new Date(at(9, 10, 5)).toISOString() });
+  const due = (l, now) => [...policy.getDueDriverEmails(l, tracking, now)];
+  assert.deepEqual(due(delivered, at(9, 18)), [], 'the POD email already went out today');
+  assert.deepEqual(due(delivered, at(10, 6, 59)), [], 'before 7 AM');
+  assert.deepEqual(due(delivered, at(10, 7)), ['podReminder']);
+  const reminded = policy.markDriverEmail(delivered, 'podReminder', { at: new Date(at(10, 7)).toISOString() });
+  assert.deepEqual(due(reminded, at(10, 15)), [], 'one reminder a day');
+  assert.deepEqual(due(reminded, at(11, 7, 2)), ['podReminder'], 'next morning again');
+  assert.deepEqual(due(reminded, at(17, 8)), [], 'stops a week after delivery');
+  assert.deepEqual(due({ ...reminded, paperworkReceivedAt: new Date(at(10, 9)).toISOString() }, at(11, 8)), [], 'paperwork in: no more reminders');
+  const text = policy.buildDriverEmail('podReminder', delivered, tracking);
+  assert.match(text, /^Hi David,\n\nReminder: I still need the signed POD \/ paperwork for load 4574648 delivered in Jacksonville, FL\./);
+  assert.match(text, /within 48 hours of delivery, or the customer can charge back/);
+  assert.doesNotMatch(text, /TRACKING APP/);
+  assert.match(policy.buildDriverEmail('pod', delivered, tracking), /within 48 hours of delivery/);
+});
+
+test('paperwork status, completed only once it is in and handled, and the customer email', () => {
+  const at = (day, hour) => new Date(2026, 10, day, hour).getTime();
+  const delivered = { ...load, trackingStage: 'Delivered', paramountTracking: { deliveredAt: new Date(at(9, 10)).toISOString() } };
+  assert.equal(policy.getDeliveredAt(delivered), at(9, 10));
+  assert.equal(policy.getDeliveredAt({ ...load, trackingStage: 'Delivered', checkCalls: [{ at: new Date(at(9, 12)).toISOString(), stage: 'Delivered' }] }), at(9, 12));
+  assert.match(policy.getPaperworkStatus(delivered, at(9, 15)).text, /delivered 5h ago · due in 43h/);
+  assert.equal(policy.getPaperworkStatus(delivered, at(10, 11)).level, 'due');
+  assert.equal(policy.getPaperworkStatus(delivered, at(11, 11)).level, 'late');
+  const received = { ...delivered, paperworkReceivedAt: new Date(at(10, 9)).toISOString(), paperworkDone: false };
+  assert.match(policy.getPaperworkStatus(received).text, /waiting for you to send it to the customer/);
+  assert.equal(policy.isBookedLoadComplete(received), false, 'the forward to the customer is still waiting');
+  assert.equal(policy.isBookedLoadComplete({ ...received, paperworkDone: true, paperworkSentAt: 'x' }), true);
+  assert.equal(policy.getPaperworkTarget('Para 1522166 - ATZ H'), 'paramount');
+  assert.equal(policy.getPaperworkTarget('R X O 2429200 - ATZ'), 'rxo');
+  assert.equal(policy.getPaperworkTarget('Other customer'), '');
+  const email = policy.buildPaperworkEmail({ ...load, id: '2282980' }, { deliveryCity: 'Knightdale, NC' }, { greetingName: 'Heather' });
+  assert.match(email, /^Hi Heather,\n\nAttached is the signed POD \/ paperwork for order #2282980, delivered in Knightdale, NC\./);
+});
+
 test('driver emails: 7 AM on pickup day, after pickup, 7 AM on delivery day, POD after delivery', () => {
   const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
   const booked = {
@@ -2710,4 +2862,52 @@ test('MercuryGate starts right after Assign Capacity, by the Landstar load numbe
   const booked = { ...load, id: '2282514', status: 'BOOKED', bookedAt: '2026-11-06T17:53:16Z', landstarAssignment: { ok: true, landstarLoadId: '187603287' } };
   assert.equal(policy.getDueMercuryGateStep(booked, {}), 'booked', 'no freight bill needed');
   assert.equal(policy.getDueMercuryGateStep({ ...booked, landstarAssignment: { ok: false, landstarLoadId: '' } }, {}), '');
+});
+
+test('loaded email: automatic unless the truck was at the shipper under 15 minutes', () => {
+  const info = { arrivedShipperAt: '2026-11-07T18:33:00Z', leftShipperAt: '2026-11-07T18:39:00Z', pickupTimezone: 'America/New_York' };
+  assert.match(policy.getLoadedTimeWarning(info), /only 6 min \(arrived 11\/07 at 13:33 EST, left 11\/07 at 13:39 EST\)\. Is this really the loaded time\?/);
+  assert.equal(policy.getLoadedTimeWarning({ ...info, leftShipperAt: '2026-11-07T18:48:00Z' }), '', '15 minutes is a real load');
+  assert.match(policy.getLoadedTimeWarning({ leftShipperAt: info.leftShipperAt }), /no arrival time/);
+  assert.equal(policy.getLoadedTimeWarning({ arrivedShipperAt: info.arrivedShipperAt }), '', 'not loaded yet');
+});
+
+test('rolling loads get one customer location email a day from 9 AM', () => {
+  const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
+  const info = { ok: true, trackingLink: 'https://t', leftShipperAt: new Date(at(7, 13, 39)).toISOString(), lastLocation: 'Ashland, VA',
+    lastLocationAt: new Date(at(8, 8, 50)).toISOString(), deliveryCity: 'Knightdale, NC' };
+  const withEmails = emails => ({ ...load, id: '2282980', paramountTracking: { emails } });
+  const departed = withEmails({ initial: { at: 'x' }, departed: { at: new Date(at(7, 14)).toISOString() } });
+  const due = (l, i, now) => [...policy.getDueParamountEmails(l, i, now)];
+  assert.deepEqual(due(withEmails({ initial: { at: 'x' } }), info, at(7, 14)), ['departed']);
+  assert.deepEqual(due(departed, info, at(7, 18)), [], 'the loaded email went out today');
+  assert.deepEqual(due(departed, info, at(8, 8, 59)), [], 'before 9 AM');
+  assert.deepEqual(due(departed, info, at(8, 9)), ['location']);
+  const updated = policy.markParamountEmail(departed, 'location', { at: new Date(at(8, 9)).toISOString() });
+  assert.deepEqual(due(updated, info, at(8, 16)), [], 'once a day');
+  assert.deepEqual(due(updated, info, at(9, 9, 5)), ['location'], 'next day again');
+  assert.deepEqual(due(updated, { ...info, deliveredAt: 'x' }, at(9, 10)), [], 'delivered: no more location emails');
+  assert.deepEqual(due(updated, { ...info, lastLocation: ', ' }, at(9, 10)), [], 'no location from Clarity');
+  const text = policy.buildParamountEmail('location', { ...load, id: '2282980' }, info, { greetingName: 'Heather' });
+  assert.match(text, /^Hi Heather and team,\n\nDaily update on order 2282980: the truck is in Ashland, VA \(as of .*\), on the way to Knightdale, NC\./);
+  assert.match(text, /Live tracking: https:\/\/t/);
+});
+
+test('driver texts: Google Voice link for the number and a short message for the stage', () => {
+  assert.equal(policy.toUsPhoneE164('(943) 210-3342'), '+19432103342');
+  assert.equal(policy.toUsPhoneE164('1-901-843-5001'), '+19018435001');
+  assert.equal(policy.toUsPhoneE164('12345'), '');
+  assert.equal(policy.getGoogleVoiceUrl('943-210-3342'), 'https://voice.google.com/u/0/messages?itemId=t.%2B19432103342');
+  assert.equal(policy.getGoogleVoiceUrl(''), 'https://voice.google.com/u/0/messages');
+  const base = { ...load, id: '2282980', driver: 'NICKY SMITH', origCity: 'MARTINSBURG', origSt: 'WV', destCity: 'KNIGHTDALE', destSt: 'NC',
+    pickupTime: '11/07/2026 1400 - 2345', deliveryTime: '11/09/2026 0000 - 2359', paramountTracking: { freightBill: '4590295' } };
+  const para = 'Para 1522166 - ATZ H';
+  const booked = policy.buildDriverText(base, para, new Date(2026, 10, 7, 9).getTime());
+  assert.match(booked, /^Hi Nicky, this is Daniel with Landstar\. Checking on load 4590295, picking up today in Martinsburg, WV \(appt 11\/07\/2026 1400 - 2345\)\. What's your ETA to the shipper\? Please turn on Trucker Tools now\.$/);
+  assert.match(policy.buildDriverText({ ...base, trackingStage: 'Loaded' }, para), /What's your ETA to Knightdale, NC \(appt 11\/09\/2026 0000 - 2359\)\? Please keep Trucker Tools on/);
+  assert.match(policy.buildDriverText({ ...base, trackingStage: 'At Pickup' }, para), /Are you loaded yet on load 4590295 in Martinsburg, WV\?/);
+  const pod = policy.buildDriverText({ ...base, trackingStage: 'Delivered' }, para);
+  assert.match(pod, /Please send the signed POD for load 4590295 \(Knightdale, NC\) today.*within 48 hours.*charge back/);
+  assert.ok(pod.length < 320, 'short enough for a text');
+  assert.match(policy.buildDriverText({ ...base, trackingStage: 'Delivered', paperworkReceivedAt: 'x' }, para), /Thank you for delivering/);
 });

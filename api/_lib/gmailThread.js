@@ -150,6 +150,13 @@ export function parseRxoRequestSubject(subject) {
 
 const isRxoAddress = address => /@rxo\.com$/i.test(emailOf(address));
 
+// Daniel's rule (2026-11-07): every reply on an RXO "Update Request" email copies Ivan Lopez.
+const RXO_ALWAYS_CC = ['ivan.lopez@landstarmail.com'];
+export function withRxoAlwaysCc({ to = [], cc = [] }) {
+  const present = new Set([...to, ...cc].map(emailOf));
+  return { to, cc: [...cc, ...RXO_ALWAYS_CC.filter(address => !present.has(emailOf(address)))] };
+}
+
 // RXO update requests still waiting for an answer: the thread's newest message is from RXO.
 export function findOpenRxoRequests(threads, myEmail) {
   const me = String(myEmail || '').toLowerCase();
@@ -164,7 +171,7 @@ export function findOpenRxoRequests(threads, myEmail) {
       threadId: id, messageId: latest.id, orderNumber, subject: header(list[0], 'Subject'), from,
       at: new Date(Number(latest.internalDate)).toISOString(),
       snippet: String(latest.snippet || '').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').slice(0, 300),
-      ...buildReplyAll(list, me)
+      ...withRxoAlwaysCc(buildReplyAll(list, me))
     }];
   });
 }
@@ -193,7 +200,7 @@ async function handleRxoEmail({ action, threadId, text }) {
     || !messages.some(message => isRxoAddress(header(message, 'From')))) {
     return { status: 409, body: { error: 'That email is not an RXO update request.' } };
   }
-  const recipients = buildReplyAll(messages, myEmail);
+  const recipients = withRxoAlwaysCc(buildReplyAll(messages, myEmail));
   if (!recipients.to.length) return { status: 409, body: { error: 'Nobody to reply to on that email thread.' } };
   const latest = messages[messages.length - 1];
   const raw = buildReplyMessage({
@@ -236,7 +243,14 @@ export function findDriverReplies(messages, myEmail, sinceMs = 0) {
   return findNewReplies(messages, myEmail, sinceMs).filter(reply => !isLandstarAddress(reply.from));
 }
 
-async function findBcoThread(accessToken, freightBill) {
+// Which BCO thread driver emails go to: the newest one that has a driver on it. A newer copy
+// sent only to Daniel's own addresses (a re-send to himself) would otherwise leave nobody to email.
+export function pickDriverThread(threads, myEmail) {
+  const sorted = [...(threads || [])].sort((a, b) => Number(b.messages[0].internalDate) - Number(a.messages[0].internalDate));
+  return sorted.find(thread => buildDriverRecipients(thread.messages[0], myEmail).to.length) || sorted[0] || null;
+}
+
+async function findBcoThread(accessToken, freightBill, myEmail = '') {
   const query = `subject:"BCO Load Detail for" "${freightBill}" newer_than:30d`;
   const list = await gmailJson(accessToken, `${GMAIL}/threads?q=${encodeURIComponent(query)}&maxResults=10`);
   const threads = [];
@@ -245,23 +259,26 @@ async function findBcoThread(accessToken, freightBill) {
     const messages = (thread.messages || []).sort((a, b) => Number(a.internalDate) - Number(b.internalDate));
     if (messages.length && parseBcoSubject(header(messages[0], 'Subject')) === freightBill) threads.push({ id: thread.id, messages });
   }
-  // A reassigned (or re-sent) load has several threads: the newest dispatch is the one emails go
-  // to, but drivers may answer on any of them, so all are returned too.
+  // A reassigned (or re-sent) load has several threads: emails go to the newest one with a
+  // driver on it (see pickDriverThread), but drivers may answer on any of them, so all are returned too.
   const sorted = threads.sort((a, b) => Number(b.messages[0].internalDate) - Number(a.messages[0].internalDate));
-  return sorted[0] ? { ...sorted[0], all: sorted } : null;
+  const chosen = pickDriverThread(sorted, myEmail);
+  return chosen ? { ...chosen, all: sorted } : null;
 }
 
 async function handleDriverEmail({ action, freightBill, since, text }) {
   const bill = String(freightBill || '').trim();
   if (!/^\d{5,}$/.test(bill)) return { status: 400, body: { error: 'A Landstar freight bill number is needed.' } };
   const { accessToken, myEmail } = await connect();
-  const found = await findBcoThread(accessToken, bill);
+  const found = await findBcoThread(accessToken, bill, myEmail);
   if (!found) return { status: 404, body: { error: `No "BCO Load Detail" email for freight bill ${bill} found in Gmail.` } };
   const { id: threadId, messages } = found;
   const recipients = buildDriverRecipients(messages[0], myEmail);
   if (action === 'driverThread') {
-    // Replies on every BCO email for this freight bill, each with the thread it is in.
-    const replies = found.all.flatMap(thread => findDriverReplies(thread.messages.slice(1), myEmail, Date.parse(since) || 0)
+    // Replies on every BCO email for this freight bill, each with the thread it is in. The first
+    // email counts too when the driver wrote it (a driver forwarding the BCO email with the BOL);
+    // Daniel's own dispatch emails are left out by findDriverReplies.
+    const replies = found.all.flatMap(thread => findDriverReplies(thread.messages, myEmail, Date.parse(since) || 0)
       .map(reply => ({ ...reply, threadId: thread.id })));
     return { status: 200, body: { threadId, ...recipients, replies: replies.sort((a, b) => a.at.localeCompare(b.at)) } };
   }
@@ -277,6 +294,133 @@ async function handleDriverEmail({ action, freightBill, since, text }) {
     method: 'POST', body: JSON.stringify({ raw: Buffer.from(raw, 'utf8').toString('base64url'), threadId })
   });
   return { status: 200, body: { ok: true, id: sent.id, threadId, ...recipients } };
+}
+
+// ---------- Paperwork (POD) from the driver -> the customer's tracking thread ----------
+// Files a driver attaches when answering in the BCO thread: PDFs and photos/scans. Tiny
+// images (email signature logos) are left out.
+const PAPERWORK_FILE = /\.(pdf|jpe?g|png|heic|heif|tiff?|gif|webp)$/i;
+export function findPaperworkParts(payload) {
+  const parts = [];
+  const walk = part => { if (part) { parts.push(part); (part.parts || []).forEach(walk); } };
+  walk(payload);
+  return parts.filter(part => PAPERWORK_FILE.test(part.filename || '') && part.body?.attachmentId
+    && (/\.pdf$/i.test(part.filename) || Number(part.body.size || 0) >= 20000));
+}
+
+// Every paperwork file the driver sent on any BCO thread for the freight bill since `since`.
+async function findDriverPaperwork(accessToken, myEmail, freightBill, since) {
+  const found = await findBcoThread(accessToken, freightBill, myEmail);
+  if (!found) return [];
+  const files = [];
+  for (const thread of found.all) {
+    for (const reply of findDriverReplies(thread.messages, myEmail, Date.parse(since) || 0)) {
+      const full = await gmailJson(accessToken, `${GMAIL}/messages/${encodeURIComponent(reply.id)}?format=full`);
+      findPaperworkParts(full.payload).forEach(part => files.push({
+        messageId: reply.id, attachmentId: part.body.attachmentId, filename: part.filename,
+        mimeType: part.mimeType || 'application/octet-stream', size: Number(part.body.size || 0), at: reply.at, from: reply.from
+      }));
+    }
+  }
+  return files.sort((a, b) => a.at.localeCompare(b.at));
+}
+
+// A reply-all with files attached (multipart/mixed); files: [{ filename, mimeType, data (base64) }].
+export function buildReplyWithAttachments({ to, cc, subject, inReplyTo, references, text, files = [] }) {
+  const boundary = `pod_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  const replySubject = /^re:/i.test(subject) ? subject : `RE: ${subject}`;
+  const encodeName = name => `=?UTF-8?B?${Buffer.from(oneLine(name), 'utf8').toString('base64')}?=`;
+  const wrap = value => String(value).replace(/.{1,76}/g, '$&\r\n').trimEnd();
+  const headers = [
+    `To: ${to.map(oneLine).join(', ')}`,
+    cc.length ? `Cc: ${cc.map(oneLine).join(', ')}` : null,
+    `Subject: =?UTF-8?B?${Buffer.from(oneLine(replySubject), 'utf8').toString('base64')}?=`,
+    inReplyTo ? `In-Reply-To: ${oneLine(inReplyTo)}` : null,
+    inReplyTo || references ? `References: ${oneLine([references, inReplyTo].filter(Boolean).join(' '))}` : null,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${boundary}"`
+  ].filter(Boolean);
+  const parts = [
+    [`--${boundary}`, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '',
+      wrap(Buffer.from(String(text || ''), 'utf8').toString('base64'))].join('\r\n'),
+    ...files.map(file => [`--${boundary}`,
+      `Content-Type: ${oneLine(file.mimeType || 'application/octet-stream')}; name="${encodeName(file.filename)}"`,
+      `Content-Disposition: attachment; filename="${encodeName(file.filename)}"`,
+      'Content-Transfer-Encoding: base64', '', wrap(file.data)].join('\r\n'))
+  ];
+  return `${headers.join('\r\n')}\r\n\r\n${parts.join('\r\n')}\r\n--${boundary}--`;
+}
+
+// The customer's tracking thread for the load: Paramount's rate confirmation thread, or the
+// newest RXO "Update Request" thread for the order.
+async function findTrackingThread(accessToken, target, orderNumber) {
+  if (target === 'paramount') {
+    const found = await findThread(accessToken, orderNumber);
+    return found ? { id: found.threadId, messages: found.messages } : null;
+  }
+  const query = `from:rxo.com subject:"Update Request" "${orderNumber}" newer_than:30d`;
+  const list = await gmailJson(accessToken, `${GMAIL}/threads?q=${encodeURIComponent(query)}&maxResults=5`);
+  for (const { id } of list.threads || []) {
+    const thread = await gmailJson(accessToken, `${GMAIL}/threads/${encodeURIComponent(id)}?format=metadata${THREAD_HEADERS}`);
+    const messages = (thread.messages || []).sort((a, b) => Number(a.internalDate) - Number(b.internalDate));
+    if (messages.length && parseRxoRequestSubject(header(messages[0], 'Subject')) === orderNumber) return { id: thread.id, messages };
+  }
+  return null;
+}
+
+const MAX_PAPERWORK_BYTES = 20 * 1024 * 1024; // Gmail's limit is 25 MB per email
+
+// Sends a full email (with attachments) through Gmail's upload endpoint, inside the thread.
+export function buildUploadBody(raw, threadId, boundary = `up_${Date.now().toString(36)}`) {
+  const body = [
+    `--${boundary}`, 'Content-Type: application/json; charset=UTF-8', '', JSON.stringify({ threadId }),
+    `--${boundary}`, 'Content-Type: message/rfc822', '', raw, `--${boundary}--`, ''
+  ].join('\r\n');
+  return { body, contentType: `multipart/related; boundary=${boundary}` };
+}
+async function sendLargeMessage(accessToken, raw, threadId) {
+  const { body, contentType } = buildUploadBody(raw, threadId);
+  const response = await fetch('https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=multipart', {
+    method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': contentType }, body
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error?.message || `Gmail could not send the paperwork (HTTP ${response.status})`);
+  return result;
+}
+
+async function handlePaperwork({ action, freightBill, since, orderNumber, target, text }) {
+  const bill = String(freightBill || '').trim();
+  if (!/^\d{5,}$/.test(bill)) return { status: 400, body: { error: 'A Landstar freight bill number is needed.' } };
+  const { accessToken, myEmail } = await connect();
+  const files = await findDriverPaperwork(accessToken, myEmail, bill, since);
+  if (action === 'driverPaperwork') return { status: 200, body: { files } };
+  // sendPaperwork: reply-all on the customer's tracking thread with the driver's files.
+  const order = String(orderNumber || '').trim();
+  if (!/^\d{4,}$/.test(order) || !['paramount', 'rxo'].includes(target)) return { status: 400, body: { error: 'Which customer thread to send the paperwork to is missing.' } };
+  if (!files.length) return { status: 404, body: { error: `No paperwork from the driver for freight bill ${bill} in Gmail.` } };
+  const thread = await findTrackingThread(accessToken, target, order);
+  if (!thread) return { status: 404, body: { error: `No ${target === 'rxo' ? 'RXO update-request' : 'Paramount rate confirmation'} email for order ${order}: send the paperwork by hand.` } };
+  const replyAll = buildReplyAll(thread.messages, myEmail);
+  const recipients = target === 'rxo' ? withRxoAlwaysCc(replyAll) : replyAll;
+  if (!recipients.to.length) return { status: 409, body: { error: 'Nobody to reply to on the customer email thread.' } };
+  let total = 0;
+  const attachments = [];
+  for (const file of files) {
+    const attachment = await gmailJson(accessToken, `${GMAIL}/messages/${encodeURIComponent(file.messageId)}/attachments/${encodeURIComponent(file.attachmentId)}`);
+    const data = Buffer.from(String(attachment.data || '').replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+    total += data.length;
+    if (total > MAX_PAPERWORK_BYTES) return { status: 413, body: { error: 'The paperwork files are too big for one email (over 20 MB): send them by hand.' } };
+    attachments.push({ filename: file.filename, mimeType: file.mimeType, data: data.toString('base64') });
+  }
+  const latest = thread.messages[thread.messages.length - 1];
+  const raw = buildReplyWithAttachments({
+    to: recipients.to, cc: recipients.cc, subject: header(thread.messages[0], 'Subject'),
+    inReplyTo: header(latest, 'Message-ID'), references: header(latest, 'References'),
+    text: String(text || '').trim(), files: attachments
+  });
+  // Phone photos are big (10 MB+): Gmail's upload endpoint takes up to 35 MB, the plain one doesn't.
+  const sent = await sendLargeMessage(accessToken, raw, thread.id);
+  return { status: 200, body: { ok: true, id: sent.id, threadId: thread.id, files: files.map(file => file.filename), ...recipients } };
 }
 
 // Freight bills Daniel dispatched in the last few days (from "BCO Load Detail" subjects),
@@ -321,6 +465,7 @@ export async function handleParamountEmail(request = {}) {
   const { action, orderNumber, since, text } = request;
   if (action === 'rxoRequests' || action === 'rxoSend') return handleRxoEmail(request);
   if (action === 'driverThread' || action === 'driverSend') return handleDriverEmail(request);
+  if (action === 'driverPaperwork' || action === 'sendPaperwork') return handlePaperwork(request);
   if (action === 'fuelRates') return findFuelEmail();
   if (action === 'bcoBills') return listBcoBills();
   const order = String(orderNumber || '').trim();

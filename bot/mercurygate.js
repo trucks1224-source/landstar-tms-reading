@@ -108,6 +108,32 @@ async function clickExtButton(page, label) {
   return false;
 }
 
+// MercuryGate dims the load window while an edit window is open; every click then hits
+// the dimmed layer. Closes whatever window is still open (Cancel, its X, or Escape).
+// Returns true when nothing is left open.
+async function closeLeftoverWindow(page) {
+  const mask = page.locator('.mg-form-overlay-mask >> visible=true').first();
+  for (let attempt = 0; attempt < 3 && await visible(mask); attempt += 1) {
+    if (!(await clickExtButton(page, /^\s*Cancel\s*$/))) {
+      const close = page.locator('.x-window:visible .x-tool-close, #MGReact-form-overlay [class*="close"] >> visible=true').first();
+      if (await visible(close)) await close.click({ force: true }).catch(() => {});
+      else await page.keyboard.press('Escape').catch(() => {});
+    }
+    await mask.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+  }
+  return !(await visible(mask));
+}
+
+// After Save: the edit window must be gone. If MercuryGate refused the form (a required
+// field is empty), photograph it, cancel it so the next step can click, and stop with why.
+async function expectSaved(page, fieldSelector, what, shotName) {
+  await page.waitForTimeout(2000);
+  if (!(await frameWith(page, fieldSelector))) return;
+  const shot = await screenshot(page, `${shotName}-not-saved`);
+  await closeLeftoverWindow(page);
+  throw new Error(`MercuryGate did not save the ${what} (a required field was empty; see ${path.basename(shot)}). Nothing was saved for it.`);
+}
+
 // The frame (or page) showing an element that matches (hidden copies don't count).
 async function frameWith(page, selector) {
   for (const frame of page.frames()) {
@@ -157,7 +183,8 @@ async function screenshot(page, name) {
 // 1. Customer Reference Number (load window -> References -> + Reference). Skips it when the
 // load already has that reference.
 async function addCustomerReference(loadPage, orderNumber, { dryRun = true, shotName = 'reference' } = {}) {
-  const nav = loadPage.locator('.details-menu-item').filter({ hasText: /^\s*References\s*$/ }).first();
+  await closeLeftoverWindow(loadPage);
+  const nav =loadPage.locator('.details-menu-item').filter({ hasText: /^\s*References\s*$/ }).first();
   await nav.click();
   await loadPage.waitForTimeout(4000);
   const existing = loadPage.locator('tr').filter({ hasText: /Customer Reference Number/i }).filter({ hasText: String(orderNumber) });
@@ -181,13 +208,15 @@ async function addCustomerReference(loadPage, orderNumber, { dryRun = true, shot
   await valueField.fill(String(orderNumber));
   const shot = await screenshot(loadPage, shotName);
   await clickExtButton(loadPage, dryRun ? /^\s*Cancel\s*$/ : /^\s*Save\s*$/);
+  if (!dryRun) await expectSaved(loadPage, '.x-window input.x-form-text', 'Customer Reference Number', shotName);
   return { shot, message: `${dryRun ? 'Filled (practice)' : 'Added'} Customer Reference Number ${orderNumber}` };
 }
 
 // 2. One stop (0 = pickup, 1 = drop) from the rate confirmation:
 //    { name, address, city, state, zip, early: {date, time}, late: {date, time}, comments }
 async function fillStop(loadPage, index, stop, { dryRun = true, shotName = `stop-${index}` } = {}) {
-  const plan = loadPage.locator('.details-menu-item').filter({ hasText: /^\s*Plan\s*$/ }).first();
+  await closeLeftoverWindow(loadPage);
+  const plan =loadPage.locator('.details-menu-item').filter({ hasText: /^\s*Plan\s*$/ }).first();
   if (await visible(plan)) { await plan.click(); await loadPage.waitForTimeout(3000); }
   const panel = loadPage.locator('.event-details-panel').nth(index);
   await panel.scrollIntoViewIfNeeded();
@@ -196,16 +225,31 @@ async function fillStop(loadPage, index, stop, { dryRun = true, shotName = `stop
   await setField(frame, 'locationEventName', stop.name);
   await setField(frame, 'locationEventAddress1', stop.address);
   // City / State / Postal are filled by the zip lookup: pick the entry for the stop's city.
-  const zip = frame.locator('[name="locationEventPostalSearch"]').first();
-  await zip.click();
-  await zip.fill('');
-  await zip.pressSequentially(String(stop.zip).slice(0, 5), { delay: 60 });
-  await loadPage.waitForTimeout(2500);
   const cityPattern = new RegExp(String(stop.city || '').replace(/[^A-Za-z ]/g, '').trim().split(/\s+/).join('\\s+'), 'i');
-  const match = frame.locator('.x-boundlist-item').filter({ hasText: cityPattern }).first();
-  if (await visible(match)) await match.click();
-  else if (await visible(frame.locator('.x-boundlist-item').first())) await frame.locator('.x-boundlist-item').first().click();
-  await loadPage.waitForTimeout(1500);
+  // Only the field you can see counts (MercuryGate keeps hidden copies with other values),
+  // and the stop needs both City and Postal Code or MercuryGate refuses the Save.
+  const visibleValue = name => frame.locator(`[name="${name}"] >> visible=true`).first().inputValue().catch(() => '');
+  const cityValue = async () => ((await visibleValue('locationEventCity')).trim() && (await visibleValue('locationEventPostal')).trim()) || '';
+  // Types into a lookup box and picks the list entry for the stop's city (or the first one).
+  const lookUp = async (fieldName, text) => {
+    const box = frame.locator(`[name="${fieldName}"]`).first();
+    await box.click();
+    await box.fill('');
+    await box.pressSequentially(String(text), { delay: 60 });
+    const items = frame.locator('.x-boundlist-item >> visible=true');
+    await items.first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+    const match = items.filter({ hasText: cityPattern }).first();
+    if (await visible(match)) await match.click();
+    else if (await visible(items.first())) await items.first().click();
+    await loadPage.waitForTimeout(1500);
+  };
+  await lookUp('locationEventPostalSearch', String(stop.zip).slice(0, 5));
+  if (!(await cityValue())) await lookUp('locationEventCitySearch', stop.city);
+  if (!(await cityValue())) {
+    await screenshot(loadPage, `${shotName}-no-city`);
+    await clickExtButton(loadPage, /^\s*Cancel\s*$/);
+    throw new Error(`MercuryGate's address lookup didn't find ${stop.city}, ${stop.state} ${stop.zip} for the ${index === 0 ? 'pickup' : 'delivery'} (nothing saved for that stop)`);
+  }
   if (stop.comments) {
     const comments = frame.locator('[name="locationEventComments"]').first();
     await comments.fill(stop.comments);
@@ -215,12 +259,14 @@ async function fillStop(loadPage, index, stop, { dryRun = true, shotName = `stop
   await setField(frame, 'targetLateDate', stop.late.date);
   await setField(frame, 'targetLateTime', stop.late.time);
   const filled = {
-    city: await frame.locator('[name="locationEventCity"]').first().inputValue().catch(() => ''),
-    postal: await frame.locator('[name="locationEventPostal"]').first().inputValue().catch(() => '')
+    city: await visibleValue('locationEventCity'),
+    postal: await visibleValue('locationEventPostal')
   };
   const shot = await screenshot(loadPage, shotName);
   await clickExtButton(loadPage, dryRun ? /^\s*Cancel\s*$/ : /^\s*Save\s*$/);
-  await loadPage.waitForTimeout(3000);
+  await loadPage.waitForTimeout(1000);
+  if (!dryRun) await expectSaved(loadPage, '[name="locationEventName"]', index === 0 ? 'pickup stop' : 'delivery stop', shotName);
+  await closeLeftoverWindow(loadPage);
   return { shot, filled, message: `${dryRun ? 'Filled (practice)' : 'Saved'} ${index === 0 ? 'pickup' : 'drop'}: ${stop.name}, ${filled.city} ${filled.postal}` };
 }
 
@@ -238,6 +284,7 @@ async function waitForFrameWith(page, selector, timeout = 20000) {
 // the route-level notes Daniel adds from the list icon).
 async function addSpecialInstructions(page, text, { dryRun = true, shotName = 'special-instructions' } = {}) {
   await page.bringToFront().catch(() => {});
+  await closeLeftoverWindow(page);
   const link = page.locator('.mg-link, [title="Add Special Instructions"]').filter({ hasText: /Special Instructions \(CL-\)/ }).first();
   await link.scrollIntoViewIfNeeded().catch(() => {});
   await link.click();
@@ -284,6 +331,6 @@ async function uploadConfirmation(page, pdfPath, { dryRun = true, shotName = 'up
 }
 
 module.exports = {
-  MG_HOME, SHOTS_DIR, openMercuryGate, findRouteOid, openLoadWindow,
+  MG_HOME, SHOTS_DIR, openMercuryGate, findRouteOid, openLoadWindow, closeLeftoverWindow,
   addCustomerReference, fillStop, addSpecialInstructions, uploadConfirmation
 };

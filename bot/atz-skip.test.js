@@ -72,3 +72,12 @@ test('the bot keeps one Assign Capacity request per booked load, the latest truc
   delete process.env.ASSIGN_QUEUE_FILE;
   delete require.cache[require.resolve('./status-server')];
 });
+
+test('Nolan files follow their own rule: posting rate, or exactly agent RPP\'s rate', () => {
+  const { isNolanFile, MATCH_AGENCY_FOR_NOLAN, matchesTopCompetitor } = require('./rate-check');
+  assert.equal(isNolanFile('Landstar_Bulk_Nolan_965974___ATZ_H.xlsx'), true);
+  assert.equal(isNolanFile('Landstar_Bulk_Nolan_965974___ATZ (10).xlsx'), true);
+  assert.equal(isNolanFile('Landstar_Bulk_R_X_O_2429200___ATZ.xlsx'), false);
+  assert.equal(MATCH_AGENCY_FOR_NOLAN, 'RPP');
+  assert.equal(matchesTopCompetitor('Landstar_Bulk_Nolan_965974___ATZ_H.xlsx', { equipment: 'VAN', hazmat: false }), false);
+});

@@ -49,10 +49,11 @@ function fileSignatures(filePath) {
 const cache = new Map(); // file path -> { mtimeMs, signatures }
 
 // Signatures of every load in the spreadsheets the bot uploaded recently.
-function uploadedSignatures(folder = UPLOADED_FOLDER, now = Date.now()) {
+// onlyFiles: e.g. /^Landstar_Bulk_Nolan/i for one customer's uploads.
+function uploadedSignatures(folder = UPLOADED_FOLDER, now = Date.now(), onlyFiles = null) {
   const all = new Set();
   let names = [];
-  try { names = fs.readdirSync(folder).filter(name => /\.xlsx$/i.test(name)); } catch { return all; }
+  try { names = fs.readdirSync(folder).filter(name => /\.xlsx$/i.test(name) && (!onlyFiles || onlyFiles.test(name))); } catch { return all; }
   for (const name of names) {
     const filePath = path.join(folder, name);
     let stat;

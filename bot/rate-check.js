@@ -166,6 +166,16 @@ const SKIP_IF_POSTED_BY = ['ATZ'];
 const RXO_ATZ_FILE = /^Landstar_Bulk_R_X_O_2429200___ATZ(?:_\d+of\d+)?(?: \(\d+\))?\.xlsx$/i;
 const VAN_EQUIPMENT = new Set(['VAN', '24VN', '28VN', '48VN', '53VN']);
 
+// Nolan 965974 - ATZ H (Beon/NTG loads): post at the posting rate from the load board, unless
+// agent RPP has the same load posted - then post exactly RPP's rate (no +$25, no DAT).
+// Export files: Landstar_Bulk_Nolan_965974___ATZ_H.xlsx, ..._3of9.xlsx, "... (1).xlsx".
+const NOLAN_FILE = /^Landstar_Bulk_Nolan_965974/i;
+const MATCH_AGENCY_FOR_NOLAN = 'RPP';
+
+function isNolanFile(fileName) {
+  return NOLAN_FILE.test(fileName);
+}
+
 function matchesTopCompetitor(fileName, load) {
   return RXO_ATZ_FILE.test(fileName) && VAN_EQUIPMENT.has(load.equipment) && !load.hazmat;
 }
@@ -269,11 +279,29 @@ async function openBoard(context, log = console.log) {
   setStatus('signing-in', 'Signing in to Landstar');
   await page.goto(BOARD_URL, { waitUntil: 'domcontentloaded' }).catch(() => {}); // sign-in redirects can abort a load; the loop below re-checks
   let warned = false;
+  let unauthorizedTries = 0;
+  let callbackSince = 0;
   const autoLoginUntil = Date.now() + 20000; // Landstar often signs in by itself; only ask after this
   while (!onBoard() && Date.now() < deadline) {
     // Window closed: stop waiting. (Otherwise every wait below fails instantly and this loop
     // spins nonstop, freezing the bot so it can't turn itself off.)
     if (page.isClosed()) throw new Error('The bot window was closed.');
+    // Landstar sometimes bounces the sign-in to "Sorry, you're not authorized to use this
+    // application" (portal.../unauthorized), a page with no login form, or leaves it on
+    // "Logging you in..." (signin-callback) for good. Opening the portal home again signs in
+    // normally; after 3 tries the login page is left for Daniel.
+    const onCallback = /portal\.landstaronline\.com\/signin-callback/i.test(page.url());
+    callbackSince = onCallback ? (callbackSince || Date.now()) : 0;
+    const stuckOnCallback = onCallback && Date.now() - callbackSince > 20000;
+    if ((/portal\.landstaronline\.com\/unauthorized/i.test(page.url()) || stuckOnCallback) && unauthorizedTries < 3) {
+      unauthorizedTries += 1;
+      callbackSince = 0;
+      log(`  Landstar showed "not authorized"; opening the portal again (try ${unauthorizedTries} of 3)...`);
+      await page.waitForTimeout(3000);
+      await page.goto('https://portal.landstaronline.com/agent', { waitUntil: 'domcontentloaded' }).catch(() => {});
+      await page.waitForURL(/portal\.landstaronline\.com\/agent|www\.landstaronline\.com\/Loads|login|signin|oauth/i, { timeout: 20000 }).catch(() => {});
+      continue;
+    }
     // Landstar's login lands on the portal dashboard; go back to the board.
     if (/portal\.landstaronline\.com\/agent/i.test(page.url())) {
       await page.goto(BOARD_URL, { waitUntil: 'domcontentloaded' }).catch(() => {}); // sign-in redirects can abort a load; the loop below re-checks
@@ -427,6 +455,17 @@ async function checkFiles(page, files, { apply, log = console.log }) {
         (b.TrailerTypes || []).some(t => trailerGroup(t) === myGroup) &&
         Number(b.TotalRevenue) > 0
       );
+      if (isNolanFile(fileName)) {
+        // Nolan: only RPP's posting of the same load changes the rate (to exactly theirs).
+        const rpp = competitors.find(b => String(b.Agency || '').trim().toUpperCase() === MATCH_AGENCY_FOR_NOLAN);
+        if (rpp && Number(rpp.TotalRevenue) !== load.rate) {
+          changes.push({ rowNumber: load.rowNumber, newRate: Number(rpp.TotalRevenue) });
+          log(`  row ${load.rowNumber}: ${lane}  ${load.rate} -> ${rpp.TotalRevenue}  (Nolan: matching RPP)`);
+        } else {
+          log(`  row ${load.rowNumber}: ${lane}  ${load.rate}  (Nolan: posting rate${rpp ? ', same as RPP' : ''})`);
+        }
+        continue;
+      }
       const top = competitors.reduce((best, b) => (!best || Number(b.TotalRevenue) > Number(best.TotalRevenue) ? b : best), null);
 
       if (!top) {
@@ -463,7 +502,7 @@ async function checkFiles(page, files, { apply, log = console.log }) {
 module.exports = {
   getWorkPage, openBoard, showLoggedIn, searchBoard, boardForLoad, checkFiles, sameCity, abbreviates, OWN_POSTING_CODES,
   getTrailerGroups, boardPickupDate, OUTBID_BY, isSkipAgencyPosting, removeRowsFromSheetXml, SKIP_IF_POSTED_BY,
-  matchesTopCompetitor
+  matchesTopCompetitor, isNolanFile, MATCH_AGENCY_FOR_NOLAN
 };
 
 // ---------- standalone report ----------

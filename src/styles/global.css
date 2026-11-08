@@ -1026,6 +1026,15 @@ body.tms-list-focus .tms-sidebar-header {
   opacity: 1;
 }
 
+/* Pinned (📌): only the panel takes clicks; the page next to it stays usable. */
+.tms-drawer.is-open.is-pinned {
+  pointer-events: none;
+}
+
+.tms-drawer.is-open.is-pinned .tms-drawer-panel {
+  pointer-events: auto;
+}
+
 .tms-shell .tms-drawer-panel {
   position: absolute;
   top: 0;

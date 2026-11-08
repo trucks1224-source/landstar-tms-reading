@@ -75,3 +75,71 @@ test('driver emails go to the driver from the BCO Load Detail email, with Landst
   ], me, 1000);
   assert.deepEqual(replies.map(reply => reply.id), ['c'], 'only the driver, not Daniel from either address');
 });
+
+test('paperwork files: PDFs and real photos from the driver, not signature logos', async () => {
+  const { findPaperworkParts } = await import('./_lib/gmailThread.js');
+  const payload = { parts: [
+    { mimeType: 'text/plain', body: { size: 300 } },
+    { filename: 'POD 4590295.pdf', mimeType: 'application/pdf', body: { attachmentId: 'a1', size: 9000 } },
+    { filename: 'IMG_2041.jpg', mimeType: 'image/jpeg', body: { attachmentId: 'a2', size: 1800000 } },
+    { filename: 'logo.png', mimeType: 'image/png', body: { attachmentId: 'a3', size: 4200 } },
+    { mimeType: 'multipart/alternative', parts: [{ filename: 'scan.HEIC', mimeType: 'image/heic', body: { attachmentId: 'a4', size: 900000 } }] },
+    { filename: 'notes.docx', body: { attachmentId: 'a5', size: 50000 } }
+  ] };
+  assert.deepEqual(findPaperworkParts(payload).map(part => part.filename), ['POD 4590295.pdf', 'IMG_2041.jpg', 'scan.HEIC']);
+});
+
+test('paperwork email: reply-all text plus the files attached', async () => {
+  const { buildReplyWithAttachments } = await import('./_lib/gmailThread.js');
+  const raw = buildReplyWithAttachments({
+    to: ['Heather <heather@paramount.com>'], cc: ['ops@paramount.com'], subject: 'Rate Confirmation for order: 2282980',
+    inReplyTo: '<m1@x>', references: '<m0@x>', text: 'Attached is the POD.',
+    files: [{ filename: 'POD.pdf', mimeType: 'application/pdf', data: Buffer.from('%PDF-1.4 test').toString('base64') }]
+  });
+  assert.match(raw, /^To: Heather <heather@paramount.com>\r\nCc: ops@paramount.com\r\n/);
+  assert.match(raw, /In-Reply-To: <m1@x>\r\nReferences: <m0@x> <m1@x>/);
+  const boundary = raw.match(/boundary="([^"]+)"/)[1];
+  assert.equal(raw.split(`--${boundary}`).length, 4, 'text part, one file, closing marker');
+  assert.match(raw, /Content-Disposition: attachment; filename="=\?UTF-8\?B\?/);
+  assert.ok(raw.includes(Buffer.from('Attached is the POD.').toString('base64')));
+  assert.ok(raw.includes(Buffer.from('%PDF-1.4 test').toString('base64')));
+  assert.ok(raw.trimEnd().endsWith(`--${boundary}--`));
+});
+
+test('driver emails go to the newest BCO email that has a driver on it', async () => {
+  const { pickDriverThread } = await import('./_lib/gmailThread.js');
+  const withDriver = { id: 'old', messages: [msg('a', 1000, { From: 'daniel.gomez@landstarmail.com', To: 'daniel.gomez@landstarmail.com, randycotton84@gmail.com', Subject: 'BCO Load Detail for load: - 4492905' })] };
+  const toMeOnly = { id: 'new', messages: [msg('b', 2000, { From: 'daniel.gomez@landstarmail.com', To: 'daniel.gomez@landstarmail.com', Subject: 'BCO Load Detail for load: - 4492905' })] };
+  assert.equal(pickDriverThread([toMeOnly, withDriver], me).id, 'old');
+  const reassigned = { id: 'newer', messages: [msg('c', 3000, { From: 'daniel.gomez@landstarmail.com', To: 'daniel.gomez@landstarmail.com, other.driver@yahoo.com', Subject: 'BCO Load Detail for load: - 4492905' })] };
+  assert.equal(pickDriverThread([withDriver, toMeOnly, reassigned], me).id, 'newer', 'a reassigned driver still wins');
+  assert.equal(pickDriverThread([toMeOnly], me).id, 'new', 'no driver anywhere: the newest, as before');
+});
+
+test('a driver who forwards the BCO email (instead of replying) still counts as a driver reply', () => {
+  const forwarded = [msg('f1', 5000, { From: 'Daniel Taylor <taylordaniel906@gmail.com>', To: 'daniel.gomez@landstarmail.com', Subject: 'Fwd: BCO Load Detail for load: - 4492905' })];
+  assert.equal(parseBcoSubject('Fwd: BCO Load Detail for load: - 4492905'), '4492905');
+  assert.deepEqual(findDriverReplies(forwarded, me, 0).map(reply => reply.id), ['f1']);
+  const dispatch = [msg('d1', 1000, { From: 'daniel.gomez@landstarmail.com', To: 'randycotton84@gmail.com', Subject: 'BCO Load Detail for load: - 4492905' })];
+  assert.deepEqual(findDriverReplies(dispatch, me, 0), [], 'your own dispatch email is never a driver reply');
+});
+
+test('big paperwork emails go through the upload endpoint inside the customer thread', async () => {
+  const { buildUploadBody } = await import('./_lib/gmailThread.js');
+  const { body, contentType } = buildUploadBody('To: a@b.com\r\n\r\nhi', '18abc', 'B1');
+  assert.equal(contentType, 'multipart/related; boundary=B1');
+  assert.equal(body, '--B1\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{"threadId":"18abc"}\r\n--B1\r\nContent-Type: message/rfc822\r\n\r\nTo: a@b.com\r\n\r\nhi\r\n--B1--\r\n');
+});
+
+test('every reply on an RXO update request copies Ivan Lopez, once', async () => {
+  const { withRxoAlwaysCc } = await import('./_lib/gmailThread.js');
+  assert.deepEqual(withRxoAlwaysCc({ to: ['chatracking2@rxo.com'], cc: ['dashawn@rxo.com'] }),
+    { to: ['chatracking2@rxo.com'], cc: ['dashawn@rxo.com', 'ivan.lopez@landstarmail.com'] });
+  assert.deepEqual(withRxoAlwaysCc({ to: ['chatracking2@rxo.com'], cc: ['Ivan Lopez <Ivan.Lopez@landstarmail.com>'] }).cc,
+    ['Ivan Lopez <Ivan.Lopez@landstarmail.com>'], 'already on it: not added twice');
+  const thread = { id: 't1', messages: [
+    msg('r1', 1000, { From: 'chatracking2 <chatracking2@rxo.com>', To: me, Cc: 'dashawn@rxo.com', Subject: 'Update Request - Order # 24474085 Coeymans, NY → Pittston, PA' })
+  ] };
+  const [request] = findOpenRxoRequests([thread], me);
+  assert.ok(request.cc.includes('ivan.lopez@landstarmail.com'), 'shown on the draft too');
+});

@@ -243,8 +243,25 @@ async function openBulkPostings(context, page, { waitForever = false } = {}) {
     const onPortal = () => /portal\.landstaronline\.com\/agent/i.test(page.url());
     const giveUpAt = Date.now() + 300000;
     let asked = false;
+    let unauthorizedTries = 0;
+    let callbackSince = 0;
     for (;;) {
       if (context.pages().length === 0) throw new Error('The bot window was closed.');
+      // "Logging you in... should disappear in a few seconds" (signin-callback) that never finishes.
+      const onCallback = /portal\.landstaronline\.com\/signin-callback/i.test(page.url());
+      callbackSince = onCallback ? (callbackSince || Date.now()) : 0;
+      const stuckOnCallback = onCallback && Date.now() - callbackSince > 20000;
+      // "Sorry, you're not authorized to use this application" (no login form), or the stuck
+      // "Logging you in" page: opening the portal home signs in again. After 3 tries it's left to Daniel.
+      if ((/portal\.landstaronline\.com\/unauthorized/i.test(page.url()) || stuckOnCallback) && unauthorizedTries < 3) {
+        callbackSince = 0;
+        unauthorizedTries += 1;
+        console.log(`  Landstar's sign-in got stuck ("not authorized" / "Logging you in"); opening the portal again (try ${unauthorizedTries} of 3)...`);
+        await page.waitForTimeout(3000);
+        await page.goto('https://portal.landstaronline.com/agent', { waitUntil: 'domcontentloaded' }).catch(() => {});
+        await page.waitForURL(/portal\.landstaronline\.com\/agent/i, { timeout: 20000 }).catch(() => {});
+        continue;
+      }
       if (onPortal()) {
         setStatus('logged-in', 'Opening Bulk Postings');
         if (!/bulk-postings/i.test(page.url())) {

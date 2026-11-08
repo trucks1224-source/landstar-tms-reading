@@ -16,6 +16,7 @@ const {
   openBoard, searchBoard, sameCity, getTrailerGroups, boardPickupDate, OWN_POSTING_CODES, OUTBID_BY
 } = require('./rate-check');
 const { setStatus } = require('./status-server');
+const { uploadedSignatures, postingSignature } = require('./bot-postings');
 
 const clean = value => String(value ?? '').trim().toUpperCase();
 const isHazmatPosting = load => clean(load.CommodityCode) === 'HAZMAT'
@@ -78,7 +79,10 @@ async function raisePostingRate(context, loadId, rate, log) {
 async function checkHazmatRates(context, { apply = true, log = console.log } = {}) {
   setStatus('logged-in', 'Checking hazmat rates on the board');
   const board = await openBoard(context, log);
-  const mine = (await listPostings(board, OWN_POSTING_CODES, log)).filter(isHazmatPosting);
+  // Nolan postings keep their posting rate (or RPP's, set at upload): never raised here.
+  const nolan = uploadedSignatures(undefined, undefined, /^Landstar_Bulk_Nolan_965974/i);
+  const mine = (await listPostings(board, OWN_POSTING_CODES, log)).filter(isHazmatPosting)
+    .filter(posting => !nolan.has(postingSignature(posting)));
   if (!mine.length) {
     log('  No hazmat postings to check.');
     return [];

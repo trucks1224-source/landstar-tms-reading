@@ -41,6 +41,10 @@ const clean = text => String(text || '').replace(/\s+/g, ' ').trim();
 // Fills Landstar's Assign Capacity form for one posting. Returns { ok, message, retry }.
 async function assignOnLandstar(context, landstarLoadId, truck, log) {
   const page = await context.newPage();
+  // Once Assign is clicked, Landstar may have assigned the truck even if it never confirms:
+  // from then on the bot never retries (a retry would assign the truck to another copy of the
+  // same load - this happened on 11/06 and put one driver on three copies).
+  let clicked = false;
   try {
     await page.goto(ASSIGN_URL(landstarLoadId), { waitUntil: 'domcontentloaded' });
     const search = page.locator('agent-tractor-typeahead input, input[placeholder*="Tractor Number"]').first();
@@ -72,6 +76,7 @@ async function assignOnLandstar(context, landstarLoadId, truck, log) {
       .then(r => ({ kind: 'response', status: r.status(), body: r.text().catch(() => '') }));
     const stopped = page.locator(STOP_DIALOGS).first().waitFor({ state: 'visible', timeout: 45000 })
       .then(() => ({ kind: 'dialog' }));
+    clicked = true;
     await assign.click();
     const outcome = await Promise.race([assigned, stopped]).catch(error => ({ kind: 'timeout', error }));
 
@@ -79,7 +84,9 @@ async function assignOnLandstar(context, landstarLoadId, truck, log) {
       const text = clean(await page.locator(STOP_DIALOGS).first().innerText().catch(() => ''));
       return { ok: false, retry: false, message: `Landstar stopped the assignment: ${text.slice(0, 300) || 'warning dialog'}` };
     }
-    if (outcome.kind !== 'response') return { ok: false, retry: true, message: 'Landstar did not answer the assignment' };
+    if (outcome.kind !== 'response') {
+      return { ok: false, retry: false, unconfirmed: true, message: `Landstar did not confirm the assignment of truck ${truck} to load #${landstarLoadId}. It may have gone through: check that load on Landstar before assigning it again` };
+    }
     if (outcome.status >= 400) {
       const body = clean(await outcome.body);
       return { ok: false, retry: false, message: `Landstar refused the assignment (HTTP ${outcome.status}): ${body.slice(0, 300)}` };
@@ -88,6 +95,9 @@ async function assignOnLandstar(context, landstarLoadId, truck, log) {
     log(`  Assigned ${choice} to Landstar load #${landstarLoadId}`);
     return { ok: true, message: `Assigned ${choice} to Landstar load #${landstarLoadId}` };
   } catch (error) {
+    if (clicked) {
+      return { ok: false, retry: false, unconfirmed: true, message: `Something went wrong after clicking Assign for truck ${truck} on load #${landstarLoadId} (${error.message}). Check that load on Landstar before assigning it again` };
+    }
     return { ok: false, retry: true, message: error.message };
   } finally {
     await page.close().catch(() => {});
@@ -129,7 +139,7 @@ async function processAssignQueue(context, { log = console.log } = {}) {
     if (finished) {
       reportAssignResult({
         customer: item.customer, loadId: item.loadId, truck: item.truck, ok: result.ok,
-        landstarLoadId: posting?.LoadId ? String(posting.LoadId) : '', message: result.message
+        landstarLoadId: posting?.LoadId ? String(posting.LoadId) : '', message: result.message, unconfirmed: Boolean(result.unconfirmed)
       });
     }
   }

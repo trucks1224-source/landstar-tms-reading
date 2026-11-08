@@ -160,7 +160,8 @@ async function cancelPostings(page, requestedIds, log = console.log) {
   const failed = {};
   for (let i = 0; i < loadIds.length; i += CANCEL_BATCH) {
     const batch = loadIds.slice(i, i + CANCEL_BATCH);
-    const result = await page.evaluate(async ({ batch, token, userId }) => {
+    // The portal sometimes reloads itself mid-run; wait for it and send the batch again.
+    const sendBatch = async attempt => page.evaluate(async ({ batch, token, userId }) => {
       const response = await fetch('/loadboards/v1/availableLoadsCancel', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -170,7 +171,13 @@ async function cancelPostings(page, requestedIds, log = console.log) {
       let body = {};
       try { body = JSON.parse(text); } catch { /* not JSON */ }
       return { ok: response.ok, status: response.status, errors: body.cancelErrors || {}, text: text.slice(0, 200) };
-    }, { batch, token, userId });
+    }, { batch, token, userId }).catch(async error => {
+      if (attempt >= 3 || !/context was destroyed|navigation/i.test(error.message)) throw error;
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      await page.waitForTimeout(3000);
+      return sendBatch(attempt + 1);
+    });
+    const result = await sendBatch(1);
     if (!result.ok) throw new Error(`Landstar refused the removal (HTTP ${result.status}): ${result.text}`);
     Object.assign(failed, result.errors);
     cancelled += batch.length - Object.keys(result.errors).length;

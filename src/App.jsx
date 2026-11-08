@@ -886,15 +886,19 @@ async function readNtgScreenshotCards(worker, image, onProgress) {
   const analysisContext = analysis.getContext('2d', { willReadFrequently: true });
   if (!analysisContext) return [];
   analysisContext.drawImage(image, 0, 0);
-  const regions = findNtgCardRegions(
-    analysisContext.getImageData(0, 0, analysis.width, analysis.height).data, analysis.width, analysis.height
-  );
+  // Zoomed-out Beon pages have thin, very light gaps between cards: a stricter white level
+  // keeps neighbouring cards apart. Use whichever level finds more separate cards.
+  const pixels0 = analysisContext.getImageData(0, 0, analysis.width, analysis.height).data;
+  const regions = [246, 250]
+    .map(whiteLevel => findNtgCardRegions(pixels0, analysis.width, analysis.height, { whiteLevel }))
+    .reduce((best, found) => (found.length > best.length ? found : best), []);
   const loads = [];
   for (const [index, region] of regions.entries()) {
     onProgress?.(`Reading NTG load card ${index + 1} of ${regions.length}...`);
     const regionWidth = region.x1 - region.x0;
     const regionHeight = region.y1 - region.y0;
-    const scale = Math.max(1, Math.min(4, 3600 / regionWidth));
+    // Small (zoomed-out) cards are enlarged more so their small print can be read.
+    const scale = Math.max(1, Math.min(4, 5600 / regionWidth));
     const cardCanvas = document.createElement('canvas');
     cardCanvas.width = Math.round(regionWidth * scale);
     cardCanvas.height = Math.round(regionHeight * scale);
@@ -1376,8 +1380,9 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
       rateCrop: { centerY: (line.bbox.y0 + line.bbox.y1) / 2 },
       notes: `DAT screenshot does not include ZIP codes. ${trip ? 'Trip value was imported as miles; verify it.' : 'Trip miles were not recognized; enter them before export.'}`
     };
+    // Your saved rate for this lane beats the rate on the DAT screenshot.
     const savedLaneRate = getSavedLaneRate(laneRates, selectedBroker, order);
-    if (savedLaneRate && (!order.rateInput || getFixedLaneRate(selectedBroker, order))) {
+    if (savedLaneRate) {
       order.rateInput = savedLaneRate;
       order.rateSource = 'user-entered';
     }
@@ -2534,9 +2539,14 @@ function isCh593772Customer(name) {
   return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === 'CH593772ATZ';
 }
 
+// Accounts whose imports are the customer's full list: a re-import replaces the list, so
+// loads that dropped off it are deleted (and their Landstar postings taken down).
 const importStatusPreservationCustomers = new Set([
   'PARA1522166ATZ',
+  'PARA1522166ATZH',
+  'RXO2429200ATZ',
   'RXO2429200ATZP',
+  'NOLAN965974ATZ',
   'NOLAN965974ATZH'
 ]);
 
@@ -2721,6 +2731,11 @@ function createLaneDayKey(order) {
 }
 
 // Earliest pickup first; loads without a readable pickup date go last.
+function getPickupDay(order) {
+  const value = getPickupSortValue(order);
+  return value === Number.MAX_SAFE_INTEGER ? '' : new Date(value).toISOString().slice(0, 10);
+}
+
 function getPickupSortValue(order) {
   const text = String(order.pickupTime || order.puDate || '');
   const us = text.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b(?:\s+(\d{2})(\d{2}))?/);
@@ -2865,14 +2880,15 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
       value !== undefined && value !== null && String(value).trim() !== ''
     ));
     const merged = { ...existing, ...populatedFields, status: 'OPEN', tag: 'OPEN' };
-    if (!existing && hasPastPickupDate(load)) {
-      merged.status = 'ENT';
-      merged.tag = 'ENT';
-    }
     if (existing) {
       ['rateInput', 'rateSource', 'carrier', 'driver', 'driverPhone', 'truck', 'trailer', 'pickupEta', 'emptyLocation', 'notes', 'landstarComment'].forEach(field => {
         if (String(existing[field] || '').trim()) merged[field] = existing[field];
       });
+      // The load still carries a DAT rate but you have typed a rate for this lane since: use yours.
+      if (load.rateSource === 'user-entered' && Number(load.rateInput) > 0 && isDatRateSource(existing.rateSource)) {
+        merged.rateInput = load.rateInput;
+        merged.rateSource = 'user-entered';
+      }
       if (allowGeneratedIds && load.rateSource === 'dat-screenshot' && existing.rateSource !== 'user-entered'
         && Number(load.rateInput) > 0) {
         merged.rateInput = load.rateInput;
@@ -2895,6 +2911,11 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
       merged.tag = 'HOLD';
     }
     delete merged.screenshotStatus;
+    // Pickup date already passed: the load goes (or stays) on ENT, new or re-imported.
+    if (hasPastPickupDate(merged)) {
+      merged.status = 'ENT';
+      merged.tag = 'ENT';
+    }
     // A booked load stays booked when the customer's list is imported again.
     if (existing?.status === 'BOOKED' && !isNewDayForExistingLoad(existing, load)) {
       merged.status = 'BOOKED';
@@ -2918,6 +2939,10 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
     if (isMexicoLoad(load)) return false;
     if (isSkippableEquipment(load.eCode)) return false;
     const exportedAt = Date.parse(load.landstarExportedAt);
+    // A full customer list is the truth: anything not on it is deleted (exported ENT loads
+    // too; their rates stay in the rate history). Booked and hand-added loads stay (above),
+    // and screenshot imports keep loads you moved to ENT by hand (never exported).
+    if (!additive) return load.status === 'ENT' && !Number.isFinite(exportedAt) && keepManualEnt;
     // Screenshot imports also keep loads moved to ENT by hand (no export date).
     const retainedArchive = load.status === 'ENT' && (Number.isFinite(exportedAt)
       ? now - exportedAt < exportedLoadRetentionMs
@@ -2949,7 +2974,7 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
 
 function getImportReplacementMessage(replacement) {
   return replacement
-    ? `• ${replacement.additive ? 'Imported list merged' : 'Full list replaced'}; removed loads: ${replacement.removedCount}. Exported ENT loads retained for 30 days unless re-imported.\n` +
+    ? `• ${replacement.additive ? 'Imported list merged' : 'Full list replaced'}; removed loads: ${replacement.removedCount}. ${replacement.additive ? 'Exported ENT loads retained for 30 days unless re-imported.' : 'Loads not on the list were deleted (booked and hand-added loads kept).'}\n` +
       `• Duplicate load/day rows skipped: ${replacement.duplicateCount}; ${replacement.usesScreenshotStatus ? 'Para screenshot: red = ON HOLD, non-red = OPEN' : 'imported loads set to OPEN'}.\n`
       + (replacement.laneDayDuplicateCount ? `• Same-lane/pickup-day duplicates skipped: ${replacement.laneDayDuplicateCount} (first load kept).\n` : '')
       + (replacement.skippedRxoVanCount ? `• Skipped ${replacement.skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID.\n` : '')
@@ -3022,9 +3047,10 @@ function getBaseLoadId(order) {
 }
 
 // Returns true when the load's pickup date is before today (past-dated imports become ENT).
+// A pickup window over several days counts by its last day, so it stays open until then.
 function hasPastPickupDate(load) {
   const text = String(load?.pickupTime || load?.puDate || '');
-  const match = text.match(/(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})\b/);
+  const match = [...text.matchAll(/(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})\b/g)].pop();
   if (!match) return false;
   const year = match[3].length === 2 ? 2000 + Number(match[3]) : Number(match[3]);
   const pickup = new Date(year, Number(match[1]) - 1, Number(match[2]));
@@ -3034,13 +3060,11 @@ function hasPastPickupDate(load) {
   return pickup < today;
 }
 
-// Past-dated pickups import as ENT, but only for loads we have never seen before;
-// re-imports of existing loads keep their current status/assignment behavior.
+// Past-dated pickups import as ENT, new loads and re-imported ones alike
+// (booked loads stay booked: replaceImportedCustomerLoads checks that last).
 function applyPastPickupEntStatus(importedLoad, existingLoads) {
   if (!hasPastPickupDate(importedLoad)) return importedLoad;
-  const baseId = getBaseLoadId(importedLoad);
-  const isNew = !existingLoads.some(load => getBaseLoadId(load) === baseId);
-  return isNew ? { ...importedLoad, status: 'ENT', tag: 'ENT' } : importedLoad;
+  return { ...importedLoad, status: 'ENT', tag: 'ENT' };
 }
 
 function assignImportedLoadIdentity(importedLoad, existingLoads, stagedLoads) {
@@ -3247,13 +3271,18 @@ function scheduleUnversionedLoadListHeal() {
   }, 2500);
 }
 
+const isDatRateSource = source => /^dat/i.test(String(source || ''));
+
 // Persist a rate for a lane so the next load in the same lane reuses it.
+// Only rates you type are saved for reuse: DAT rates go to the rate history but never
+// into laneRates, so a saved lane rate always means your own rate and beats DAT.
 // Returns the updated laneRates map (or the original if the rate/key is invalid).
 function rememberLaneRate(laneRates, customer, order, rate, source = 'manual') {
   const numericRate = Number(String(rate || '').replace(/[$,]/g, ''));
   const key = createLaneRateKey(customer, order);
   if (!key || !(numericRate > 0) || !Number.isFinite(numericRate)) return laneRates;
   recordRateHistory(customer, order, numericRate, source);
+  if (isDatRateSource(source)) return laneRates;
   if (laneRates[key] === String(numericRate)) return laneRates;
   const next = { ...laneRates, [key]: String(numericRate) };
   try {
@@ -3529,14 +3558,31 @@ const defaultCustomerDatasets = {
   ]
 };
 
+// Search box match: load #, freight bill, cities, states, ZIPs, driver, truck, notes.
+// City names forgive small misspellings ("Shepardsville" finds SHEPHERDSVILLE).
+function loadMatchesSearch(order, searchQuery) {
+  const query = String(searchQuery || '').trim().toLowerCase();
+  if (!query) return true;
+  const fields = [
+    order.id, order.route, order.origCity, order.origSt, order.origZip,
+    order.destCity, order.destSt, order.destZip, order.planningComment,
+    order.driver, order.truck, order.trailer,
+    order.paramountTracking?.freightBill, order.landstarAssignment?.landstarLoadId
+  ].map(value => String(value || '').toLowerCase());
+  if (fields.some(value => value.includes(query))) return true;
+  const letters = query.replace(/[^a-z]/g, '');
+  if (letters.length < 6 || letters.length !== query.replace(/\s/g, '').length) return false;
+  const allowed = letters.length >= 9 ? 2 : 1;
+  return [order.origCity, order.destCity]
+    .map(value => String(value || '').toLowerCase().replace(/[^a-z]/g, ''))
+    .some(city => city.length >= 5 && Math.abs(city.length - letters.length) <= allowed && editDistance(letters, city) <= allowed);
+}
+
 function getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery) {
   const query = searchQuery.trim().toLowerCase();
   const customers = query ? Object.entries(customerOrdersMap) : [[selectedBroker, customerOrdersMap[selectedBroker] || []]];
   return customers.flatMap(([customer, loads]) => loads
-    .filter(order => !query || [
-      order.id, order.route, order.origCity, order.origSt,
-      order.destCity, order.destSt, order.planningComment
-    ].some(value => String(value || '').toLowerCase().includes(query)))
+    .filter(order => loadMatchesSearch(order, query))
     .map(order => ({ customer, order })));
 }
 
@@ -3624,7 +3670,92 @@ function formatCheckTime(iso) {
   return new Date(time).toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: 'numeric', minute: '2-digit' });
 }
 
-function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapacity, emails = null }) {
+// ---------- Driver texts through Google Voice (free; Daniel presses send) ----------
+// A US phone number as +1XXXXXXXXXX, or '' if it isn't one.
+function toUsPhoneE164(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  return '';
+}
+
+// Opens (or starts) the text conversation with that number in Google Voice on the web.
+function getGoogleVoiceUrl(phone) {
+  const number = toUsPhoneE164(phone);
+  return number ? `https://voice.google.com/u/0/messages?itemId=t.${encodeURIComponent(number)}` : 'https://voice.google.com/u/0/messages';
+}
+
+// A short text for the driver, matching where the load is. Kept SMS-short.
+function buildDriverText(load, customer = '', now = Date.now()) {
+  const first = titleCase(String(load.driver || '').trim().split(/\s+/)[0] || '');
+  const hi = `Hi${first ? ` ${first}` : ''}, this is Daniel with Landstar.`;
+  const bill = load.paramountTracking?.freightBill ? `load ${load.paramountTracking.freightBill}` : `load #${load.id}`;
+  const pickup = [titleCase(load.origCity), load.origSt].filter(Boolean).join(', ');
+  const delivery = [titleCase(load.destCity), load.destSt].filter(Boolean).join(', ');
+  const app = getTrackingAppName(customer);
+  const tracking = ` Please keep ${app || 'your tracking app'} on for the whole trip.`;
+  const stage = load.trackingStage || 'Booked';
+  if (stage === 'Delivered') {
+    if (load.paperworkReceivedAt) return `${hi} Thank you for delivering ${bill} in ${delivery}!`;
+    return `${hi} Please send the signed POD for ${bill} (${delivery}) today, just reply to the BCO email with a photo. `
+      + `Paperwork is due within ${PAPERWORK_DUE_HOURS} hours of delivery or the customer can charge back.`;
+  }
+  if (stage === 'At Delivery') return `${hi} Are you unloaded on ${bill} in ${delivery}? Please send the signed POD as soon as you're done.`;
+  if (stage === 'Loaded' || stage === 'In Transit') {
+    return `${hi} How is ${bill} going? What's your ETA to ${delivery}${load.deliveryTime ? ` (appt ${load.deliveryTime})` : ''}?${tracking}`;
+  }
+  if (stage === 'At Pickup') return `${hi} Are you loaded yet on ${bill} in ${pickup}? Please send me the BOL photo when you leave.${tracking}`;
+  const pickupAt = parseScheduleStart(load.pickupTime);
+  const today = pickupAt && sameLocalDay(pickupAt, now) ? ' today' : '';
+  return `${hi} Checking on ${bill}, picking up${today} in ${pickup}${load.pickupTime ? ` (appt ${load.pickupTime})` : ''}. `
+    + `What's your ETA to the shipper?${app ? ` Please turn on ${app} now.` : ''}`;
+}
+
+// Text button: copy the message, open the Google Voice conversation; Daniel pastes and sends.
+async function openDriverText(event, load, customer) {
+  const button = event?.currentTarget;
+  const text = buildDriverText(load, customer);
+  let copied = false;
+  try { await navigator.clipboard.writeText(text); copied = true; } catch { /* shown below */ }
+  window.open(getGoogleVoiceUrl(load.driverPhone), 'google-voice');
+  if (!copied) { window.prompt('Copy this text, then paste it in Google Voice:', text); return; }
+  if (button) {
+    const label = button.textContent;
+    button.textContent = '✅ Copied: paste in Google Voice (Ctrl+V, Enter)';
+    setTimeout(() => { button.textContent = label; }, 6000);
+  }
+}
+
+// Delivered, the paperwork is in, and it went to the customer (or didn't need to): the load
+// leaves the main Booked Loads list. Older loads marked by hand count as done.
+const isBookedLoadComplete = load => load.trackingStage === 'Delivered' && Boolean(load.paperworkReceivedAt)
+  && load.paperworkDone !== false;
+
+// The paperwork line on a delivered load's card.
+function getPaperworkStatus(load, now = Date.now()) {
+  if (load.paperworkReceivedAt) {
+    return { level: 'ok', text: `Paperwork received ${formatCheckTime(load.paperworkReceivedAt)}${load.paperworkSentAt ? ' · sent to the customer' : load.paperworkDone ? '' : ' · waiting for you to send it to the customer'}` };
+  }
+  const deliveredAt = getDeliveredAt(load);
+  if (!deliveredAt) return { level: 'waiting', text: 'Waiting on paperwork from the driver' };
+  const hours = Math.floor((now - deliveredAt) / 3600000);
+  const left = PAPERWORK_DUE_HOURS - hours;
+  return left > 0
+    ? { level: hours >= 24 ? 'due' : 'waiting', text: `Waiting on paperwork · delivered ${hours}h ago · due in ${left}h` }
+    : { level: 'late', text: `Paperwork LATE · delivered ${hours}h ago (due within ${PAPERWORK_DUE_HOURS}h, customer can charge back)` };
+}
+
+function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, onRemoveCapacity, emails = null, searchQuery = '', onSearch = null }) {
+  const query = String(searchQuery || '').trim();
+  const isMatch = load => Boolean(query) && loadMatchesSearch(load, query);
+  const completed = allEntries.filter(({ load }) => isBookedLoadComplete(load));
+  const completedMatches = completed.filter(({ load }) => isMatch(load));
+  // Search matches go to the top, so the load you are looking for is the first card.
+  const entries = allEntries.filter(({ load }) => !isBookedLoadComplete(load))
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) => Number(isMatch(b.entry.load)) - Number(isMatch(a.entry.load)) || a.index - b.index)
+    .map(({ entry }) => entry);
+  const matchCount = entries.filter(({ load }) => isMatch(load)).length + completedMatches.length;
   const activeCount = entries.filter(({ load }) => load.trackingStage !== 'Delivered').length;
   const alertCount = entries.filter(({ load }) => getTrackingAlert(load, now)).length;
   const phoneDigits = value => String(value || '').replace(/[^\d+]/g, '');
@@ -3634,9 +3765,24 @@ function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapac
         <div>
           <h2 className="text-lg font-bold text-purple-200">📦 Booked Loads</h2>
           <p className="text-xs text-gray-300">
-            {activeCount} active · {entries.length - activeCount} delivered · {alertCount} need attention · all customers
+            {activeCount} active · {entries.length - activeCount} delivered · {alertCount} need attention · {completed.length} completed · all customers
           </p>
         </div>
+        {onSearch && (
+          <div className="flex items-center gap-2 flex-1 min-w-[220px] max-w-md">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={event => onSearch(event.target.value)}
+              placeholder="🔍 Find a booked load: load #, city, driver, truck..."
+              aria-label="Find a booked load"
+              className="w-full bg-[#0b132b] border-2 border-yellow-400/70 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-400 outline-none focus:border-yellow-300"
+            />
+            {query && (
+              <button type="button" onClick={() => onSearch('')} title="Clear the search" className="bg-slate-700 hover:bg-slate-600 text-white text-xs px-2 py-1.5 rounded cursor-pointer">✕</button>
+            )}
+          </div>
+        )}
         <button type="button" onClick={onBack} className="bg-slate-700 hover:bg-slate-600 text-white text-xs px-3 py-1.5 rounded font-semibold cursor-pointer">
           ← Back to loads
         </button>
@@ -3650,6 +3796,13 @@ function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapac
           <LoadEmailBox drafts={[]} replies={emails.replies.filter(reply => !reply.loadId)} onDismissReply={emails.onDismissReply} />
         </div>
       )}
+      {query && (
+        <p role="status" className={`text-sm font-semibold rounded-lg px-4 py-2 border ${matchCount ? 'bg-yellow-400/15 border-yellow-400 text-yellow-200' : 'bg-red-900/30 border-red-500 text-red-200'}`}>
+          {matchCount
+            ? `🔎 ${matchCount} booked load${matchCount === 1 ? '' : 's'} match "${query}" (highlighted in yellow, shown first)`
+            : `No booked load matches "${query}". Check the spelling, or try the load #, driver or truck.`}
+        </p>
+      )}
       {entries.length === 0 && (
         <p className="text-sm text-gray-300 bg-[#121829] border border-[#1c2541] rounded-lg p-6 text-center">
           No booked loads yet. Open a load, enter the driver, and click 📦 Book Load.
@@ -3661,15 +3814,20 @@ function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapac
         const lastCall = getLastCheckCall(load);
         const delivered = stage === 'Delivered';
         const phone = phoneDigits(load.driverPhone);
+        const matched = isMatch(load);
         return (
           <div
             key={`${customer}|${load.id}`}
             data-booked-load={load.id}
-            className={`rounded-lg border p-4 bg-[#121829] ${alert?.level === 'late' ? 'border-red-500' : alert?.level === 'due' ? 'border-amber-400' : delivered ? 'border-[#1c2541] opacity-60' : 'border-purple-500/50'}`}
+            data-search-match={matched ? 'true' : undefined}
+            className={`rounded-lg border p-4 bg-[#121829] ${matched ? 'border-yellow-300 ring-4 ring-yellow-300/80 shadow-[0_0_24px_rgba(253,224,71,0.45)]' : alert?.level === 'late' ? 'border-red-500' : alert?.level === 'due' ? 'border-amber-400' : delivered ? 'border-[#1c2541] opacity-60' : 'border-purple-500/50'}`}
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-[11px] text-gray-400">{customer}</p>
+                <p className="text-[11px] text-gray-400">
+                  {matched && <span className="mr-2 bg-yellow-300 text-black font-bold px-1.5 py-0.5 rounded">🔎 Match</span>}
+                  {customer}
+                </p>
                 <button type="button" onClick={() => onOpen(customer, load.id)} title="Open this load" className="text-white font-bold text-sm hover:underline cursor-pointer">
                   #{load.id}
                 </button>
@@ -3682,7 +3840,14 @@ function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapac
                 {phone ? (
                   <p className="flex gap-2 mt-1">
                     <a href={`tel:${phone}`} className="bg-emerald-700 hover:bg-emerald-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold">📞 Call {load.driverPhone}</a>
-                    <a href={`sms:${phone}`} className="bg-sky-700 hover:bg-sky-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold">💬 Text</a>
+                    <button
+                      type="button"
+                      onClick={event => { void openDriverText(event, load, customer); }}
+                      title={`Opens Google Voice with this text copied:\n\n${buildDriverText(load, customer, now)}`}
+                      className="bg-sky-700 hover:bg-sky-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold cursor-pointer"
+                    >
+                      💬 Text (Google Voice)
+                    </button>
                   </p>
                 ) : <p className="text-[11px] text-amber-300 mt-1">No driver phone on file</p>}
               </div>
@@ -3701,6 +3866,30 @@ function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapac
                     {alert.level === 'late' ? '⚠ ' : '⏰ '}{alert.text}
                   </span>
                 )}
+                {delivered && (() => {
+                  const paperwork = getPaperworkStatus(load, now);
+                  const tone = paperwork.level === 'ok' ? 'bg-emerald-700 text-white' : paperwork.level === 'late' ? 'bg-red-600 text-white' : paperwork.level === 'due' ? 'bg-amber-400 text-black' : 'bg-slate-600 text-white';
+                  return (
+                    <>
+                      <span className={`text-[11px] px-2 py-0.5 rounded font-bold mt-1 max-w-[320px] text-right ${tone}`}>
+                        {paperwork.level === 'ok' ? '✅ ' : '📄 '}{paperwork.text}
+                      </span>
+                      {!load.paperworkReceivedAt && (
+                        <button
+                          type="button"
+                          onClick={() => onUpdate(customer, load.id, {
+                            ...load, paperworkReceivedAt: new Date().toISOString(), paperworkDone: true,
+                            notes: [load.notes, 'Paperwork marked received by hand'].filter(Boolean).join('\n')
+                          })}
+                          title="You got the POD another way (text, fax): stop the daily reminders and move this load to Completed. Nothing is emailed."
+                          className="bg-slate-700 hover:bg-slate-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold cursor-pointer"
+                        >
+                          Mark paperwork received
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
                 <div className="flex gap-1 mt-1">
                   <button type="button" onClick={() => onOpen(customer, load.id)} title="Open this load to change the rate, dates or driver" className="bg-slate-700 hover:bg-slate-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold cursor-pointer">
                     ✏️ Edit load
@@ -3745,6 +3934,48 @@ function BookedLoadsPage({ entries, now, onBack, onOpen, onUpdate, onRemoveCapac
           </div>
         );
       })}
+      {completed.length > 0 && (
+        <details
+          key={completedMatches.length ? 'completed-open' : 'completed'}
+          open={completedMatches.length > 0}
+          className="rounded-lg border border-emerald-700/60 bg-[#0f1a24] p-3"
+          aria-label="Completed loads"
+        >
+          <summary className="cursor-pointer text-sm font-bold text-emerald-200">
+            ✅ Completed: delivered, paperwork received ({completed.length})
+          </summary>
+          <div className="flex flex-col gap-1 mt-2">
+            {completed.map(({ customer, load }) => {
+              const matched = isMatch(load);
+              return (
+                <div
+                  key={`done-${customer}|${load.id}`}
+                  data-booked-load={load.id}
+                  data-search-match={matched ? 'true' : undefined}
+                  className={`flex flex-wrap items-center justify-between gap-2 rounded px-3 py-2 text-xs border ${matched ? 'border-yellow-300 ring-2 ring-yellow-300/80 bg-yellow-400/10' : 'border-[#1c2541] bg-[#121829]'}`}
+                >
+                  <span className="text-gray-200">
+                    {matched && <span className="mr-2 bg-yellow-300 text-black font-bold px-1.5 py-0.5 rounded">🔎 Match</span>}
+                    <span className="text-gray-400">{customer}</span>{' · '}
+                    <button type="button" onClick={() => onOpen(customer, load.id)} className="font-bold text-white hover:underline cursor-pointer">#{load.id}</button>
+                    {' · '}{load.origCity}, {load.origSt} → {load.destCity}, {load.destSt}
+                    {' · '}🚚 {load.driver || 'No driver'}{load.truck ? ` (${load.truck})` : ''}
+                    {' · '}paperwork {formatCheckTime(load.paperworkReceivedAt)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onUpdate(customer, load.id, { ...load, paperworkReceivedAt: '', paperworkDone: false })}
+                    title="Paperwork not in after all: put this load back on the Booked Loads list"
+                    className="bg-slate-700 hover:bg-slate-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold cursor-pointer"
+                  >
+                    ↩ Back to booked
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
@@ -3942,8 +4173,21 @@ const truckFlashMs = 6000;
 // Import/Data tools and the customer list live in a drawer that slides out from the
 // left. The sidebar keeps one button showing the selected customer; picking a customer,
 // clicking outside, Esc or ✕ closes it.
+// Pinned (📌, the default): the drawer stays open while switching customers and using the page,
+// and is open again after a reload. Unpinned: picking a customer closes it, as before.
+const toolsPinnedKey = 'landstar_toolsPinned';
+const readToolsPinned = () => {
+  try { return localStorage.getItem(toolsPinnedKey) !== 'false'; } catch { return true; }
+};
+
 function ToolsDrawer({ selected, count, children }) {
-  const [open, setOpen] = useState(false);
+  const [pinned, setPinned] = useState(readToolsPinned);
+  const [open, setOpen] = useState(readToolsPinned);
+  const togglePinned = () => setPinned(current => {
+    const next = !current;
+    try { localStorage.setItem(toolsPinnedKey, String(next)); } catch { /* this visit only */ }
+    return next;
+  });
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
     // The sidebar's blur would trap the fixed drawer inside it, so drop it while open.
@@ -3966,16 +4210,28 @@ function ToolsDrawer({ selected, count, children }) {
         </span>
         <span className="tms-drawer-chevron" aria-hidden="true">›</span>
       </button>
-      <div className={`tms-drawer${open ? ' is-open' : ''}`}>
-        <div className="tms-drawer-backdrop" onClick={() => setOpen(false)} />
+      <div className={`tms-drawer${open ? ' is-open' : ''}${pinned ? ' is-pinned' : ''}`}>
+        {/* Pinned: no dark backdrop, so the page next to the drawer stays usable. */}
+        {!pinned && <div className="tms-drawer-backdrop" onClick={() => setOpen(false)} />}
         <aside
           className="tms-drawer-panel tms-sidebar-header"
           aria-label="Tools and customers"
-          onClick={event => { if (event.target?.closest?.('[data-close-drawer]')) setOpen(false); }}
+          onClick={event => { if (!pinned && event.target?.closest?.('[data-close-drawer]')) setOpen(false); }}
         >
           <div className="tms-drawer-head">
             <span>Tools &amp; Customers</span>
-            <button type="button" className="tms-drawer-close" onClick={() => setOpen(false)} aria-label="Close">✕</button>
+            <span className="inline-flex items-center gap-1">
+              <button
+                type="button"
+                onClick={togglePinned}
+                aria-pressed={pinned}
+                title={pinned ? 'Pinned: stays open when you switch customers. Click to close it after each pick.' : 'Click to keep this panel open while you switch customers.'}
+                className={`text-xs px-2 py-0.5 rounded cursor-pointer ${pinned ? 'bg-sky-600 text-white' : 'bg-slate-700 text-slate-200'}`}
+              >
+                📌 {pinned ? 'Kept open' : 'Keep open'}
+              </button>
+              <button type="button" className="tms-drawer-close" onClick={() => setOpen(false)} aria-label="Close">✕</button>
+            </span>
           </div>
           {children}
         </aside>
@@ -4074,10 +4330,10 @@ function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
 function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip, onDismissReply }) {
   const [open, setOpen] = useState(false);
   if (!drafts.length && !replies.length) return null;
-  const kindLabel = { initial: 'Tracking link + pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', rxo: 'Reply to update request', driverEta: 'Driver ETA update' };
+  const kindLabel = { initial: 'Tracking link + pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', rxo: 'Reply to update request', driverEta: 'Driver ETA update', paperwork: 'POD / paperwork (files attached)', location: 'Daily location update' };
   const approvalsLeft = draft => Math.max(0, PARAMOUNT_AUTO_SEND_AFTER
-    - readApprovedCount(draft.kind === 'driver' ? driverApprovedKey : draft.kind === 'rxo' ? rxoApprovedKey : paramountApprovedKey));
-  const who = draft => (draft.kind === 'driver' ? 'Driver' : draft.kind === 'rxo' ? 'RXO' : 'Paramount');
+    - readApprovedCount(draft.kind === 'paperwork' ? paperworkApprovedKey : draft.kind === 'driver' ? driverApprovedKey : draft.kind === 'rxo' ? rxoApprovedKey : paramountApprovedKey));
+  const who = draft => (draft.kind === 'driver' ? 'Driver' : draft.kind === 'rxo' || draft.target === 'rxo' ? 'RXO' : 'Paramount');
   return (
     <div className="mt-3 text-xs text-white normal-case tracking-normal text-left">
       <div className="flex flex-wrap gap-2">
@@ -4116,6 +4372,7 @@ function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip,
         <div key={draft.id} className="border border-amber-400 rounded p-2 mt-2">
           <p className="font-bold text-amber-200">✉️ {who(draft)} email · {draft.kind === 'driver' ? driverEmailLabels[draft.driverKind] : kindLabel[draft.kind]}</p>
           {draft.request && <p className="text-amber-100 mt-0.5">They asked: “{draft.request}”</p>}
+          {draft.warning && <p role="alert" className="mt-1 bg-red-600 text-white font-bold rounded px-2 py-1">⚠ {draft.warning} Send only if it is; otherwise click Don&apos;t send.</p>}
           {draft.kind === 'rxo' && !draft.complete && <p className="text-amber-300 mt-0.5">Fill in the blanks (like the pickup ETA) before sending.</p>}
           <p className="text-gray-300">Reply all to: {[...draft.to, ...draft.cc].join(', ')}</p>
           <textarea
@@ -4129,7 +4386,7 @@ function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip,
           <div className="flex flex-wrap gap-2 mt-1 items-center">
             <button type="button" disabled={draft.sending} onClick={() => onSend(draft)} className="bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white px-3 py-0.5 rounded font-semibold cursor-pointer">{draft.sending ? 'Sending…' : 'Send'}</button>
             <button type="button" disabled={draft.sending} onClick={() => onSkip(draft)} className="bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded cursor-pointer">Don&apos;t send</button>
-            <span className="text-gray-400">{paramountAlwaysAskKinds.has(draft.kind) ? 'Always waits for your Send' : approvalsLeft(draft) ? `${approvalsLeft(draft)} more approval${approvalsLeft(draft) === 1 ? '' : 's'}, then these send automatically` : 'Sending automatically'}</span>
+            <span className="text-gray-400">{draft.warning ? 'Waits for your Send (short stop at the shipper)' : paramountAlwaysAskKinds.has(draft.kind) ? 'Always waits for your Send' : approvalsLeft(draft) ? `${approvalsLeft(draft)} more approval${approvalsLeft(draft) === 1 ? '' : 's'}, then these send automatically` : 'Sending automatically'}</span>
           </div>
         </div>
       ))}
@@ -4250,7 +4507,9 @@ function takeNewAssignResults(results) {
 function applyAssignResult(load, result) {
   const line = result.ok
     ? `Landstar: ${result.message}`
-    : `Landstar: truck ${result.truck} NOT assigned - ${result.message}. Assign it by hand.`;
+    : result.unconfirmed
+      ? `Landstar: truck ${result.truck} NOT CONFIRMED - check Landstar before assigning again. ${result.message}`
+      : `Landstar: truck ${result.truck} NOT assigned - ${result.message}. Assign it by hand.`;
   return {
     ...load,
     landstarAssignment: { ok: Boolean(result.ok), truck: result.truck, landstarLoadId: result.landstarLoadId || '', message: result.message, at: result.at },
@@ -4269,9 +4528,25 @@ const PARAMOUNT_EMAIL_URL = '/api/paramount-email';
 const paramountTrackingCustomers = new Set(['PARA1522166ATZ', 'PARA1522166ATZH']);
 const paramountApprovedKey = 'landstar_paramountApprovedSends';
 const PARAMOUNT_AUTO_SEND_AFTER = 3;
-// Arrived at / left the shipper: always wait for Daniel's Send click (his rule, 2026-11-06).
-const paramountAlwaysAskKinds = new Set(['arrived', 'departed']);
+// Arrived at the shipper: always waits for Daniel's Send click (his rule, 2026-11-06).
+const paramountAlwaysAskKinds = new Set(['arrived']);
 const paramountMaySendItself = kind => !paramountAlwaysAskKinds.has(kind) && readParamountApprovedCount() >= PARAMOUNT_AUTO_SEND_AFTER;
+// Loaded / left the shipper (rule 2026-11-07): sent automatically with the loaded time, unless
+// the truck was at the shipper under 15 minutes (or Clarity has no arrival): then Daniel is
+// asked whether it really is the loaded time.
+const MIN_LOADING_MINUTES = 15;
+function getLoadedTimeWarning(info = {}) {
+  const left = Date.parse(info.leftShipperAt);
+  const arrived = Date.parse(info.arrivedShipperAt);
+  if (!Number.isFinite(left)) return '';
+  if (!Number.isFinite(arrived)) return 'Clarity has no arrival time at the shipper. Is this really the loaded time?';
+  const minutes = Math.round((left - arrived) / 60000);
+  return minutes < MIN_LOADING_MINUTES
+    ? `The truck was at the shipper only ${minutes} min (arrived ${formatParamountTime(info.arrivedShipperAt, info.pickupTimezone)}, left ${formatParamountTime(info.leftShipperAt, info.pickupTimezone)}). Is this really the loaded time?`
+    : '';
+}
+// Daily location update to the customer while the load is rolling (rule 2026-11-07).
+const LOCATION_EMAIL_HOUR = 9;
 const PARAMOUNT_WATCH_DAYS = 5;
 const paramountEmailKinds = ['initial', 'arrived', 'departed'];
 const paramountSignatureName = 'Daniel Gomez';
@@ -4403,6 +4678,13 @@ function buildParamountEmail(kind, load, info = {}, { greetingName = '', phone =
       + 'We\'ll let you know as soon as the truck is loaded and on the way.'
       + `${info.trackingLink ? `\n\nLive tracking: ${info.trackingLink}` : ''}\n\nThank you!${sign}`;
   }
+  if (kind === 'location') {
+    const where = String(info.lastLocation || '').trim();
+    const when = info.lastLocationAt ? ` (as of ${formatParamountTime(info.lastLocationAt, info.deliveryTimezone || info.pickupTimezone)})` : '';
+    return `${hello}\n\nDaily update on order ${order}: the truck is in ${where}${when}, on the way to ${deliveryPlace}.`
+      + `${deliveryEta ? ` The estimated arrival at delivery is ${deliveryEta}.` : ''}`
+      + `${info.trackingLink ? `\n\nLive tracking: ${info.trackingLink}` : ''}\n\nThank you!${sign}`;
+  }
   return `${hello}\n\nGreat news on order ${order}: the truck is loaded and has left the shipper in ${pickupPlace}`
     + `${info.leftShipperAt ? ` (${formatParamountTime(info.leftShipperAt, info.pickupTimezone)})` : ''}, heading to ${deliveryPlace}.`
     + `${deliveryEta ? ` The estimated arrival at delivery is ${deliveryEta}.` : ''}`
@@ -4412,7 +4694,7 @@ function buildParamountEmail(kind, load, info = {}, { greetingName = '', phone =
 // Which tracking emails are due for a load, given the bot's latest Clarity result.
 // The first email needs the tracking link; once the truck has left the shipper, a
 // not-yet-sent "arrived" email is skipped (the "left" one covers it).
-function getDueParamountEmails(load, info) {
+function getDueParamountEmails(load, info, now = Date.now()) {
   if (!info?.ok) return [];
   const sent = load.paramountTracking?.emails || {};
   const due = [];
@@ -4421,6 +4703,11 @@ function getDueParamountEmails(load, info) {
     return due;
   }
   if (info.leftShipperAt && !sent.departed) return ['departed'];
+  // Rolling: one location update a day from 9 AM (not on the day the loaded email went out).
+  if (info.leftShipperAt && !info.deliveredAt && info.lastLocation && String(info.lastLocation).replace(/[\s,]/g, '')) {
+    const sentToday = [sent.departed?.at, sent.location?.at].some(at => at && sameLocalDay(Date.parse(at), now));
+    return now >= atHourOf(now, LOCATION_EMAIL_HOUR) && !sentToday ? ['location'] : [];
+  }
   if (info.arrivedShipperAt && !sent.arrived && !info.leftShipperAt) due.push('arrived');
   return due;
 }
@@ -4435,7 +4722,7 @@ function markParamountEmail(load, kind, { at = new Date().toISOString(), skipped
     emails.arrived = emails.arrived || { at, skipped: true };
     emails.departed = emails.departed || { at, skipped: true };
   }
-  const label = { initial: 'tracking link + pickup ETA', arrived: 'arrived at shipper', departed: 'left shipper + delivery ETA' }[kind];
+  const label = { initial: 'tracking link + pickup ETA', arrived: 'arrived at shipper', departed: 'left shipper + delivery ETA', location: 'daily location update' }[kind];
   const line = `Paramount email ${skipped ? 'skipped' : 'sent'}: ${label}`;
   return { ...load, paramountTracking: { ...tracking, emails }, notes: load.notes ? `${load.notes}\n${line}` : line };
 }
@@ -4479,8 +4766,29 @@ const driverEmailLabels = {
   pickupMorning: 'Pickup day: good to go + ETA',
   pickedUp: 'Picked up: delivery ETA',
   deliveryMorning: 'Delivery day: good to go + ETA',
-  pod: 'Delivered: send the POD'
+  pod: 'Delivered: send the POD',
+  podReminder: 'Paperwork reminder (due within 48 hours)'
 };
+const PAPERWORK_DUE_HOURS = 48;
+const PAPERWORK_REMINDER_DAYS = 7; // daily reminders stop after a week
+const paperworkApprovedKey = 'landstar_paperworkApprovedSends';
+
+// When the load delivered: Clarity's delivery time, else when the stage was set to Delivered.
+function getDeliveredAt(load, tracking = load?.paramountTracking || {}) {
+  const fromClarity = Date.parse(tracking.deliveredAt);
+  if (Number.isFinite(fromClarity)) return fromClarity;
+  if ((load?.trackingStage || '') !== 'Delivered') return null;
+  const call = [...(Array.isArray(load.checkCalls) ? load.checkCalls : [])].reverse().find(item => item.stage === 'Delivered');
+  const at = Date.parse(call?.at);
+  return Number.isFinite(at) ? at : null;
+}
+
+// The customer email thread a driver's POD is forwarded to (Paramount or RXO), or ''.
+function getPaperworkTarget(customer) {
+  if (isParamountTrackingCustomer(customer)) return 'paramount';
+  if (isRxoTrackingCustomer(customer)) return 'rxo';
+  return '';
+}
 
 // Every booked load with a truck for the bot to find in Clarity (Paramount, RXO, all others).
 function getTrackingWatchList(customerOrdersMap, now = Date.now()) {
@@ -4510,7 +4818,16 @@ function getDueDriverEmails(load, tracking = {}, now = Date.now()) {
   const sent = load.driverEmails || {};
   const stage = load.trackingStage || 'Booked';
   const delivered = Boolean(tracking.deliveredAt) || stage === 'Delivered';
-  if (delivered) return sent.pod ? [] : ['pod'];
+  if (delivered) {
+    if (!sent.pod) return ['pod'];
+    // No paperwork yet: one reminder each morning (not on the day the POD email went out),
+    // for up to a week after delivery.
+    if (load.paperworkReceivedAt) return [];
+    const deliveredAt = getDeliveredAt(load, tracking) || Date.parse(sent.pod.at);
+    if (now - deliveredAt > PAPERWORK_REMINDER_DAYS * 86400000) return [];
+    const remindedToday = [sent.pod.at, sent.podReminder?.at].some(at => at && sameLocalDay(Date.parse(at), now));
+    return now >= atHourOf(now, DRIVER_EMAIL_HOUR) && !remindedToday ? ['podReminder'] : [];
+  }
   const pickedUp = Boolean(tracking.leftShipperAt) || ['Loaded', 'In Transit', 'At Delivery'].includes(stage);
   const morning = atHourOf(now, DRIVER_EMAIL_HOUR);
   if (pickedUp) {
@@ -4547,7 +4864,7 @@ function trackingAppNotice(customer) {
 
 function buildDriverEmail(kind, load, tracking = {}, { phone = '', customer = '' } = {}) {
   const first = titleCase(String(load.driver || '').trim().split(/\s+/)[0] || '');
-  const notice = kind === 'pod' ? '' : trackingAppNotice(customer);
+  const notice = kind === 'pod' || kind === 'podReminder' ? '' : trackingAppNotice(customer);
   const hello = `${first ? `Hi ${first},` : 'Hi,'}\n\n${notice}`.trimEnd();
   const bill = tracking.freightBill ? `load ${tracking.freightBill}` : `load #${load.id}`;
   const pickupPlace = tracking.pickupCity || [titleCase(load.origCity), load.origSt].filter(Boolean).join(', ');
@@ -4569,8 +4886,21 @@ function buildDriverEmail(kind, load, tracking = {}, { phone = '', customer = ''
     return `Good morning ${first || ''}`.trim() + `!\n\n${notice}${bill.charAt(0).toUpperCase()}${bill.slice(1)} delivers today in ${deliveryPlace}${appt(load.deliveryTime)}. `
       + 'Are you good for delivery? What is your ETA?' + sign;
   }
+  const chargeBack = `The paperwork must be sent within ${PAPERWORK_DUE_HOURS} hours of delivery, or the customer can charge back.`;
+  if (kind === 'podReminder') {
+    return `${hello}\n\nReminder: I still need the signed POD / paperwork for ${bill} delivered in ${deliveryPlace}. ${chargeBack} `
+      + 'Please reply to this email today with a clear photo or scan of it.' + sign;
+  }
   return `${hello}\n\nThank you for delivering ${bill} in ${deliveryPlace}! Please send the signed POD as soon as you can. `
-    + 'Just reply to this email with a clear photo or scan of it.' + sign;
+    + `Just reply to this email with a clear photo or scan of it. ${chargeBack}` + sign;
+}
+
+// The customer email that goes with the driver's POD files (reply-all on their tracking thread).
+function buildPaperworkEmail(load, tracking = {}, { greetingName = '', phone = '' } = {}) {
+  const hello = greetingName ? `Hi ${greetingName},` : 'Hi,';
+  const place = tracking.deliveryCity || [titleCase(load.destCity), load.destSt].filter(Boolean).join(', ');
+  return `${hello}\n\nAttached is the signed POD / paperwork for order #${load.id}${place ? `, delivered in ${place}` : ''}. `
+    + `Please let me know if you need anything else.\n\nThank you!\n\n${paramountSignature(phone)}`;
 }
 
 // Records a sent (or skipped) driver email on the load, with a line in its notes.
@@ -4651,7 +4981,8 @@ function getDueMercuryGateStep(load, tracking = {}) {
 // The load's notes after the bot's MercuryGate run.
 function applyMercuryGateResult(load, result) {
   const lines = (result.results || []).map(item => `MercuryGate: ${item.message}`);
-  if (!result.ok) lines.push(`MercuryGate: NOT finished - ${String(result.message || '').split('\n')[0]}. Finish it by hand.`);
+  if (!result.ok && result.retrying) lines.push(`MercuryGate: not finished yet, trying again - ${String(result.message || '').split('\n')[0]}`);
+  else if (!result.ok) lines.push(`MercuryGate: NOT finished - ${String(result.message || '').split('\n')[0]}. Finish it by hand.`);
   return {
     ...load,
     mercurygate: { ...(load.mercurygate || {}), [`${result.step}Result`]: { ok: Boolean(result.ok), at: result.at } },
@@ -5011,7 +5342,7 @@ export default function App({ sharing = null } = {}) {
 
   const [filter, setFilter] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [loadFilters, setLoadFilters] = useState({ rate: '', minMiles: '', maxMiles: '', pickupState: '', deliveryState: '' });
+  const [loadFilters, setLoadFilters] = useState({ rate: '', minMiles: '', maxMiles: '', pickupState: '', deliveryState: '', pickupDate: '' });
   const [laneSort, setLaneSort] = useState('');
   const [showTools, setShowTools] = useState(true);
   const [showCustomers, setShowCustomers] = useState(true);
@@ -5136,7 +5467,7 @@ export default function App({ sharing = null } = {}) {
         rows.forEach(row => {
           if (!row.load?.id) return;
           const savedRate = getSavedLaneRate(latestRates, row.customer, row.load);
-          if (savedRate && !(Number(row.load.rateInput) > 0)) {
+          if (savedRate && (!(Number(row.load.rateInput) > 0) || isDatRateSource(row.load.rateSource))) {
             row.load = { ...row.load, rateInput: savedRate, rateSource: 'user-entered' };
           }
         });
@@ -5482,8 +5813,15 @@ export default function App({ sharing = null } = {}) {
 
   const handleClearAllFilters = () => {
     setSearchQuery('');
-    setLoadFilters({ rate: '', minMiles: '', maxMiles: '', pickupState: '', deliveryState: '' });
+    setLoadFilters({ rate: '', minMiles: '', maxMiles: '', pickupState: '', deliveryState: '', pickupDate: '' });
     setLaneSort('');
+  };
+
+  // After an import: show the imported list itself, not a leftover search, filter or the
+  // Booked Loads page (those made fresh imports look like they never arrived).
+  const showImportedList = () => {
+    handleClearAllFilters();
+    setView('loads');
   };
 
   const handleDeleteSelected = () => {
@@ -5971,6 +6309,7 @@ export default function App({ sharing = null } = {}) {
       setCustomerOrdersMap(nextOrders);
       setSelectedOrder(finalLoads.find(load => load.id === resolvedLoads[0].id) || finalLoads[0]);
       setSelectedIds(getImportedLoadSelection(selectedBroker, replacement?.processedLoads || resolvedLoads));
+      showImportedList();
       setFilter('OPEN');
       
       alert(
@@ -6129,8 +6468,8 @@ export default function App({ sharing = null } = {}) {
             if (datRateInfo.rateInput) {
               rateVal = datRateInfo.rateInput;
               rateSrc = datRateInfo.rateSource;
-              // Remember DAT-fetched rates so the next load in this lane reuses the last rate.
-              setLaneRates(prev => rememberLaneRate(prev, selectedBroker, tempOrder, rateVal));
+              // Logged in the rate history only; your typed rates are what get reused.
+              setLaneRates(prev => rememberLaneRate(prev, selectedBroker, tempOrder, rateVal, rateSrc));
             } else if (!datRateError && datRateInfo.error) {
               datRateError = datRateInfo.error;
             }
@@ -6236,6 +6575,7 @@ export default function App({ sharing = null } = {}) {
         setCustomerOrdersMap(nextOrders);
         setSelectedOrder(finalLoads.find(load => load.id === resolvedImportedLoads[0].id) || finalLoads[0]);
         setSelectedIds(getImportedLoadSelection(selectedBroker, replacement?.processedLoads || resolvedImportedLoads));
+        showImportedList();
         setFilter('OPEN');
 
         const duplicatesRemoved = replacement ? 0 : duplicateImportCount + duplicateExistingCount;
@@ -6604,6 +6944,8 @@ export default function App({ sharing = null } = {}) {
         for (const load of recognizedLoads) {
           const crop = load.rateCrop;
           if (!crop || crop.x1 <= crop.x0) continue;
+          // Lanes with your own saved rate keep it; the DAT rate is not read.
+          if (load.rateSource === 'user-entered') continue;
           const miles = Number(load.miles) || 0;
           const isPlausible = value => value >= 100 && value < 100000
             && (!(miles > 0) || (value / miles >= 0.4 && value / miles <= 25));
@@ -6659,7 +7001,8 @@ export default function App({ sharing = null } = {}) {
 
       // DAT screenshots must retain posted rates rather than substitute market estimates.
       for (const load of recognizedLoads) {
-        if (!isDatImport && !(Number(load.rateInput) > 0)) {
+        // Nolan posts at the load board's own rate: never a DAT rate (Daniel, 2026-11-06).
+        if (!isDatImport && !isNolanCustomer(brokerName) && !(Number(load.rateInput) > 0)) {
           const datRateInfo = await fetchDatRateForImport(load, brokerName, laneRates);
           if (datRateInfo.rateInput) {
             load.rateInput = datRateInfo.rateInput;
@@ -6790,6 +7133,7 @@ export default function App({ sharing = null } = {}) {
       setCustomerOrdersMap(nextOrders);
       setSelectedOrder(replacement.processedLoads[0]);
       setSelectedIds(getImportedLoadSelection(brokerName, replacement.processedLoads));
+      showImportedList();
       setFilter(replacement.usesScreenshotStatus ? 'ALL' : 'OPEN');
 
       const unreadableIds = isChImport ? 0 : importedLoads.filter(order => order.notes).length;
@@ -6941,7 +7285,9 @@ export default function App({ sharing = null } = {}) {
       });
       setSelectedOrder(current => (current && String(current.id) === String(result.loadId)
         ? applyAssignResult(current, result) : current));
-      if (!result.ok) {
+      if (!result.ok && result.unconfirmed) {
+        alert(`Landstar Assign Capacity: load #${result.loadId} (truck ${result.truck}) - Landstar did not confirm.\n\n${result.message}\n\nIt may already be assigned: check the load on Landstar before assigning it again.`);
+      } else if (!result.ok) {
         alert(`Landstar Assign Capacity: load #${result.loadId} (truck ${result.truck}) was NOT assigned.\n\n${result.message}\n\nAssign it by hand on Landstar.`);
       }
     };
@@ -7012,8 +7358,18 @@ export default function App({ sharing = null } = {}) {
     setParamountDrafts(current => current.map(item => (item.id === draft.id ? { ...item, sending: true, error: '' } : item)));
     const isRxo = draft.kind === 'rxo';
     const isDriver = draft.kind === 'driver';
+    const isPaperwork = draft.kind === 'paperwork';
     try {
-      if (isDriver) {
+      if (isPaperwork) {
+        const sent = await callParamountEmail({
+          action: 'sendPaperwork', freightBill: draft.freightBill, since: draft.since,
+          orderNumber: draft.loadId, target: draft.target, text: draft.text
+        });
+        patchParamountLoad(draft.customer, draft.loadId, load => ({
+          ...load, paperworkDone: true, paperworkSentAt: new Date().toISOString(),
+          notes: [load.notes, `Paperwork sent to ${draft.target === 'rxo' ? 'RXO' : 'Paramount'}: ${(sent.files || draft.files || []).join(', ')}`].filter(Boolean).join('\n')
+        }));
+      } else if (isDriver) {
         await callParamountEmail({ action: 'driverSend', freightBill: draft.freightBill, text: draft.text });
         patchParamountLoad(draft.customer, draft.loadId, load => markDriverEmail(load, draft.driverKind));
       } else if (isRxo) {
@@ -7028,7 +7384,7 @@ export default function App({ sharing = null } = {}) {
         patchParamountLoad(draft.customer, draft.loadId, load => markParamountEmail(load, draft.kind));
       }
       if (!auto) {
-        const key = isDriver ? driverApprovedKey : isRxo ? rxoApprovedKey : paramountApprovedKey;
+        const key = isPaperwork ? paperworkApprovedKey : isDriver ? driverApprovedKey : isRxo ? rxoApprovedKey : paramountApprovedKey;
         try { localStorage.setItem(key, String(readApprovedCount(key) + 1)); } catch { /* counts again next time */ }
       }
       setParamountDrafts(current => current.filter(item => item.id !== draft.id));
@@ -7043,10 +7399,20 @@ export default function App({ sharing = null } = {}) {
   const skipParamountDraft = draft => {
     if (draft.kind === 'rxo') markRxoHandled(draft.messageId);
     else if (draft.kind === 'driverEta') { /* nothing to record */ }
+    else if (draft.kind === 'paperwork') patchParamountLoad(draft.customer, draft.loadId, load => ({ ...load, paperworkDone: true, notes: [load.notes, 'Paperwork not sent to the customer (skipped)'].filter(Boolean).join('\n') }));
     else if (draft.kind === 'driver') patchParamountLoad(draft.customer, draft.loadId, load => markDriverEmail(load, draft.driverKind, { skipped: true }));
     else patchParamountLoad(draft.customer, draft.loadId, load => markParamountEmail(load, draft.kind, { skipped: true }));
     setParamountDrafts(current => current.filter(item => item.id !== draft.id));
   };
+
+  // Booked Loads: bring the first card matching the search into view.
+  useEffect(() => {
+    if (view !== 'booked' || !searchQuery.trim() || typeof document === 'undefined') return undefined;
+    const timer = setTimeout(() => {
+      document.querySelector('[data-search-match="true"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [view, searchQuery]);
 
   // Paramount tracking emails: tells the bot which booked Paramount loads to read in
   // Clarity, turns its results into emails (approved by hand for the first few, then sent
@@ -7070,15 +7436,18 @@ export default function App({ sharing = null } = {}) {
       } catch { /* bot off: try again next minute */ }
     };
     const prepare = async (customer, load, kind, info) => {
-      const id = `${customer}|${load.id}|${kind}`;
+      // The daily location email has one id per day, so tomorrow's isn't blocked by today's.
+      const id = `${customer}|${load.id}|${kind}${kind === 'location' ? `|${new Date().toDateString()}` : ''}`;
       if (paramountBusy.has(id)) return;
       paramountBusy.add(id);
       try {
         const thread = await callParamountEmail({ action: 'thread', orderNumber: String(load.id) });
         if (cancelled) return;
         const text = buildParamountEmail(kind, load, info, { greetingName: greetingNameFrom(thread.to?.[0]), phone: paramountLatest.phone });
-        const draft = { id, customer, loadId: String(load.id), kind, text, to: thread.to || [], cc: thread.cc || [] };
-        if (paramountMaySendItself(kind)) {
+        // Loaded: automatic, except a short stop at the shipper, which Daniel confirms first.
+        const warning = kind === 'departed' ? getLoadedTimeWarning(info) : '';
+        const draft = { id, customer, loadId: String(load.id), kind, text, to: thread.to || [], cc: thread.cc || [], ...(warning ? { warning } : {}) };
+        if (kind === 'departed' ? !warning : paramountMaySendItself(kind)) {
           await sendParamountDraft(draft, { auto: true });
         } else {
           setParamountDrafts(current => (current.some(item => item.id === id) ? current : [...current, draft]));
@@ -7217,6 +7586,57 @@ export default function App({ sharing = null } = {}) {
         }
       }
     };
+    // Delivered loads still waiting on paperwork: when the driver's reply has the POD attached,
+    // the load is marked "paperwork received" and (Paramount / RXO) the files are forwarded on
+    // the customer's tracking email thread. The first few forwards wait for a Send click.
+    const checkPaperwork = async () => {
+      if (!canStartBotHere()) return;
+      for (const { customer, load } of getBookedLoads(paramountLatest.map)) {
+        const tracking = load.paramountTracking || {};
+        const deliveredAt = getDeliveredAt(load, tracking);
+        // Already sent to the customer once: never again (even if the load is put back on the list).
+        if (!deliveredAt || load.paperworkReceivedAt || load.paperworkSentAt || !tracking.freightBill) continue;
+        if (Date.now() - deliveredAt > (PAPERWORK_REMINDER_DAYS + 3) * 86400000) continue;
+        const id = `paperwork|${customer}|${load.id}`;
+        if (cancelled || paramountBusy.has(id)) continue;
+        paramountBusy.add(id);
+        try {
+          // From a day before delivery (scheduled or actual, whichever is earlier): drivers often send
+          // the POD before the load is marked delivered.
+          const scheduled = parseScheduleStart(load.deliveryTime);
+          const since = new Date(Math.min(deliveredAt, scheduled || deliveredAt) - 86400000).toISOString();
+          const { files = [] } = await callParamountEmail({ action: 'driverPaperwork', freightBill: tracking.freightBill, since });
+          if (cancelled || !files.length) { paramountBusy.delete(id); continue; }
+          const target = getPaperworkTarget(customer);
+          const receivedAt = files[files.length - 1].at;
+          const names = files.map(file => file.filename);
+          patchParamountLoad(customer, load.id, current => ({
+            ...current,
+            paperworkReceivedAt: receivedAt,
+            paperworkFiles: names,
+            paperworkSince: since,
+            paperworkDone: !target,
+            notes: [current.notes, `Paperwork received from the driver: ${names.join(', ')}${target ? '' : ' (no customer tracking email to send it to)'}`].filter(Boolean).join('\n')
+          }));
+          alertDriverReply(`Paperwork received · load #${load.id}`, `${names.join(', ')}${target ? ' · ready to send to the customer' : ''}`);
+          if (!target) continue;
+          let greetingName = '';
+          if (target === 'paramount') {
+            const thread = await callParamountEmail({ action: 'thread', orderNumber: String(load.id) }).catch(() => ({}));
+            greetingName = greetingNameFrom(thread.to?.[0]);
+          }
+          const draft = {
+            id, kind: 'paperwork', target, customer, loadId: String(load.id), freightBill: tracking.freightBill, since,
+            files: names, text: buildPaperworkEmail(load, tracking, { greetingName, phone: paramountLatest.phone })
+          };
+          if (readApprovedCount(paperworkApprovedKey) >= PARAMOUNT_AUTO_SEND_AFTER) await sendParamountDraft(draft, { auto: true });
+          else setParamountDrafts(current => (current.some(item => item.id === id) ? current : [...current, draft]));
+        } catch (error) {
+          console.warn(`Paperwork check for load ${load.id}: ${error.message}`);
+          paramountBusy.delete(id);
+        }
+      }
+    };
     // Driver replies in the BCO Load Detail threads: badge on the load, a note, and a pop-up.
     const checkDriverReplies = async () => {
       if (!canStartBotHere()) return;
@@ -7321,14 +7741,15 @@ export default function App({ sharing = null } = {}) {
     // First checks soon after the page opens (it reloads after every TMS update), then every 2 minutes.
     // Driver replies first (most urgent), soon after the page opens.
     const driverFirst = setTimeout(() => { void checkOtherDriverReplies(); void checkDriverReplies(); void checkDriverEmails(); void checkReplies(); }, 15 * 1000);
-    const driverTimer = setInterval(() => { void checkDriverEmails(); void checkDriverReplies(); void checkOtherDriverReplies(); }, 2 * 60 * 1000);
+    const driverTimer = setInterval(() => { void checkDriverEmails(); void checkDriverReplies(); void checkOtherDriverReplies(); void checkPaperwork(); }, 2 * 60 * 1000);
     const rxoFirst = setTimeout(() => { void checkRxoRequests(); }, 20 * 1000);
     const replyTimer = setInterval(() => { void checkReplies(); void checkRxoRequests(); }, 2 * 60 * 1000);
     window.addEventListener('landstar-tracking-result', onTrackingResult);
     const onMercuryGateResult = event => {
       const result = event.detail || {};
       patchParamountLoad(result.customer, result.loadId, current => applyMercuryGateResult(current, result));
-      if (!result.ok) alert(`MercuryGate: order #${result.loadId} was NOT fully filled in.\n\n${String(result.message || '').split('\n')[0]}\n\nPlease finish it by hand in MercuryGate.`);
+      // Only when the bot has given up (no pop-up for each retry while MercuryGate is down).
+      if (!result.ok && !result.retrying) alert(`MercuryGate: order #${result.loadId} was NOT fully filled in.\n\n${String(result.message || '').split('\n')[0]}\n\nPlease finish it by hand in MercuryGate.`);
     };
     window.addEventListener('landstar-mercurygate-result', onMercuryGateResult);
     return () => {
@@ -8108,6 +8529,10 @@ export default function App({ sharing = null } = {}) {
   };
 
   const isGlobalSearch = Boolean(searchQuery.trim());
+  // Booked loads matching the search that the current status tab hides (e.g. OPEN).
+  const hiddenBookedMatches = isGlobalSearch && filter !== 'ALL' && filter !== 'BOOKED'
+    ? getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery).filter(({ order }) => order.status === 'BOOKED').length
+    : 0;
   const statusOrderEntries = getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery)
     .filter(({ order: ord }) => filter === 'ALL' || ord.status === filter);
   const rateCountOrders = statusOrderEntries.filter(({ customer }) => customer === selectedBroker).map(({ order }) => order);
@@ -8120,6 +8545,7 @@ export default function App({ sharing = null } = {}) {
   const visibleOrderEntries = statusOrderEntries.filter(({ order: ord }) => {
     if (loadFilters.rate === 'with' && !hasLoadRate(ord)) return false;
     if (loadFilters.rate === 'without' && hasLoadRate(ord)) return false;
+    if (loadFilters.pickupDate && getPickupDay(ord) !== loadFilters.pickupDate) return false;
     if (loadFilters.pickupState && String(ord.origSt || '').trim().toUpperCase() !== loadFilters.pickupState) return false;
     if (loadFilters.deliveryState && String(ord.destSt || '').trim().toUpperCase() !== loadFilters.deliveryState) return false;
     if (hasMinMiles || hasMaxMiles) {
@@ -8129,12 +8555,11 @@ export default function App({ sharing = null } = {}) {
     }
     return true;
   }).sort(({ order: left }, { order: right }) => {
-    if (laneSort === 'pickup-asc' || laneSort === 'pickup-desc') {
+    if (!laneSort || laneSort === 'pickup-asc' || laneSort === 'pickup-desc') {
       const difference = getPickupSortValue(left) - getPickupSortValue(right);
       return (laneSort === 'pickup-desc' ? -difference : difference)
         || String(left.id).localeCompare(String(right.id), undefined, { numeric: true });
     }
-    if (!laneSort) return 0;
     const descending = laneSort.endsWith('-desc');
     const sortKey = laneSort.replace(/-asc$|-desc$/, '');
     const isOrigin = sortKey.startsWith('origin');
@@ -8525,6 +8950,15 @@ export default function App({ sharing = null } = {}) {
               Bulk selection and export apply to the selected customer only.
             </p>
           )}
+          {hiddenBookedMatches > 0 && view !== 'booked' && (
+            <button
+              type="button"
+              onClick={() => setView('booked')}
+              className="mb-2 w-full bg-yellow-400 hover:bg-yellow-300 text-black text-xs font-bold px-3 py-2 rounded-lg cursor-pointer text-left"
+            >
+              📦 {hiddenBookedMatches} booked load{hiddenBookedMatches === 1 ? '' : 's'} match{hiddenBookedMatches === 1 ? 'es' : ''} → show on Booked Loads
+            </button>
+          )}
 
           <div className="flex items-center justify-between text-[11px] text-gray-400 mb-2">
             <span>{isGlobalSearch ? `${visibleOrderEntries.length} matches · All customers` : `${filteredOrders.length} shown · ${orders.length} loads · ${entCount} ENT · ${bookedCount} booked`}</span>
@@ -8603,7 +9037,7 @@ export default function App({ sharing = null } = {}) {
               <button
                 type="button"
                 onClick={handleClearAllFilters}
-                disabled={!searchQuery.trim() && !loadFilters.rate && !loadFilters.minMiles && !loadFilters.maxMiles && !loadFilters.pickupState && !loadFilters.deliveryState && !laneSort}
+                disabled={!searchQuery.trim() && !loadFilters.rate && !loadFilters.minMiles && !loadFilters.maxMiles && !loadFilters.pickupState && !loadFilters.deliveryState && !loadFilters.pickupDate && !laneSort}
                 title="Clear the search box and all lane filters and sorting"
                 className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
               >
@@ -8630,23 +9064,35 @@ export default function App({ sharing = null } = {}) {
             ))}
           </div>
 
-          <div className="mt-2 flex gap-1.5">
-            <button
-              type="button"
-              onClick={() => setLaneSort(current => current === 'pickup-asc' ? 'pickup-desc' : 'pickup-asc')}
-              className={`flex-1 rounded border p-1.5 text-xs font-semibold ${laneSort.startsWith('pickup') ? 'bg-blue-600 border-blue-500 text-white' : 'bg-[#0b132b] border-[#1c2541] text-white hover:border-blue-500'}`}
-            >
-              {laneSort === 'pickup-asc' ? 'Pickup date: earliest first ↑' : laneSort === 'pickup-desc' ? 'Pickup date: latest first ↓' : 'Sort by pickup date'}
-            </button>
+          <div className="mt-2 flex items-center gap-1.5">
+            <label htmlFor="pickup-date-filter" className="text-[11px] text-gray-400 whitespace-nowrap">Pickup date:</label>
+            <input
+              id="pickup-date-filter"
+              type="date"
+              value={loadFilters.pickupDate}
+              onChange={e => { setLoadFilters(prev => ({ ...prev, pickupDate: e.target.value })); setSelectedIds([]); }}
+              className={`flex-1 min-w-0 rounded border p-1 text-xs text-white outline-none [color-scheme:dark] ${loadFilters.pickupDate ? 'bg-blue-600 border-blue-500' : 'bg-[#0b132b] border-[#1c2541] focus:border-blue-500'}`}
+              title="Show only loads picking up on this day"
+            />
+            {loadFilters.pickupDate && (
+              <button
+                type="button"
+                onClick={() => { setLoadFilters(prev => ({ ...prev, pickupDate: '' })); setSelectedIds([]); }}
+                className="text-[11px] text-white bg-slate-700 hover:bg-slate-600 rounded px-1.5 py-1 cursor-pointer whitespace-nowrap"
+              >
+                All dates
+              </button>
+            )}
           </div>
           <div className="mt-1.5">
             <select
               aria-label="Sort loads by city and state"
-              value={laneSort.startsWith('pickup') ? '' : laneSort}
+              value={laneSort === 'pickup-asc' ? '' : laneSort}
               onChange={e => setLaneSort(e.target.value)}
               className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1.5 text-xs text-white outline-none focus:border-blue-500"
             >
-              <option value="">Sort by city/state (default)</option>
+              <option value="">Sort: pickup date, earliest first (default)</option>
+              <option value="pickup-desc">Pickup date: latest first</option>
               <option value="origin-asc">Pickup city: A to Z</option>
               <option value="origin-desc">Pickup city: Z to A</option>
               <option value="destination-asc">Delivery city: A to Z</option>
@@ -9087,6 +9533,8 @@ export default function App({ sharing = null } = {}) {
             onBack={() => setView('loads')}
             onOpen={openBookedLoad}
             onUpdate={updateCustomerLoad}
+            searchQuery={searchQuery}
+            onSearch={setSearchQuery}
             emails={{
               drafts: paramountDrafts,
               replies: paramountReplies,

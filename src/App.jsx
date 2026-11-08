@@ -3872,6 +3872,28 @@ function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, o
                     {alert.level === 'late' ? '⚠ ' : '⏰ '}{alert.text}
                   </span>
                 )}
+                {(() => {
+                  const tracking = getTruckerToolsStatus(load, customer);
+                  if (!tracking) return null;
+                  const tone = tracking.level === 'ok' ? 'bg-emerald-700 text-white' : tracking.level === 'late' ? 'bg-red-600 text-white' : 'bg-amber-400 text-black';
+                  return (
+                    <>
+                      <span data-tracking-status={tracking.level} className={`text-[11px] px-2 py-0.5 rounded font-bold mt-1 max-w-[320px] text-right ${tone}`}>
+                        {tracking.level === 'ok' ? '✅ ' : tracking.level === 'late' ? '⚠ ' : '⏳ '}{tracking.text}
+                      </span>
+                      {!load.trackingStartedAt && (
+                        <button
+                          type="button"
+                          onClick={() => onUpdate(customer, load.id, markTrackingStarted(load, new Date().toISOString(), { byHand: true }))}
+                          title="The driver is tracking but no Trucker Tools email came: stop the reminder emails. Nothing is emailed."
+                          className="bg-slate-700 hover:bg-slate-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold cursor-pointer"
+                        >
+                          Mark tracking started
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
                 {delivered && (() => {
                   const paperwork = getPaperworkStatus(load, now);
                   const tone = paperwork.level === 'ok' ? 'bg-emerald-700 text-white' : paperwork.level === 'late' ? 'bg-red-600 text-white' : paperwork.level === 'due' ? 'bg-amber-400 text-black' : 'bg-slate-600 text-white';
@@ -4568,6 +4590,7 @@ const paramountResultSeen = new Map();
 const fuelEmailSeenKey = 'landstar_fuelEmailSeen';
 // Freight bills from recent BCO Load Detail emails (refreshed every few minutes).
 const bcoBillsCache = { at: 0, bills: [] };
+const truckerToolsCache = { at: 0, okAt: 0, starts: [] };
 // Driver replies must be seen right away: a Windows notification (even when the TMS tab is in the
 // background), a sound, and a blinking tab title until the TMS is looked at.
 function alertDriverReply(title, body, gmailThreadId) {
@@ -4776,7 +4799,8 @@ const driverEmailLabels = {
   pickedUp: 'Picked up: delivery ETA',
   deliveryMorning: 'Delivery day: good to go + ETA',
   pod: 'Delivered: send the POD',
-  podReminder: 'Paperwork reminder (due within 48 hours)'
+  podReminder: 'Paperwork reminder (due within 48 hours)',
+  trackingReminder: 'Reminder: start Trucker Tools tracking'
 };
 const PAPERWORK_DUE_HOURS = 48;
 const PAPERWORK_REMINDER_DAYS = 7; // daily reminders stop after a week
@@ -4888,6 +4912,11 @@ function buildDriverEmail(kind, load, tracking = {}, { phone = '', customer = ''
     return `Good morning ${first || ''}`.trim() + `!\n\n${notice}Just checking in on ${bill}, picking up today in ${pickupPlace}${appt(load.pickupTime)}. `
       + 'Are you good to go for pickup? What is your ETA to the shipper?' + sign;
   }
+  if (kind === 'trackingReminder') {
+    return `${hello}\n\nReminder: Trucker Tools has not confirmed tracking for ${bill} yet (customer load #${load.id}). `
+      + 'Please open the Trucker Tools app and start tracking for this load now. '
+      + 'If you did not get the Trucker Tools link, or the app is giving you trouble, please reply and let me know right away.' + sign;
+  }
   if (kind === 'pickedUp') {
     return `${hello}\n\nThank you for picking up ${bill} in ${pickupPlace}! What is your ETA for delivery in ${deliveryPlace}${appt(load.deliveryTime)}?` + sign;
   }
@@ -4917,9 +4946,72 @@ function markDriverEmail(load, kind, { at = new Date().toISOString(), skipped = 
   const line = `Driver email ${skipped ? 'skipped' : 'sent'}: ${driverEmailLabels[kind] || kind}`;
   return {
     ...load,
-    driverEmails: { ...(load.driverEmails || {}), [kind]: { at, ...(skipped ? { skipped: true } : {}) } },
+    driverEmails: {
+      ...(load.driverEmails || {}),
+      [kind]: {
+        at, ...(skipped ? { skipped: true } : {}),
+        // Tracking reminders repeat: count every one (sent or skipped) so they stay spaced out.
+        ...(kind === 'trackingReminder' ? { count: (load.driverEmails?.trackingReminder?.count || 0) + 1 } : {})
+      }
+    },
     notes: load.notes ? `${load.notes}\n${line}` : line
   };
+}
+
+// ---------- Trucker Tools tracking confirmation (Paramount) ----------
+// noreply@truckertools.com emails "Load Track has been started - Load Number: <order #>" once
+// the driver starts tracking. Until it comes, the driver gets a reminder in the BCO thread:
+// the first one 45 minutes after the first driver email, then every 90 minutes, only between
+// 7 AM and 9 PM, only from 24 hours before pickup until delivery, at most 6 reminders.
+const TRACKING_REMINDER_FIRST_MINUTES = 45;
+const TRACKING_REMINDER_EVERY_MINUTES = 90;
+const TRACKING_REMINDER_START_HOUR = 7;
+const TRACKING_REMINDER_END_HOUR = 21;
+const TRACKING_REMINDER_MAX = 6;
+
+// The time of the Trucker Tools "tracking started" email for this load (same load number), or ''.
+function findTruckerToolsStart(load, starts) {
+  const id = String(load?.id || '').trim();
+  if (!id) return '';
+  return (starts || []).filter(item => String(item.loadNumber) === id).map(item => item.at).sort()[0] || '';
+}
+
+function markTrackingStarted(load, at, { byHand = false } = {}) {
+  const line = byHand ? 'Trucker Tools tracking marked started by hand' : `Trucker Tools tracking started ${formatCheckTime(at)} (email from Trucker Tools)`;
+  return { ...load, trackingStartedAt: at, ...(byHand ? { trackingStartedByHand: true } : {}), notes: load.notes ? `${load.notes}\n${line}` : line };
+}
+
+// True when a "please start Trucker Tools" reminder should go to the driver now.
+function isTrackingReminderDue(load, customer, tracking = {}, now = Date.now()) {
+  if (!isParamountTrackingCustomer(customer) || load.status !== 'BOOKED' || !tracking.freightBill || load.trackingStartedAt) return false;
+  if (tracking.deliveredAt || load.trackingStage === 'Delivered') return false;
+  const sent = load.driverEmails || {};
+  // Waits for the first driver email (the one that asks to turn the app on).
+  const first = Object.entries(sent)
+    .filter(([kind, item]) => kind !== 'trackingReminder' && !item?.skipped && Date.parse(item?.at))
+    .map(([, item]) => Date.parse(item.at)).sort((a, b) => a - b)[0];
+  if (!first) return false;
+  const hour = new Date(now).getHours();
+  if (hour < TRACKING_REMINDER_START_HOUR || hour >= TRACKING_REMINDER_END_HOUR) return false;
+  const pickupAt = parseScheduleStart(load.pickupTime);
+  if (pickupAt && now < pickupAt - 24 * 3600000) return false;
+  const reminder = sent.trackingReminder;
+  if ((reminder?.count || 0) >= TRACKING_REMINDER_MAX) return false;
+  const last = Math.max(first, Date.parse(reminder?.at) || 0);
+  const wait = reminder ? TRACKING_REMINDER_EVERY_MINUTES : TRACKING_REMINDER_FIRST_MINUTES;
+  return now - last >= wait * 60000;
+}
+
+// The tracking line on a Paramount load's card, or null for other customers.
+function getTruckerToolsStatus(load, customer) {
+  if (!isParamountTrackingCustomer(customer)) return null;
+  if (load.trackingStartedAt) {
+    return { level: 'ok', text: `Tracking started ${formatCheckTime(load.trackingStartedAt)}${load.trackingStartedByHand ? ' (marked by hand)' : ''}` };
+  }
+  if (load.trackingStage === 'Delivered') return null;
+  const count = load.driverEmails?.trackingReminder?.count || 0;
+  if (count >= TRACKING_REMINDER_MAX) return { level: 'late', text: `No Trucker Tools tracking yet · ${count} reminders sent · call the driver` };
+  return { level: 'waiting', text: `Waiting for Trucker Tools tracking${count ? ` · reminder ${count} sent ${formatCheckTime(load.driverEmails.trackingReminder.at)}` : ''}` };
 }
 
 // Ctrl+V of a picture: which list it is. Para lists come from Heather in Google Chat:
@@ -7569,10 +7661,38 @@ export default function App({ sharing = null } = {}) {
     const checkDriverEmails = async () => {
       if (!canStartBotHere()) return;
       const now = Date.now();
+      // Paramount loads still waiting on the Trucker Tools "tracking started" email: look in Gmail
+      // (every 5 minutes) and mark the ones that started, so their reminders stop.
+      const waitingTracking = getBookedLoads(paramountLatest.map)
+        .filter(({ customer, load }) => isParamountTrackingCustomer(customer) && !load.trackingStartedAt && load.trackingStage !== 'Delivered');
+      if (waitingTracking.length && now - truckerToolsCache.at > 5 * 60 * 1000) {
+        truckerToolsCache.at = now;
+        try {
+          truckerToolsCache.starts = (await callParamountEmail({ action: 'truckerToolsStarts' })).starts || [];
+          truckerToolsCache.okAt = Date.now();
+        } catch (error) {
+          console.warn(`Could not check the Trucker Tools emails: ${error.message}`);
+        }
+      }
+      const startedNow = new Set();
+      for (const { customer, load } of waitingTracking) {
+        const startedAt = findTruckerToolsStart(load, truckerToolsCache.starts);
+        if (!startedAt) continue;
+        startedNow.add(`${customer}|${load.id}`);
+        patchParamountLoad(customer, load.id, current => (current.trackingStartedAt ? current : markTrackingStarted(current, startedAt)));
+        setParamountDrafts(current => current.filter(item => !(item.driverKind === 'trackingReminder' && item.customer === customer && item.loadId === String(load.id))));
+      }
+      // Reminders only go out when the Gmail check worked lately (never on a stale "not started").
+      const trackingCheckFresh = Date.now() - (truckerToolsCache.okAt || 0) < 15 * 60 * 1000;
       for (const { customer, load } of getBookedLoads(paramountLatest.map)) {
         const tracking = load.paramountTracking || {};
-        for (const driverKind of getDueDriverEmails(load, tracking, now)) {
-          const id = `driver|${customer}|${load.id}|${driverKind}`;
+        let dueKinds = getDueDriverEmails(load, tracking, now);
+        if (!dueKinds.length && trackingCheckFresh && !startedNow.has(`${customer}|${load.id}`) && isTrackingReminderDue(load, customer, tracking, now)) {
+          dueKinds = ['trackingReminder'];
+        }
+        for (const driverKind of dueKinds) {
+          const reminderNumber = driverKind === 'trackingReminder' ? `|${(load.driverEmails?.trackingReminder?.count || 0) + 1}` : '';
+          const id = `driver|${customer}|${load.id}|${driverKind}${reminderNumber}`;
           if (cancelled || paramountBusy.has(id)) continue;
           paramountBusy.add(id);
           try {

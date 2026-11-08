@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildDriverRecipients, buildReplyAll, buildReplyMessage, findDriverReplies, findNewReplies, findOpenRxoRequests, parseBcoSubject, isRateConfirmationSubject, parseRxoRequestSubject, splitAddresses } from './_lib/gmailThread.js';
+import { buildDriverRecipients, buildReplyAll, buildReplyMessage, findDriverReplies, findNewReplies, findOpenRxoRequests, parseBcoSubject, parseTruckerToolsSubject, isRateConfirmationSubject, parseRxoRequestSubject, splitAddresses } from './_lib/gmailThread.js';
 
 const msg = (id, internalDate, headers) => ({
   id, internalDate: String(internalDate), snippet: `text ${id}`,
@@ -142,4 +142,11 @@ test('every reply on an RXO update request copies Ivan Lopez, once', async () =>
   ] };
   const [request] = findOpenRxoRequests([thread], me);
   assert.ok(request.cc.includes('ivan.lopez@landstarmail.com'), 'shown on the draft too');
+});
+
+test('Trucker Tools "tracking started" subject gives the Paramount load number', () => {
+  assert.equal(parseTruckerToolsSubject('TT App - Load Track has been started - Load Number: 2282980'), '2282980');
+  assert.equal(parseTruckerToolsSubject('Fwd: TT App - Load Track has been started - Load Number: #2283600'), '2283600');
+  assert.equal(parseTruckerToolsSubject('TT App - Load Track has been stopped - Load Number: 2282980'), '');
+  assert.equal(parseTruckerToolsSubject('BCO Load Detail for load: - 4574648'), '');
 });

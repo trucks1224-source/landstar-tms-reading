@@ -28,7 +28,7 @@ export {
   getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getLoadedTimeWarning, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
 };`, { loader: 'jsx', format: 'cjs' });
 // Test loads are dated October 2026, so "today" inside the TMS code is 10/1/2026:
@@ -2910,4 +2910,56 @@ test('driver texts: Google Voice link for the number and a short message for the
   assert.match(pod, /Please send the signed POD for load 4590295 \(Knightdale, NC\) today.*within 48 hours.*charge back/);
   assert.ok(pod.length < 320, 'short enough for a text');
   assert.match(policy.buildDriverText({ ...base, trackingStage: 'Delivered', paperworkReceivedAt: 'x' }, para), /Thank you for delivering/);
+});
+
+test('Trucker Tools: the "tracking started" email marks the load, reminders until then (daytime, near pickup, max 6)', () => {
+  const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
+  const iso = time => new Date(time).toISOString();
+  const para = 'Para 1522166 - ATZ';
+  const booked = {
+    ...load, id: '2282980', status: 'BOOKED', truck: '579800', driver: 'JOHN SMITH', origCity: 'KEARNY', origSt: 'NJ',
+    destCity: 'KNIGHTDALE', destSt: 'NC', pickupTime: '11/07/2026 0800 - 1500', deliveryTime: '11/09/2026 0800 - 1500',
+    bookedAt: iso(at(6, 15)), notes: ''
+  };
+  const tracking = { freightBill: '4574700' };
+  const due = (l, now, customer = para, t = tracking) => policy.isTrackingReminderDue(l, customer, t, now);
+  assert.equal(due(booked, at(6, 18)), false, 'no driver email sent yet');
+  const dispatched = policy.markDriverEmail(booked, 'dispatch', { at: iso(at(6, 17)) });
+  assert.equal(due(dispatched, at(6, 17, 30)), false, 'too soon after the first email');
+  assert.equal(due(dispatched, at(6, 17, 45)), true, '45 minutes after the first email');
+  assert.equal(due(dispatched, at(6, 17, 45), 'R X O 2429200 - ATZ'), false, 'Paramount only');
+  assert.equal(due(dispatched, at(6, 17, 45), 'Para 1522166 - ATZ H'), true, 'hazmat account too');
+  assert.equal(due(dispatched, at(6, 21, 30)), false, 'never overnight');
+  assert.equal(due(dispatched, at(7, 6, 30)), false, 'not before 7 AM');
+  assert.equal(due(dispatched, at(7, 7)), true);
+  assert.equal(due({ ...dispatched, pickupTime: '11/10/2026 0800 - 1500' }, at(6, 18)), false, 'pickup more than a day away');
+  assert.equal(due({ ...dispatched, trackingStage: 'Delivered' }, at(7, 9)), false, 'delivered');
+  assert.equal(due(dispatched, at(7, 9), para, {}), false, 'no BCO thread to reply in');
+
+  let reminded = policy.markDriverEmail(dispatched, 'trackingReminder', { at: iso(at(6, 17, 46)) });
+  assert.equal(reminded.driverEmails.trackingReminder.count, 1);
+  assert.equal(due(reminded, at(6, 19)), false, 'next one 90 minutes later');
+  assert.equal(due(reminded, at(6, 19, 16)), true);
+  assert.match(policy.getTruckerToolsStatus(reminded, para).text, /^Waiting for Trucker Tools tracking · reminder 1 sent/);
+  for (let i = 0; i < 5; i += 1) reminded = policy.markDriverEmail(reminded, 'trackingReminder', { at: iso(at(7, 8 + i * 2)) });
+  assert.equal(reminded.driverEmails.trackingReminder.count, 6);
+  assert.equal(due(reminded, at(7, 20)), false, 'stops after 6 reminders');
+  assert.equal(policy.getTruckerToolsStatus(reminded, para).level, 'late');
+  assert.match(policy.getTruckerToolsStatus(reminded, para).text, /call the driver/);
+
+  const text = policy.buildDriverEmail('trackingReminder', dispatched, tracking, { customer: para });
+  assert.match(text, /^Hi John,\n\n\*\*\* IMPORTANT: PLEASE TURN ON THE TRUCKER TOOLS TRACKING APP NOW \*\*\*/);
+  assert.match(text, /Trucker Tools has not confirmed tracking for load 4574700 yet \(customer load #2282980\)/);
+
+  const starts = [{ loadNumber: '2282980', at: '2026-11-06T23:51:00.000Z' }, { loadNumber: '2283600', at: '2026-11-06T20:00:00.000Z' }];
+  assert.equal(policy.findTruckerToolsStart(dispatched, starts), '2026-11-06T23:51:00.000Z');
+  assert.equal(policy.findTruckerToolsStart({ ...dispatched, id: '228298' }, starts), '', 'exact load number only');
+  const started = policy.markTrackingStarted(dispatched, '2026-11-06T23:51:00.000Z');
+  assert.equal(due(started, at(7, 9)), false, 'tracking started: no more reminders');
+  const status = policy.getTruckerToolsStatus(started, para);
+  assert.equal(status.level, 'ok');
+  assert.match(status.text, /^Tracking started 11\/06, \d{1,2}:51 [AP]M$/);
+  assert.match(started.notes, /Trucker Tools tracking started/);
+  assert.match(policy.getTruckerToolsStatus(policy.markTrackingStarted(dispatched, iso(at(7, 9)), { byHand: true }), para).text, /marked by hand/);
+  assert.equal(policy.getTruckerToolsStatus(dispatched, 'R X O 2429200 - ATZ'), null);
 });

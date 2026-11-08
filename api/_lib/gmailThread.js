@@ -439,6 +439,28 @@ async function listBcoBills() {
   return { status: 200, body: { bills: bills.slice(0, 20) } };
 }
 
+// ---------- Trucker Tools "Load Track has been started" (Paramount) ----------
+// noreply@truckertools.com sends "TT App - Load Track has been started - Load Number: 2282980"
+// once the driver starts tracking in the app. The load number is Paramount's order number.
+export function parseTruckerToolsSubject(subject) {
+  return String(subject || '').match(/Load Track has been started\b\D*?Load Number:?\s*#?\s*(\d{5,})/i)?.[1] || '';
+}
+
+// Every "tracking started" email of the last two weeks: [{ loadNumber, at }], the first one per load.
+async function listTruckerToolsStarts() {
+  const { accessToken } = await connect();
+  const query = 'from:noreply@truckertools.com subject:"Load Track has been started" newer_than:14d';
+  const list = await gmailJson(accessToken, `${GMAIL}/messages?q=${encodeURIComponent(query)}&maxResults=60`);
+  const starts = {};
+  for (const { id } of list.messages || []) {
+    const message = await gmailJson(accessToken, `${GMAIL}/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=Subject`);
+    const loadNumber = parseTruckerToolsSubject(header(message, 'Subject'));
+    const at = new Date(Number(message.internalDate)).toISOString();
+    if (loadNumber && (!starts[loadNumber] || at < starts[loadNumber].at)) starts[loadNumber] = { loadNumber, at, messageId: message.id };
+  }
+  return { status: 200, body: { starts: Object.values(starts) } };
+}
+
 // ---------- Weekly fuel surcharge email ----------
 // "Fw: 11/3/2026   East .86  Midwest .88   West 1.03 New England .89" (Ryan Huber, forwarded
 // by Jorge Farinhas). Returns the newest one's subject and text; the TMS reads the rates.
@@ -468,6 +490,7 @@ export async function handleParamountEmail(request = {}) {
   if (action === 'driverPaperwork' || action === 'sendPaperwork') return handlePaperwork(request);
   if (action === 'fuelRates') return findFuelEmail();
   if (action === 'bcoBills') return listBcoBills();
+  if (action === 'truckerToolsStarts') return listTruckerToolsStarts();
   const order = String(orderNumber || '').trim();
   if (!/^\d{4,}$/.test(order)) return { status: 400, body: { error: 'A Paramount order number is needed.' } };
   const { accessToken, myEmail } = await connect();

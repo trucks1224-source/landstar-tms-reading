@@ -3759,9 +3759,15 @@ function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, o
   const activeCount = entries.filter(({ load }) => load.trackingStage !== 'Delivered').length;
   const alertCount = entries.filter(({ load }) => getTrackingAlert(load, now)).length;
   const phoneDigits = value => String(value || '').replace(/[^\d+]/g, '');
+  // Phone: this page sits under the load list, so jump down to it once when it opens.
+  const jumpToPageOnPhone = node => {
+    if (!node || node.dataset.jumped || !isPhoneScreen()) return;
+    node.dataset.jumped = 'true';
+    node.scrollIntoView?.({ block: 'start' });
+  };
   return (
-    <div className="flex flex-col gap-4" aria-label="Booked Loads">
-      <div className="flex flex-wrap items-center justify-between gap-3 bg-[#161f36] px-4 py-3 rounded-lg border border-purple-500/60">
+    <div ref={jumpToPageOnPhone} className="flex flex-col gap-4" aria-label="Booked Loads">
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-[#161f36] px-3 sm:px-4 py-3 rounded-lg border border-purple-500/60">
         <div>
           <h2 className="text-lg font-bold text-purple-200">📦 Booked Loads</h2>
           <p className="text-xs text-gray-300">
@@ -3769,7 +3775,7 @@ function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, o
           </p>
         </div>
         {onSearch && (
-          <div className="flex items-center gap-2 flex-1 min-w-[220px] max-w-md">
+          <div className="flex items-center gap-2 flex-1 min-w-[200px] max-w-md">
             <input
               type="text"
               value={searchQuery}
@@ -3820,7 +3826,7 @@ function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, o
             key={`${customer}|${load.id}`}
             data-booked-load={load.id}
             data-search-match={matched ? 'true' : undefined}
-            className={`rounded-lg border p-4 bg-[#121829] ${matched ? 'border-yellow-300 ring-4 ring-yellow-300/80 shadow-[0_0_24px_rgba(253,224,71,0.45)]' : alert?.level === 'late' ? 'border-red-500' : alert?.level === 'due' ? 'border-amber-400' : delivered ? 'border-[#1c2541] opacity-60' : 'border-purple-500/50'}`}
+            className={`tms-booked-card rounded-lg border p-3 sm:p-4 bg-[#121829] ${matched ? 'border-yellow-300 ring-4 ring-yellow-300/80 shadow-[0_0_24px_rgba(253,224,71,0.45)]' : alert?.level === 'late' ? 'border-red-500' : alert?.level === 'due' ? 'border-amber-400' : delivered ? 'border-[#1c2541] opacity-60' : 'border-purple-500/50'}`}
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
@@ -3838,7 +3844,7 @@ function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, o
                 <p className="font-semibold">🚚 {load.driver || 'No driver'}</p>
                 <p className="text-[11px] text-gray-300">Truck {load.truck || '—'} · Trailer {load.trailer || '—'}{load.pickupEta ? ` · PU ETA ${load.pickupEta}` : ''}{load.emptyLocation ? ` · Empty ${load.emptyLocation}` : ''}</p>
                 {phone ? (
-                  <p className="flex gap-2 mt-1">
+                  <p className="tms-booked-actions flex flex-wrap gap-2 mt-1">
                     <a href={`tel:${phone}`} className="bg-emerald-700 hover:bg-emerald-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold">📞 Call {load.driverPhone}</a>
                     <button
                       type="button"
@@ -3851,7 +3857,7 @@ function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, o
                   </p>
                 ) : <p className="text-[11px] text-amber-300 mt-1">No driver phone on file</p>}
               </div>
-              <div className="flex flex-col items-end gap-1">
+              <div className="tms-booked-side flex flex-col items-start sm:items-end gap-1 w-full sm:w-auto">
                 <label className="text-[11px] text-gray-400" htmlFor={`stage-${customer}-${load.id}`}>Stage</label>
                 <select
                   id={`stage-${customer}-${load.id}`}
@@ -3890,7 +3896,7 @@ function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, o
                     </>
                   );
                 })()}
-                <div className="flex gap-1 mt-1">
+                <div className="flex flex-wrap gap-1 mt-1">
                   <button type="button" onClick={() => onOpen(customer, load.id)} title="Open this load to change the rate, dates or driver" className="bg-slate-700 hover:bg-slate-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold cursor-pointer">
                     ✏️ Edit load
                   </button>
@@ -3913,7 +3919,7 @@ function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, o
               />
             )}
             <form
-              className="flex gap-2 mt-3"
+              className="tms-checkcall flex gap-2 mt-3"
               onSubmit={event => {
                 event.preventDefault();
                 const form = event.currentTarget;
@@ -4176,7 +4182,10 @@ const truckFlashMs = 6000;
 // Pinned (📌, the default): the drawer stays open while switching customers and using the page,
 // and is open again after a reload. Unpinned: picking a customer closes it, as before.
 const toolsPinnedKey = 'landstar_toolsPinned';
+// On a phone the drawer covers the whole screen, so it never stays pinned open there.
+const isPhoneScreen = () => typeof window !== 'undefined' && Boolean(window.matchMedia?.('(max-width: 767px)').matches);
 const readToolsPinned = () => {
+  if (isPhoneScreen()) return false;
   try { return localStorage.getItem(toolsPinnedKey) !== 'false'; } catch { return true; }
 };
 
@@ -8590,6 +8599,10 @@ export default function App({ sharing = null } = {}) {
       setExportErrorIds([]);
     }
     setSelectedOrder(order);
+    // Phone: the load details sit under the list, so jump down to them.
+    if (isPhoneScreen()) {
+      setTimeout(() => document.querySelector('.tms-workspace')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+    }
   };
 
   const handleFieldChange = (field, value) => {
@@ -8676,10 +8689,10 @@ export default function App({ sharing = null } = {}) {
   };
 
   return (
-    <div className="tms-shell flex h-screen text-white overflow-hidden font-sans">
+    <div className="tms-shell flex flex-col md:flex-row min-h-screen md:h-screen text-white overflow-x-hidden md:overflow-hidden font-sans">
       <TruckLights />
       {/* Left Sidebar - Order List */}
-      <div className="tms-sidebar w-96 border-r border-[#1c2541] flex flex-col">
+      <div className="tms-sidebar w-full md:w-96 border-b md:border-b-0 md:border-r border-[#1c2541] flex flex-col">
         <div className="tms-sidebar-header p-3 border-b border-[#1c2541]">
           <ToolsDrawer selected={selectedBroker} count={brokers.length}>
           <div className="tms-top-controls flex flex-col items-start gap-2 mb-2">
@@ -9157,7 +9170,7 @@ export default function App({ sharing = null } = {}) {
           <span className="tms-list-bar-title" title={selectedBroker}>{selectedBroker}</span>
           <ListFocusToggle />
         </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-2">
+        <div className="tms-load-list flex-1 overflow-y-auto p-2 space-y-2">
           {visibleOrderEntries.length === 0 ? (
             <div className="text-center text-gray-500 text-xs py-10">{isGlobalSearch ? 'No matching loads across all customers with the current filters.' : `No loads found for ${selectedBroker}. Click "📂 Import Excel" above!`}</div>
           ) : (
@@ -9231,7 +9244,7 @@ export default function App({ sharing = null } = {}) {
       </div>
 
       {/* Main Content Area */}
-      <div className="tms-workspace flex-1 flex flex-col overflow-y-auto p-6">
+      <div className="tms-workspace flex-1 flex flex-col overflow-y-auto p-3 md:p-6">
         <div className="tms-brand">
           <div className="tms-brand-logos">
               <div className="tms-landstar-mark" role="img" aria-label="Landstar">
@@ -9353,7 +9366,7 @@ export default function App({ sharing = null } = {}) {
         </div>
         {profileDraft && (
           <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60" role="dialog" aria-label="My Settings">
-            <form onSubmit={handleSaveProfile} className="w-96 bg-[#121829] border border-[#1c2541] rounded-lg p-5 space-y-3">
+            <form onSubmit={handleSaveProfile} className="w-96 max-w-full bg-[#121829] border border-[#1c2541] rounded-lg p-5 space-y-3">
               <h2 className="text-sm font-bold text-gray-100">⚙ My Settings</h2>
               <p className="text-[11px] text-gray-400">Used on your exports. Each teammate has their own.</p>
               {[
@@ -9447,7 +9460,7 @@ export default function App({ sharing = null } = {}) {
           );
           return (
             <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60" role="dialog" aria-label="Share customer">
-              <div className="w-96 max-h-[80vh] overflow-y-auto bg-[#121829] border border-[#1c2541] rounded-lg p-5 space-y-3">
+              <div className="w-96 max-w-full max-h-[80vh] overflow-y-auto bg-[#121829] border border-[#1c2541] rounded-lg p-5 space-y-3">
                 <h2 className="text-sm font-bold text-gray-100">🤝 Share “{shareCustomerName}”</h2>
                 {!shareInfo && (
                   <>
@@ -9583,7 +9596,7 @@ export default function App({ sharing = null } = {}) {
             </div>
 
             <div className="tms-load-details space-y-4 bg-[#161f36]/40 p-5 rounded-xl border border-[#1c2541]">
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">ORDER #</label>
                   <div className="flex gap-1">
@@ -9615,7 +9628,7 @@ export default function App({ sharing = null } = {}) {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">Brokerable (true / false)</label>
                   <input type="text" value={selectedOrder.brokerable || 'false'} onChange={(e) => handleFieldChange('brokerable', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono" placeholder="false" />
@@ -9650,7 +9663,7 @@ export default function App({ sharing = null } = {}) {
                   {renderSchedulePicker('pickupTime')}
                 </div>
 
-                <div className="grid grid-cols-3 gap-2 mb-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
                   {renderCopyableField('Origin City', 'origCity')}
                   {renderCopyableField('Origin State', 'origSt')}
                   {renderCopyableField('Origin ZIP', 'origZip')}
@@ -9686,13 +9699,13 @@ export default function App({ sharing = null } = {}) {
                   {renderSchedulePicker('deliveryTime')}
                 </div>
 
-                <div className="grid grid-cols-3 gap-2 mb-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
                   {renderCopyableField('Destination City', 'destCity')}
                   {renderCopyableField('Destination State', 'destSt')}
                   {renderCopyableField('Destination ZIP', 'destZip')}
                 </div>
 
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <div>
                     <label className="text-xs text-gray-400 block mb-1">Miles</label>
                     <div className="flex space-x-2">
@@ -9946,7 +9959,7 @@ export default function App({ sharing = null } = {}) {
                     <option key={entry.driver} value={entry.driverPhone} label={entry.driver} />
                   ))}
                 </datalist>
-                <div className="grid grid-cols-2 gap-4 mb-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3">
                   <div>
                     <label htmlFor="assignment-driver" className="text-xs text-gray-400 block mb-1">Driver Name</label>
                     <div className="flex gap-1">
@@ -9962,7 +9975,7 @@ export default function App({ sharing = null } = {}) {
                     </div>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label htmlFor="assignment-trailer" className="text-xs text-gray-400 block mb-1">Trailer Number</label>
                     <div className="flex gap-1">

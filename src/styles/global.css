@@ -1119,3 +1119,128 @@ body.tms-drawer-open .tms-sidebar {
   border-color: #22d3ee;
   box-shadow: 0 -3px 0 #22d3ee, 0 0 14px rgba(34, 211, 238, 0.45);
 }
+
+/* ---- Phone layout (home-screen app). Desktop (768px and wider) is unchanged. ---- */
+@media (max-width: 767px) {
+  html, body {
+    overflow-x: hidden;
+  }
+
+  .tms-shell {
+    background-size: auto, auto, 44px 44px, 44px 44px, auto, auto, cover;
+  }
+
+  /* Load list on top, load details below; the whole page scrolls */
+  .tms-sidebar {
+    flex-shrink: 0;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  }
+
+  .tms-load-list {
+    flex: none;
+    max-height: 55vh;
+  }
+
+  .tms-workspace {
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .tms-brand {
+    gap: 8px;
+    padding: 8px 10px;
+    letter-spacing: 0.12em;
+  }
+
+  .tms-brand .tms-brand-title {
+    font-size: 14px;
+    letter-spacing: 0.08em;
+  }
+
+  .tms-brand-name {
+    margin-left: 0;
+    align-items: flex-start;
+    text-align: left;
+    width: 100%;
+  }
+
+  .tms-brand-actions {
+    flex-wrap: wrap;
+    margin-left: 0;
+  }
+
+  /* Finger-size buttons and fields; 16px text stops the phone from zooming in */
+  .tms-shell button,
+  .tms-shell select,
+  .tms-shell a[href^='tel:'],
+  .tms-booked-card a {
+    min-height: 40px;
+  }
+
+  .tms-shell input:not([type='checkbox']):not([type='file']):not([type='radio']),
+  .tms-shell select,
+  .tms-shell textarea {
+    font-size: 16px;
+    min-height: 40px;
+  }
+
+  .tms-shell input[type='checkbox'] {
+    width: 20px;
+    height: 20px;
+  }
+
+  .tms-shell .tms-load-card {
+    padding: 12px;
+  }
+
+  .tms-shell .tms-drawer-panel {
+    width: 100vw;
+  }
+
+  .tms-shell .tms-drawer-close {
+    min-width: 44px;
+  }
+
+  /* Booked Loads cards: one column, big Call / Text / stage / check-call */
+  .tms-booked-card > div:first-child > div {
+    width: 100%;
+  }
+
+  .tms-booked-actions a,
+  .tms-booked-actions button {
+    flex: 1 1 140px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px !important;
+    padding: 8px 12px !important;
+  }
+
+  .tms-booked-side select {
+    width: 100%;
+  }
+
+  .tms-booked-side span {
+    max-width: 100%;
+    text-align: left;
+    font-size: 12px;
+  }
+
+  .tms-booked-side button {
+    font-size: 13px !important;
+    padding: 6px 12px !important;
+  }
+
+  .tms-checkcall {
+    flex-wrap: wrap;
+  }
+
+  .tms-checkcall input {
+    flex: 1 1 100%;
+  }
+
+  .tms-checkcall button {
+    flex: 1 1 100%;
+    font-size: 14px;
+  }
+}

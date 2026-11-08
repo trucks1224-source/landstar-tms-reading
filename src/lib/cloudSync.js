@@ -21,6 +21,43 @@ const pushDelayMs = 800;
 const pageSize = 1000;
 // The browser's own setItem, even when an earlier copy of this module already patched it.
 const nativeSetItem = Storage.prototype.setItem.__native || Storage.prototype.setItem;
+const nativeGetItem = Storage.prototype.getItem.__native || Storage.prototype.getItem;
+const nativeRemoveItem = Storage.prototype.removeItem.__native || Storage.prototype.removeItem;
+
+// Phones let a website keep only about 5 MB, and a big workspace (long load lists) doesn't fit.
+// A value that doesn't fit is kept in memory instead: the app reads it as usual and it still
+// saves to the cloud, so after a reload it comes back from there. The old copy in the browser
+// is left alone (never deleted).
+const memoryOverlay = window.__landstarStorageOverlay || (window.__landstarStorageOverlay = new Map());
+const isQuotaError = error => Boolean(error) && (error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+  || error.code === 22 || error.code === 1014 || /quota/i.test(String(error.message || '')));
+
+function safeSetItem(storage, key, value) {
+  try {
+    nativeSetItem.call(storage, key, value);
+    if (storage === window.localStorage) memoryOverlay.delete(key);
+  } catch (error) {
+    if (storage !== window.localStorage || !isQuotaError(error)) throw error;
+    if (!memoryOverlay.has(key)) console.warn(`Browser storage is full: "${key}" is kept in memory and saved to the cloud only.`);
+    memoryOverlay.set(key, String(value));
+  }
+}
+
+if (!Storage.prototype.getItem.__overlay) {
+  const getItem = function getItem(key) {
+    if (this === window.localStorage && memoryOverlay.has(key)) return memoryOverlay.get(key);
+    return nativeGetItem.call(this, key);
+  };
+  getItem.__overlay = true;
+  getItem.__native = nativeGetItem;
+  Storage.prototype.getItem = getItem;
+  const removeItem = function removeItem(key) {
+    if (this === window.localStorage) memoryOverlay.delete(key);
+    return nativeRemoveItem.call(this, key);
+  };
+  removeItem.__native = nativeRemoveItem;
+  Storage.prototype.removeItem = removeItem;
+}
 // Shared by every copy of this module, so the localStorage patch always reaches the live one.
 const mirrorOwner = window.__landstarCloudMirror || (window.__landstarCloudMirror = {});
 
@@ -78,7 +115,7 @@ function rateCustomer(rateKey) {
 
 function writeLocal(key, value) {
   if (value === null) window.localStorage.removeItem(key);
-  else nativeSetItem.call(window.localStorage, key, value);
+  else safeSetItem(window.localStorage, key, value);
 }
 
 function notifyData() {
@@ -266,7 +303,7 @@ function installMirror() {
   mirrorOwner.handleLocalWrite = handleLocalWrite;
   if (Storage.prototype.setItem.__cloudMirror) return;
   const patched = function setItem(key, value) {
-    nativeSetItem.call(this, key, value);
+    safeSetItem(this, key, value);
     if (this === window.localStorage && syncedKeys.includes(key)) mirrorOwner.handleLocalWrite?.(key, String(value));
   };
   patched.__cloudMirror = true;

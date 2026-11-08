@@ -12,11 +12,18 @@ ${moduleCode}
 })(module, module.exports);`;
 
 // Loads cloudSync.js against an in-memory browser and app_data table.
-function setup(appData) {
+function setup(appData, { maxValueLength = Infinity } = {}) {
   const store = new Map();
   class Storage {
     getItem(key) { return store.has(key) ? store.get(key) : null; }
-    setItem(key, value) { store.set(key, String(value)); }
+    setItem(key, value) {
+      if (String(value).length > maxValueLength) {
+        const error = new Error('The quota has been exceeded.');
+        error.name = 'QuotaExceededError';
+        throw error;
+      }
+      store.set(key, String(value));
+    }
     removeItem(key) { store.delete(key); }
   }
   const localStorage = new Storage();
@@ -124,4 +131,21 @@ test('after the sync code is reloaded in place, saves still reach the cloud', as
   localStorage.setItem(ordersKey, '{"RXO":[{"id":"1"}]}');
   await fresh.flushCloudSyncNow();
   assert.equal(appData[0].value, '{"RXO":[{"id":"1"}]}');
+});
+
+test('phone storage full (about 5 MB): the workspace still loads, the app reads it, and saves still reach the cloud', async () => {
+  const big = `{"Para":[${'{"id":"1"},'.repeat(20)}{"id":"2"}]}`;
+  const appData = [{ user_id: 'u1', key: ordersKey, value: big }];
+  const { sync, localStorage } = setup(appData, { maxValueLength: 100 });
+  await sync.startCloudSync('u1');
+  assert.equal(localStorage.getItem(ordersKey), big, 'kept in memory when the browser has no room');
+  const bigger = big.replace('{"id":"2"}', '{"id":"2"},{"id":"3"}');
+  localStorage.setItem(ordersKey, bigger);
+  assert.equal(localStorage.getItem(ordersKey), bigger);
+  await sync.flushCloudSyncNow();
+  assert.equal(appData[0].value, bigger, 'saved to the cloud');
+  localStorage.setItem(ordersKey, '{"RXO":[]}');
+  assert.equal(localStorage.getItem(ordersKey), '{"RXO":[]}', 'small again: back in browser storage');
+  localStorage.removeItem(ordersKey);
+  assert.equal(localStorage.getItem(ordersKey), null);
 });

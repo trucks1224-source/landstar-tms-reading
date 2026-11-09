@@ -14,11 +14,12 @@ process.env.BOT_ROLE = 'helper'; // before status-server is loaded: no server, o
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
-const { setStatus, readAssignQueue, readTrackingWatch, readTrackingBills, reportTrackingResults, readMercuryGateQueue, HELPER_STATUS_FILE } = require('./status-server');
+const { setStatus, readAssignQueue, readTrackingWatch, readTrackingBills, reportTrackingResults, readMercuryGateQueue, reportDuplicateBills, HELPER_STATUS_FILE } = require('./status-server');
 const { openBoard } = require('./rate-check');
 const { processAssignQueue } = require('./assign');
 const { checkTracking } = require('./clarity');
 const { runNextMercuryGateJob, hasDueMercuryGateJob } = require('./mercurygate-job');
+const { openMercuryGate, findRoutes } = require('./mercurygate');
 const { checkFiles } = require('./rate-check');
 const { isPrechecked, markPrechecked, isLockedByHelper, claim, release } = require('./prechecked');
 const os = require('os');
@@ -72,6 +73,7 @@ async function helpWithExports(context, log) {
 const PROFILE_DIR = path.join(__dirname, 'browser-profile-helper');
 const LOOP_MS = 5000;
 const TRACKING_CHECK_MS = 5 * 60 * 1000;
+const DUPLICATE_CHECK_MS = 30 * 60 * 1000;
 const KEEP_ALIVE_MS = 15 * 60 * 1000;
 const timeNow = () => new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -90,6 +92,28 @@ function leftScreen() {
     return { x, y };
   } catch {
     return null;
+  }
+}
+
+// A freight bill with more than one MercuryGate route tenders the BCO twice (it happened
+// twice on 2026-11-09). Recent bills are checked every half hour; the TMS shows a banner.
+async function checkDuplicateBills(context, log) {
+  const bills = readTrackingBills().slice(0, 15);
+  if (!bills.length) return;
+  const page = await context.newPage();
+  try {
+    await openMercuryGate(page, log);
+    const duplicates = [];
+    for (const bill of bills) {
+      const routes = await findRoutes(page, bill).catch(() => []);
+      if (routes.length > 1) duplicates.push({ bill: String(bill), routes: routes.length, at: Date.now() });
+    }
+    reportDuplicateBills(duplicates);
+    log(duplicates.length
+      ? `  DUPLICATED freight bill(s): ${duplicates.map(item => `${item.bill} (${item.routes} routes)`).join(', ')}`
+      : `  No duplicated freight bills (${bills.length} checked).`);
+  } finally {
+    await page.close().catch(() => {});
   }
 }
 
@@ -131,6 +155,7 @@ const off = () => { try { fs.writeFileSync(HELPER_STATUS_FILE, JSON.stringify({ 
   console.log(`[${timeNow()}] Helper signed in. Waiting for tasks...`);
 
   let trackingDueAt = Date.now() + 30 * 1000;
+  let duplicatesDueAt = Date.now() + 2 * 60 * 1000;
   let lastActivity = Date.now();
   while (!closed) {
     try {
@@ -149,6 +174,12 @@ const off = () => { try { fs.writeFileSync(HELPER_STATUS_FILE, JSON.stringify({ 
         setStatus('working', 'Checking Clarity');
         console.log(`\n[${timeNow()}] Checking Clarity for booked loads...`);
         reportTrackingResults(await checkTracking(context, readTrackingWatch(), { log: line => console.log(line), candidateBills: readTrackingBills() }));
+        lastActivity = Date.now();
+      } else if (Date.now() >= duplicatesDueAt && readTrackingBills().length) {
+        duplicatesDueAt = Date.now() + DUPLICATE_CHECK_MS;
+        setStatus('working', 'Checking MercuryGate for duplicated freight bills');
+        console.log(`\n[${timeNow()}] MercuryGate: checking recent freight bills for duplicates...`);
+        await checkDuplicateBills(context, line => console.log(line));
         lastActivity = Date.now();
       } else if (filesToHelpWith().length) {
         setStatus('working', 'Rate-checking an export');

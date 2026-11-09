@@ -163,6 +163,23 @@ function readTrackingBills() {
   }
 }
 
+// Freight bills the helper found more than one MercuryGate route for (duplicates).
+// The TMS shows a banner for each until the extra route is deleted.
+const DUPLICATE_BILLS_FILE = process.env.DUPLICATE_BILLS_FILE || path.join(__dirname, 'duplicate-bills.json');
+
+function readDuplicateBills() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DUPLICATE_BILLS_FILE, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function reportDuplicateBills(bills) {
+  try { fs.writeFileSync(DUPLICATE_BILLS_FILE, JSON.stringify(bills || [], null, 1)); } catch { /* reported next round */ }
+}
+
 function readTrackingWatch() {
   try {
     const parsed = JSON.parse(fs.readFileSync(TRACKING_WATCH_FILE, 'utf8'));
@@ -255,10 +272,12 @@ function start() {
     if (req.method === 'GET' && route === '/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       const shared = readResults();
+      const duplicates = readDuplicateBills();
       res.end(JSON.stringify({ ...status, ...(progress ? { progress } : {}), helper: readHelperStatus(),
         ...(shared.assign.length ? { assignResults: shared.assign } : {}),
         ...(Object.keys(shared.tracking).length ? { trackingResults: Object.values(shared.tracking) } : {}),
-        ...(shared.mercurygate.length ? { mercurygateResults: shared.mercurygate } : {}) }));
+        ...(shared.mercurygate.length ? { mercurygateResults: shared.mercurygate } : {}),
+        ...(duplicates.length ? { duplicateBills: duplicates } : {}) }));
       return;
     }
     if (req.method === 'GET' && route.startsWith('/shots/')) {
@@ -381,5 +400,6 @@ module.exports = {
   setStatus, setProgress, PORT, readQueue, writeQueue, enqueue, QUEUE_FILE,
   readAssignQueue, writeAssignQueue, enqueueAssign, reportAssignResult, ASSIGN_QUEUE_FILE,
   readTrackingWatch, setTrackingWatch, reportTrackingResults, TRACKING_WATCH_FILE, readTrackingBills,
+  readDuplicateBills, reportDuplicateBills,
   readMercuryGateQueue, writeMercuryGateQueue, enqueueMercuryGate, reportMercuryGateResult
 };

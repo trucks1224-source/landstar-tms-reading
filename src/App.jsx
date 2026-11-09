@@ -4619,6 +4619,8 @@ const paramountLatest = {};
 const paramountBusy = new Set();
 // Clarity results already handed to the App (the bot repeats them on every status check).
 const paramountResultSeen = new Map();
+// Duplicated freight bills already shown as a banner (the helper repeats them while they exist).
+const duplicateBillSeen = new Map();
 // The fuel surcharge email last applied (Gmail message id).
 const fuelEmailSeenKey = 'landstar_fuelEmailSeen';
 // Freight bills from recent BCO Load Detail emails (refreshed every few minutes).
@@ -5300,6 +5302,12 @@ export function BotStatusLight() {
           if (paramountResultSeen.get(result.key) === result.at) return;
           paramountResultSeen.set(result.key, result.at);
           window.dispatchEvent(new CustomEvent('landstar-tracking-result', { detail: result }));
+        });
+        // Freight bills the helper found duplicated in MercuryGate -> a warning banner.
+        (Array.isArray(next.duplicateBills) ? next.duplicateBills : []).forEach(duplicate => {
+          if (duplicateBillSeen.get(duplicate.bill) === duplicate.at) return;
+          duplicateBillSeen.set(duplicate.bill, duplicate.at);
+          window.dispatchEvent(new CustomEvent('landstar-duplicate-bill', { detail: duplicate }));
         });
       } catch {
         if (!cancelled) setStatus(offStatus());
@@ -7967,7 +7975,13 @@ export default function App({ sharing = null } = {}) {
       if (!result.ok && !result.retrying) pushNotice(`MercuryGate: order #${result.loadId} was NOT fully filled in. ${String(result.message || '').split('\n')[0]} Please finish it by hand in MercuryGate.`);
     };
     window.addEventListener('landstar-mercurygate-result', onMercuryGateResult);
+    const onDuplicateBill = event => {
+      const duplicate = event.detail || {};
+      pushNotice(`MercuryGate has ${duplicate.routes} routes for freight bill ${duplicate.bill}. Delete the extra route so the BCO is not tendered twice.`);
+    };
+    window.addEventListener('landstar-duplicate-bill', onDuplicateBill);
     return () => {
+      window.removeEventListener('landstar-duplicate-bill', onDuplicateBill);
       window.removeEventListener('landstar-mercurygate-result', onMercuryGateResult);
       cancelled = true;
       clearInterval(watchTimer);

@@ -111,6 +111,27 @@ const PROFILE_DIR = path.join(__dirname, 'browser-profile');
 const sourceFolder = process.argv.slice(2).find(a => !a.startsWith('--')) || path.join(os.homedir(), 'Downloads');
 const uploadedFolder = path.join(sourceFolder, 'landstar-uploaded');
 
+// Uploaded and skipped exports older than a day are deleted (Daniel's rule, 2026-11-09):
+// they pile up by the hundreds and are never needed again after the upload.
+const CLEANUP_FOLDERS = ['landstar-uploaded', 'landstar-skipped-atz'];
+const CLEANUP_AGE_MS = 24 * 60 * 60 * 1000;
+function cleanOldExports(log = console.log) {
+  let removed = 0;
+  for (const name of CLEANUP_FOLDERS) {
+    const folder = path.join(sourceFolder, name);
+    let names = [];
+    try { names = fs.readdirSync(folder); } catch { continue; }
+    for (const file of names) {
+      const full = path.join(folder, file);
+      try {
+        const stat = fs.statSync(full);
+        if (stat.isFile() && Date.now() - stat.mtimeMs > CLEANUP_AGE_MS) { fs.unlinkSync(full); removed += 1; }
+      } catch { /* locked or already gone; next time */ }
+    }
+  }
+  if (removed) log(`[${timeNow()}] Deleted ${removed} uploaded export file(s) older than a day.`);
+}
+
 // Only pick up the app's Landstar bulk export spreadsheets:
 //   Landstar_Bulk_<broker>.xlsx   or   Landstar_Bulk_<broker>_1of2.xlsx
 const FILE_PATTERN = /^Landstar_Bulk_.*\.(xlsx|xls)$/i;
@@ -508,8 +529,13 @@ async function runWatch() {
   let dedupeDueAt = 0; // set after an upload; checked once no exports are waiting
   let hazmatDueAt = Date.now() + 2 * 60 * 1000; // first hazmat rate check shortly after start
   let trackingDueAt = Date.now() + 60 * 1000; // first Clarity check a minute after start
+  let cleanupDueAt = Date.now() + 5 * 60 * 1000; // old uploaded exports deleted every 6 hours
 
   while (!closed) {
+    if (Date.now() >= cleanupDueAt) {
+      cleanupDueAt = Date.now() + 6 * 60 * 60 * 1000;
+      try { cleanOldExports(); } catch (err) { console.error(`Cleanup failed: ${err.message}`); }
+    }
     let files = [];
     try { files = readyFiles(failures); } catch (err) { console.error(`Could not read ${sourceFolder}: ${err.message}`); }
     // A big export (e.g. 100+ files) is rate-checked and uploaded a few files at a time,

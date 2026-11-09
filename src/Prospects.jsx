@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/supabase';
 import {
-  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, isFollowUpDue, isBlockedProspect, FOLLOW_UP_AFTER_DAYS
+  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, FOLLOW_UP_AFTER_DAYS
 } from './lib/prospects';
 
 const PROSPECT_EMAIL_URL = '/api/paramount-email';
@@ -139,10 +139,10 @@ export default function Prospects() {
       for (const prospect of (fresh || []).filter(row => !isBlockedProspect(row))) {
         if (prospect.status === 'new') {
           // eslint-disable-next-line no-await-in-loop
-          await sendTo(prospect, 'intro', current.subject, buildProspectEmail(prospect, current), { auto: true });
+          await sendTo(prospect, 'intro', prospectSubject(prospect, current.subject), buildProspectEmail(prospect, current), { auto: true });
         } else if (isFollowUpDue(prospect)) {
           // eslint-disable-next-line no-await-in-loop
-          await sendTo(prospect, 'followUp', `RE: ${current.subject}`, buildFollowUpEmail(prospect, current), { auto: true });
+          await sendTo(prospect, 'followUp', `RE: ${prospectSubject(prospect, current.subject)}`, buildFollowUpEmail(prospect, current), { auto: true });
         }
       }
     };
@@ -283,7 +283,7 @@ export default function Prospects() {
     const sender = { ...settings, email: settings.email.trim() };
     setPreview({
       prospect, kind,
-      subject: kind === 'followUp' ? `RE: ${settings.subject}` : settings.subject,
+      subject: kind === 'followUp' ? `RE: ${prospectSubject(prospect, settings.subject)}` : prospectSubject(prospect, settings.subject),
       text: kind === 'followUp' ? buildFollowUpEmail(prospect, sender) : buildProspectEmail(prospect, sender)
     });
   };
@@ -294,7 +294,7 @@ export default function Prospects() {
     const targets = rows.filter(row => row.status === 'new');
     for (const prospect of targets) {
       // eslint-disable-next-line no-await-in-loop
-      await sendTo(prospect, 'intro', settings.subject, buildProspectEmail(prospect, settings), { auto: true });
+      await sendTo(prospect, 'intro', prospectSubject(prospect, settings.subject), buildProspectEmail(prospect, settings), { auto: true });
     }
   };
 
@@ -306,7 +306,7 @@ export default function Prospects() {
     for (const prospect of targets) {
       setBulkProgress(`Sending ${sent + 1} of ${targets.length}… (${prospect.email})`);
       // eslint-disable-next-line no-await-in-loop
-      await sendTo(prospect, 'intro', settings.subject, buildProspectEmail(prospect, settings), { auto: true });
+      await sendTo(prospect, 'intro', prospectSubject(prospect, settings.subject), buildProspectEmail(prospect, settings), { auto: true });
       sent += 1;
       setSelected(current => { const next = new Set(current); next.delete(prospect.id); return next; });
     }

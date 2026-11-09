@@ -330,7 +330,23 @@ async function uploadConfirmation(page, pdfPath, { dryRun = true, shotName = 'up
   return { shot, message: `${dryRun ? 'Attached (practice)' : 'Uploaded'} the rate confirmation as Customer Confirmation Sheet` };
 }
 
+// Every MercuryGate route matching the freight bill. More than one means the bill was
+// duplicated (two routes tendering the same BCO) - the helper bot reports those.
+async function findRoutes(page, freightBill) {
+  await page.bringToFront().catch(() => {});
+  const search = page.locator(SEARCH_BOX).first();
+  const answer = page.waitForResponse(response => /\/rest\/routes\/?$/.test(new URL(response.url()).pathname)
+    && response.request().method() === 'POST' && /anyRef/.test(response.request().postData() || ''), { timeout: 45000 }).catch(() => null);
+  await search.click({ clickCount: 3 });
+  await search.fill(String(freightBill));
+  await search.press('Enter');
+  const response = await answer;
+  const routes = response ? await response.json().catch(() => []) : [];
+  await page.locator('.icon-close').filter({ visible: true }).first().click().catch(() => {});
+  return (Array.isArray(routes) ? routes : []).filter(item => item?.oid > 0).map(item => String(item.oid));
+}
+
 module.exports = {
-  MG_HOME, SHOTS_DIR, openMercuryGate, findRouteOid, openLoadWindow, closeLeftoverWindow,
+  MG_HOME, SHOTS_DIR, openMercuryGate, findRouteOid, findRoutes, openLoadWindow, closeLeftoverWindow,
   addCustomerReference, fillStop, addSpecialInstructions, uploadConfirmation
 };

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, isFollowUpDue, isBlockedProspect, LANDSTAR_MC
+  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, LANDSTAR_MC
 } from './prospects.js';
 
 test('extractProspects reads company, email, phone and lane from DAT OCR text', () => {
@@ -58,6 +58,16 @@ test('follow-up email keeps the two key points and the MC number', () => {
 
 test('subject carries the MC number', () => {
   assert.match(defaultSubject(), new RegExp(`MC# ${LANDSTAR_MC}`));
+});
+
+test('the posting lane leads the subject when known', () => {
+  assert.equal(
+    prospectSubject({ lane: 'DALLAS, TX -> ATLANTA, GA' }, 'base subject'),
+    `Truck for your DALLAS, TX -> ATLANTA, GA load - Landstar agent MC# ${LANDSTAR_MC}`
+  );
+  assert.equal(prospectSubject({ lane: '' }, 'base subject'), 'base subject');
+  assert.equal(prospectSubject({}, ''), defaultSubject());
+  assert.match(buildFollowUpEmail({ lane: 'EAGAN, MN -> LOUISVILLE, KY' }, { yourName: 'D' }), /your EAGAN, MN -> LOUISVILLE, KY posting/);
 });
 
 test('Landstar agencies and TQL are never prospects', () => {

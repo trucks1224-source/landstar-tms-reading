@@ -17,6 +17,7 @@ bot/bot-results.json
 bot/helper-status.json
 bot/tracking-watch.json
 bot/tracking-bills.json
+bot/duplicate-bills.json
 # Customer rate confirmations, MercuryGate screenshots, OCR cache, debugging leftovers
 bot/ratecons/
 bot/mercurygate-shots/

@@ -108,6 +108,9 @@ ${signature(settings)}`;
 
 export function buildFollowUpEmail(prospect = {}, settings = {}) {
   const hello = firstName(prospect.contact) ? `Hello ${firstName(prospect.contact)},` : 'Hello,';
+  const laneLine = prospect.lane
+    ? `We reached out about your ${prospect.lane} posting and still have trucks in that area.\n\n`
+    : '';
   return `${hello}
 
 Just following up on my earlier email. We are an independent Landstar agency (MC# ${LANDSTAR_MC}) with trucks available:
@@ -115,13 +118,21 @@ Just following up on my earlier email. We are an independent Landstar agency (MC
 - We do not double broker - your freight moves only on Landstar BCO trucks.
 - We stay on top of our updates - consistent status updates on every load and proof of delivery on every shipment.
 
-If you have any upcoming lanes or freight opportunities, send them over and we will be glad to provide rates and availability.
+${laneLine}If you have any upcoming lanes or freight opportunities, send them over and we will be glad to provide rates and availability.
 
 ${signature(settings)}`;
 }
 
 export function defaultSubject() {
   return `Truck capacity for your loads - Landstar agent MC# ${LANDSTAR_MC}`;
+}
+
+// The posting's lane leads the subject so the broker sees we mean their load:
+// "Truck for your DALLAS, TX -> ATLANTA, GA load - Landstar agent MC# 166960".
+export function prospectSubject(prospect = {}, baseSubject = '') {
+  const lane = String(prospect.lane || '').trim();
+  if (lane) return `Truck for your ${lane} load - Landstar agent MC# ${LANDSTAR_MC}`;
+  return String(baseSubject || '').trim() || defaultSubject();
 }
 
 // Brokers we never email: Landstar agencies (fellow agents) and TQL (Daniel's rule, 2026-11-09).

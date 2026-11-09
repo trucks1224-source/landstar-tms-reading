@@ -4624,6 +4624,12 @@ const fuelEmailSeenKey = 'landstar_fuelEmailSeen';
 // Freight bills from recent BCO Load Detail emails (refreshed every few minutes).
 const bcoBillsCache = { at: 0, bills: [] };
 const truckerToolsCache = { at: 0, okAt: 0, starts: [] };
+// Daniel's VIP customers (2026-11-09): a gold banner + Windows notification the moment one
+// of them emails, on any thread. Heather books the Paramount loads - never miss her.
+const VIP_CONTACTS = [
+  { email: 'heather.locke@rlglobal.com', name: 'Heather Locke (Paramount)' }
+];
+const vipSeenKey = 'landstar_vipSeen';
 // Driver replies must be seen right away: a Windows notification (even when the TMS tab is in the
 // background), a sound, and a blinking tab title until the TMS is looked at.
 function alertDriverReply(title, body, gmailThreadId) {
@@ -7452,6 +7458,8 @@ export default function App({ sharing = null } = {}) {
     ...current.filter(item => item.text !== text),
     { id: `${Date.now()}-${Math.random()}`, text, level, at: new Date().toISOString() }
   ].slice(-6));
+  // New emails from VIP customers (Heather), shown until dismissed.
+  const [vipMessages, setVipMessages] = useState([]);
   const [pastedImage, setPastedImage] = useState(null);
   paramountLatest.profile = profile;
   // Applies the weekly fuel email's rates to My Settings (once per email).
@@ -7926,8 +7934,31 @@ export default function App({ sharing = null } = {}) {
     // Driver replies first (most urgent), soon after the page opens.
     const driverFirst = setTimeout(() => { void checkOtherDriverReplies(); void checkDriverReplies(); void checkDriverEmails(); void checkReplies(); void checkPaperwork(); }, 15 * 1000);
     const driverTimer = setInterval(() => { void checkDriverEmails(); void checkDriverReplies(); void checkOtherDriverReplies(); void checkPaperwork(); }, 2 * 60 * 1000);
+    // VIP customers (Heather): any new email from them, on any thread, right away.
+    const checkVipMessages = async () => {
+      if (!canStartBotHere()) return;
+      try {
+        const seen = JSON.parse(localStorage.getItem(vipSeenKey) || '{}');
+        // First run: only mail from the last 2 hours (not the whole history).
+        const fallback = Date.now() - 2 * 60 * 60 * 1000;
+        const since = new Date(Math.min(...VIP_CONTACTS.map(vip => Date.parse(seen[vip.email]) || fallback))).toISOString();
+        const { replies } = await callParamountEmail({ action: 'prospectReplies', addresses: VIP_CONTACTS.map(vip => vip.email), since });
+        if (cancelled) return;
+        for (const reply of replies || []) {
+          const contact = VIP_CONTACTS.find(vip => vip.email === reply.from);
+          if (!contact || Date.parse(reply.at) <= (Date.parse(seen[reply.from]) || fallback)) continue;
+          seen[reply.from] = reply.at;
+          try { localStorage.setItem(vipSeenKey, JSON.stringify(seen)); } catch { /* shown again next time */ }
+          setVipMessages(current => (current.some(item => item.id === reply.id) ? current : [...current, { ...reply, name: contact.name }]));
+          alertDriverReply(`⭐ ${contact.name} emailed you`, reply.snippet, reply.threadId);
+        }
+      } catch (error) {
+        console.warn(`Could not check VIP emails: ${error.message}`);
+      }
+    };
+    const vipFirst = setTimeout(() => { void checkVipMessages(); }, 25 * 1000);
     const rxoFirst = setTimeout(() => { void checkRxoRequests(); }, 20 * 1000);
-    const replyTimer = setInterval(() => { void checkReplies(); void checkRxoRequests(); }, 2 * 60 * 1000);
+    const replyTimer = setInterval(() => { void checkReplies(); void checkRxoRequests(); void checkVipMessages(); }, 2 * 60 * 1000);
     window.addEventListener('landstar-tracking-result', onTrackingResult);
     const onMercuryGateResult = event => {
       const result = event.detail || {};
@@ -7942,6 +7973,7 @@ export default function App({ sharing = null } = {}) {
       clearInterval(watchTimer);
       clearInterval(replyTimer);
       clearTimeout(rxoFirst);
+      clearTimeout(vipFirst);
       clearTimeout(driverFirst);
       clearTimeout(fuelFirst);
       clearInterval(fuelTimer);
@@ -9503,6 +9535,21 @@ export default function App({ sharing = null } = {}) {
                 {typeof Notification !== 'undefined' && Notification.permission === 'default' && (
                   <button type="button" onClick={() => Notification.requestPermission()} className="mt-2 bg-yellow-300 text-black px-3 py-1 rounded font-bold cursor-pointer">Turn on Windows notifications for driver replies</button>
                 )}
+              </div>
+            )}
+            {vipMessages.length > 0 && (
+              <div className="fixed left-1/2 -translate-x-1/2 top-14 z-50 w-[46rem] max-w-[calc(100vw-1rem)] bg-yellow-400 text-black rounded-lg shadow-2xl border-2 border-yellow-200 p-3 normal-case tracking-normal text-left" role="alert">
+                <p className="font-bold text-base">⭐ VIP customer emailed you</p>
+                {vipMessages.map(message => (
+                  <div key={`vip-${message.id}`} className="mt-2 bg-yellow-300/80 rounded p-2 text-sm">
+                    <p className="font-semibold">{message.name} · {formatCheckTime(message.at)}{message.subject ? ` · ${message.subject}` : ''}</p>
+                    <p className="mt-0.5">“{message.snippet}”</p>
+                    <div className="flex gap-2 mt-1">
+                      <a href={`https://mail.google.com/mail/u/0/#all/${message.threadId}`} target="_blank" rel="noreferrer" className="bg-black text-yellow-300 px-3 py-0.5 rounded font-bold">Open in Gmail</a>
+                      <button type="button" onClick={() => setVipMessages(current => current.filter(item => item.id !== message.id))} className="bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-0.5 rounded font-semibold cursor-pointer">Got it</button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
             {notices.length > 0 && (

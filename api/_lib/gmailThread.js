@@ -522,7 +522,7 @@ async function handleProspectEmail(request) {
       const at = new Date(Number(message.internalDate)).toISOString();
       if (replies[from] && replies[from].at >= at) continue;
       replies[from] = {
-        from, at, subject: header(message, 'Subject'),
+        from, at, subject: header(message, 'Subject'), id: message.id, threadId: message.threadId,
         snippet: String(message.snippet || '').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').slice(0, 300)
       };
     }

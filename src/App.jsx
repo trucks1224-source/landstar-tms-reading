@@ -7429,9 +7429,9 @@ export default function App({ sharing = null } = {}) {
       setSelectedOrder(current => (current && String(current.id) === String(result.loadId)
         ? applyAssignResult(current, result) : current));
       if (!result.ok && result.unconfirmed) {
-        alert(`Landstar Assign Capacity: load #${result.loadId} (truck ${result.truck}) - Landstar did not confirm.\n\n${result.message}\n\nIt may already be assigned: check the load on Landstar before assigning it again.`);
+        pushNotice(`Landstar Assign Capacity: load #${result.loadId} (truck ${result.truck}) - Landstar did not confirm. ${result.message} It may already be assigned: check the load on Landstar before assigning it again.`);
       } else if (!result.ok) {
-        alert(`Landstar Assign Capacity: load #${result.loadId} (truck ${result.truck}) was NOT assigned.\n\n${result.message}\n\nAssign it by hand on Landstar.`);
+        pushNotice(`Landstar Assign Capacity: load #${result.loadId} (truck ${result.truck}) was NOT assigned. ${result.message} Assign it by hand on Landstar.`);
       }
     };
     window.addEventListener('landstar-assign-result', onAssignResult);
@@ -7445,6 +7445,13 @@ export default function App({ sharing = null } = {}) {
   // ---------- Paramount tracking emails ----------
   const [paramountDrafts, setParamountDrafts] = useState([]);
   const [paramountReplies, setParamountReplies] = useState([]);
+  // Background warnings (bot results, fuel updates): banners instead of alert() pop-ups,
+  // because an open alert freezes the whole tab and stops the email timers.
+  const [notices, setNotices] = useState([]);
+  const pushNotice = (text, level = 'warn') => setNotices(current => [
+    ...current.filter(item => item.text !== text),
+    { id: `${Date.now()}-${Math.random()}`, text, level, at: new Date().toISOString() }
+  ].slice(-6));
   const [pastedImage, setPastedImage] = useState(null);
   paramountLatest.profile = profile;
   // Applies the weekly fuel email's rates to My Settings (once per email).
@@ -7467,7 +7474,7 @@ export default function App({ sharing = null } = {}) {
       return;
     }
     setProfile(nextProfile);
-    alert(`⛽ Fuel surcharge updated from the ${parsed.date || 'latest'} fuel email:\n\nEast ${nextRates.east} · Midwest ${nextRates.midwest} · West ${nextRates.west} · New England ${nextRates.newEngland}`);
+    pushNotice(`⛽ Fuel surcharge updated from the ${parsed.date || 'latest'} fuel email: East ${nextRates.east} · Midwest ${nextRates.midwest} · West ${nextRates.west} · New England ${nextRates.newEngland}`, 'info');
   };
   const importPastedImage = (customer) => {
     const image = pastedImage;
@@ -7926,7 +7933,7 @@ export default function App({ sharing = null } = {}) {
       const result = event.detail || {};
       patchParamountLoad(result.customer, result.loadId, current => applyMercuryGateResult(current, result));
       // Only when the bot has given up (no pop-up for each retry while MercuryGate is down).
-      if (!result.ok && !result.retrying) alert(`MercuryGate: order #${result.loadId} was NOT fully filled in.\n\n${String(result.message || '').split('\n')[0]}\n\nPlease finish it by hand in MercuryGate.`);
+      if (!result.ok && !result.retrying) pushNotice(`MercuryGate: order #${result.loadId} was NOT fully filled in. ${String(result.message || '').split('\n')[0]} Please finish it by hand in MercuryGate.`);
     };
     window.addEventListener('landstar-mercurygate-result', onMercuryGateResult);
     return () => {
@@ -9496,6 +9503,16 @@ export default function App({ sharing = null } = {}) {
                 {typeof Notification !== 'undefined' && Notification.permission === 'default' && (
                   <button type="button" onClick={() => Notification.requestPermission()} className="mt-2 bg-yellow-300 text-black px-3 py-1 rounded font-bold cursor-pointer">Turn on Windows notifications for driver replies</button>
                 )}
+              </div>
+            )}
+            {notices.length > 0 && (
+              <div className="fixed right-2 bottom-12 z-50 w-[26rem] max-w-[calc(100vw-1rem)] space-y-2 normal-case tracking-normal text-left">
+                {notices.map(notice => (
+                  <div key={notice.id} role="alert" className={`rounded-lg shadow-2xl border p-2.5 text-xs flex items-start gap-2 ${notice.level === 'info' ? 'bg-sky-950 border-sky-500 text-sky-100' : 'bg-amber-950 border-amber-400 text-amber-100'}`}>
+                    <p className="flex-1 whitespace-pre-wrap">{notice.level === 'info' ? '' : '⚠ '}{notice.text}</p>
+                    <button type="button" onClick={() => setNotices(current => current.filter(item => item.id !== notice.id))} className="text-white/70 hover:text-white font-bold px-1 cursor-pointer" aria-label="Dismiss notice">✕</button>
+                  </div>
+                ))}
               </div>
             )}
             {(paramountDrafts.length > 0 || paramountReplies.length > 0) && (

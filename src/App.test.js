@@ -29,7 +29,7 @@ export {
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getLoadedTimeWarning, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
-  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer
+  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer, getEquipmentListCategory
 };`, { loader: 'jsx', format: 'cjs' });
 // Test loads are dated October 2026, so "today" inside the TMS code is 10/1/2026:
 // those pickups are still ahead, and past-date rules use September dates.
@@ -44,7 +44,7 @@ const context = {
   require(name) {
     if (name === './lib/screenshotTable.js') return screenshotTable;
     if (name === './lib/ntgCards.js') return ntgCards;
-    if (['react', 'xlsx', './lib/supabase'].includes(name)) return {};
+    if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
     throw new Error(`Unexpected dependency: ${name}`);
   }
 };
@@ -975,6 +975,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === 'react') return react;
       if (name === 'xlsx') return XLSX;
       if (name === './lib/supabase') return { supabase };
+      if (name === './Prospects.jsx') return { default: () => null };
       throw new Error(`Unexpected dependency: ${name}`);
     },
     ...extraContext
@@ -1051,7 +1052,7 @@ function createSyncContext(storage) {
     require(name) {
       if (name === './lib/screenshotTable.js') return screenshotTable;
       if (name === './lib/ntgCards.js') return ntgCards;
-      if (['react', 'xlsx', './lib/supabase'].includes(name)) return {};
+      if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
       throw new Error(`Unexpected dependency: ${name}`);
     }
   };
@@ -2345,6 +2346,44 @@ test('RXO ATZ imports leave out skipped-state van loads and clear older ones', (
   assert.equal(result.skippedRxoVanCount, 1);
 });
 
+test('RXO van, flatbed and reefer lists upload separately: each import replaces only its equipment', () => {
+  const rxo = 'R X O 2429200 - ATZ';
+  assert.equal(policy.getEquipmentListCategory('VAN:VAN'), 'van');
+  assert.equal(policy.getEquipmentListCategory('V'), 'van');
+  assert.equal(policy.getEquipmentListCategory('R'), 'reefer');
+  assert.equal(policy.getEquipmentListCategory('RZ'), 'reefer');
+  assert.equal(policy.getEquipmentListCategory('F'), 'flatbed');
+  assert.equal(policy.getEquipmentListCategory('F,SD'), 'flatbed');
+  assert.equal(policy.getEquipmentListCategory('SD'), 'flatbed');
+  assert.equal(policy.getEquipmentListCategory('D-LG,D-ST'), 'other');
+  const posting = { originZip: '60007', destZip: '76063', pickupThru: '11/06/26 13:00', deliveryThru: '11/08/26 07:00', weight: 42000 };
+  const existing = [
+    { ...load, id: '24500001', eCode: 'VAN:VAN', status: 'ENT', tag: 'ENT', landstarExportedAt: new Date().toISOString(), landstarPosting: posting },
+    { ...load, id: '24500002', eCode: 'F', origCity: 'Denver', origSt: 'CO', status: 'ENT', tag: 'ENT', landstarExportedAt: new Date().toISOString(), landstarPosting: { ...posting, originZip: '80202' } },
+    { ...load, id: '24500003', eCode: 'R', origCity: 'Austin', origSt: 'TX', status: 'ENT', tag: 'ENT', landstarExportedAt: new Date().toISOString(), landstarPosting: { ...posting, originZip: '73301' } }
+  ];
+  // Uploading the van list replaces only van loads; flatbed and reefer stay posted.
+  const vanResult = policy.replaceImportedCustomerLoads(rxo, [
+    { ...load, id: '24500010', eCode: 'VAN:VAN' }
+  ], existing);
+  assert.deepEqual(Array.from(vanResult.loads, l => l.id).sort(), ['24500002', '24500003', '24500010']);
+  assert.deepEqual(Array.from(vanResult.droppedPostings, item => item.loadId), ['24500001'], 'only the missing van posting drops');
+  // Uploading the flatbed list next replaces only flatbed loads; the vans stay.
+  const flatResult = policy.replaceImportedCustomerLoads(rxo, [
+    { ...load, id: '24500020', eCode: 'F,SD', origCity: 'Denver', origSt: 'CO' }
+  ], vanResult.loads);
+  assert.deepEqual(Array.from(flatResult.loads, l => l.id).sort(), ['24500003', '24500010', '24500020']);
+  assert.deepEqual(Array.from(flatResult.droppedPostings, item => item.loadId), ['24500002'], 'only the missing flatbed posting drops');
+  // A combined file with all three equipment types still replaces everything, as before.
+  const fullResult = policy.replaceImportedCustomerLoads(rxo, [
+    { ...load, id: '24500010', eCode: 'VAN:VAN' },
+    { ...load, id: '24500020', eCode: 'F,SD', origCity: 'Denver', origSt: 'CO' },
+    { ...load, id: '24500030', eCode: 'R', origCity: 'Austin', origSt: 'TX' }
+  ], existing);
+  assert.deepEqual(Array.from(fullResult.loads, l => l.id).sort(), ['24500010', '24500020', '24500030']);
+  assert.deepEqual(Array.from(fullResult.droppedPostings, item => item.loadId).sort(), ['24500001', '24500002', '24500003']);
+});
+
 test('loads to or from Mexico are recognized by Mexican state or country code', () => {
   for (const [extra, expected] of [
     [{ origSt: 'TX', destSt: 'EM' }, true],
@@ -2739,6 +2778,12 @@ test('paperwork status, completed only once it is in and handled, and the custom
   const delivered = { ...load, trackingStage: 'Delivered', paramountTracking: { deliveredAt: new Date(at(9, 10)).toISOString() } };
   assert.equal(policy.getDeliveredAt(delivered), at(9, 10));
   assert.equal(policy.getDeliveredAt({ ...load, trackingStage: 'Delivered', checkCalls: [{ at: new Date(at(9, 12)).toISOString(), stage: 'Delivered' }] }), at(9, 12));
+  // Clarity's "delivered, no time recorded" (deliveredAt: 'done'): fall back to the POD
+  // request time, then the scheduled delivery, so the paperwork check still runs.
+  const doneNoTime = { ...load, deliveryTime: '11/09/2026 0800 - 1600', paramountTracking: { deliveredAt: 'done' } };
+  assert.equal(policy.getDeliveredAt({ ...doneNoTime, driverEmails: { pod: { at: new Date(at(9, 9)).toISOString() } } }), at(9, 9));
+  assert.equal(policy.getDeliveredAt(doneNoTime), policy.parseScheduleStart('11/09/2026 0800 - 1600'));
+  assert.equal(policy.getDeliveredAt({ ...load, deliveryTime: '', paramountTracking: {} }), null);
   assert.match(policy.getPaperworkStatus(delivered, at(9, 15)).text, /delivered 5h ago · due in 43h/);
   assert.equal(policy.getPaperworkStatus(delivered, at(10, 11)).level, 'due');
   assert.equal(policy.getPaperworkStatus(delivered, at(11, 11)).level, 'late');

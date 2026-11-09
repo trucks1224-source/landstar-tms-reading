@@ -480,11 +480,62 @@ async function findFuelEmail() {
   };
 }
 
+// ---------- Broker prospects (new-customer outreach) ----------
+// "prospectSend": one fresh email (new thread) to a broker found on DAT.
+// "prospectReplies": the newest reply from each given address since `since`,
+// so the TMS Prospects panel can mark leads that answered.
+async function handleProspectEmail(request) {
+  const { action, to, subject, text, addresses, since } = request;
+  const { accessToken } = await connect();
+  if (action === 'prospectSend') {
+    const address = emailOf(to);
+    if (!address.includes('@')) return { status: 400, body: { error: 'A valid prospect email address is needed.' } };
+    const body = String(text || '').trim();
+    if (!body || body.length > 20000) return { status: 400, body: { error: 'The email text is empty or too long.' } };
+    const encodedSubject = `=?UTF-8?B?${Buffer.from(oneLine(subject) || 'Truck capacity - Landstar agent MC# 166960', 'utf8').toString('base64')}?=`;
+    const headers = [
+      `To: ${oneLine(to)}`,
+      `Subject: ${encodedSubject}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: base64'
+    ];
+    const raw = `${headers.join('\r\n')}\r\n\r\n${Buffer.from(body, 'utf8').toString('base64')}`;
+    const sent = await gmailJson(accessToken, `${GMAIL}/messages/send`, {
+      method: 'POST', body: JSON.stringify({ raw: Buffer.from(raw, 'utf8').toString('base64url') })
+    });
+    return { status: 200, body: { ok: true, id: sent.id, threadId: sent.threadId } };
+  }
+  const list = [...new Set((Array.isArray(addresses) ? addresses : []).map(emailOf).filter(item => item.includes('@')))].slice(0, 200);
+  if (!list.length) return { status: 200, body: { replies: [] } };
+  const sinceMs = Date.parse(since) || 0;
+  const replies = {};
+  for (let start = 0; start < list.length; start += 20) {
+    const batch = list.slice(start, start + 20);
+    const query = `from:(${batch.join(' OR ')}) newer_than:30d`;
+    const found = await gmailJson(accessToken, `${GMAIL}/messages?q=${encodeURIComponent(query)}&maxResults=50`);
+    for (const { id } of found.messages || []) {
+      const message = await gmailJson(accessToken, `${GMAIL}/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`);
+      if (Number(message.internalDate) <= sinceMs) continue;
+      const from = emailOf(header(message, 'From'));
+      if (!batch.includes(from)) continue;
+      const at = new Date(Number(message.internalDate)).toISOString();
+      if (replies[from] && replies[from].at >= at) continue;
+      replies[from] = {
+        from, at, subject: header(message, 'Subject'),
+        snippet: String(message.snippet || '').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').slice(0, 300)
+      };
+    }
+  }
+  return { status: 200, body: { replies: Object.values(replies) } };
+}
+
 // action "thread": who a reply-all goes to, plus replies from others since `since`.
 // action "send": reply-all inside the thread with `text`.
 // action "rxoRequests" / "rxoSend": RXO update requests (see handleRxoEmail).
 export async function handleParamountEmail(request = {}) {
   const { action, orderNumber, since, text } = request;
+  if (action === 'prospectSend' || action === 'prospectReplies') return handleProspectEmail(request);
   if (action === 'rxoRequests' || action === 'rxoSend') return handleRxoEmail(request);
   if (action === 'driverThread' || action === 'driverSend') return handleDriverEmail(request);
   if (action === 'driverPaperwork' || action === 'sendPaperwork') return handlePaperwork(request);

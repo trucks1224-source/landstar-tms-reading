@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { detectScreenshotGrid, readScreenshotGrid } from './lib/screenshotTable.js';
 import { findNtgCardRegions } from './lib/ntgCards.js';
+import Prospects from './Prospects.jsx';
 
 const exportedLoadRetentionMs = 30 * 24 * 60 * 60 * 1000;
 // Landstar's bulk upload accepts at most 25 loads per spreadsheet.
@@ -1979,11 +1980,14 @@ function buildLandstarPosting(record) {
 
 // Loads that were posted to Landstar and are missing from a customer's new list. This
 // includes Nolan: any posted Nolan load not in the new screenshots is removed too.
-function findDroppedPostings(customer, importedLoads, existingLoads) {
+function findDroppedPostings(customer, importedLoads, existingLoads, equipmentScope = null) {
   const importedIds = new Set(importedLoads.map(load => normalizeLoadId(getBaseLoadId(load))).filter(Boolean));
   if (!importedIds.size) return [];
   // Loads added by hand are never taken off Landstar for being missing from the list.
+  // With an equipment scope (RXO's separate van/flatbed/reefer lists), only postings in
+  // the uploaded categories are candidates; the other lists' postings stay up.
   return existingLoads.filter(load => load.landstarPosting && !load.manualEntry
+    && (!equipmentScope || equipmentScope.has(getRxoEquipmentListCategory(load)))
     && !importedIds.has(normalizeLoadId(getBaseLoadId(load))));
 }
 
@@ -2266,6 +2270,22 @@ function getLandstarEquipmentCode(value) {
   if (code.startsWith('FLAT')) return 'FLAT';
   if (code.startsWith('STEP')) return 'STEP';
   return code.match(/\b(24VN|28VN|48VN|53VN|VAN|REFR|FLAT|48FL|53FL|STEP|53SD|SD)\b/)?.[0] || '';
+}
+
+// Equipment bucket for scoping RXO list imports: the van, flatbed and reefer lists are
+// uploaded separately, so an import only replaces existing loads in the buckets it contains.
+function getEquipmentListCategory(eCode) {
+  const code = getLandstarEquipmentCode(eCode);
+  if (code === 'REFR') return 'reefer';
+  if (['FLAT', 'FH', 'STEP', 'FLCS'].includes(code)) return 'flatbed';
+  if (code === 'VAN' || /^\d{2}VN$/.test(code)) return 'van';
+  return 'other';
+}
+
+// RXO imports default blank equipment to VAN:VAN, so scope lookups do the same.
+function getRxoEquipmentListCategory(load) {
+  const eCode = String(load?.eCode || '').trim();
+  return getEquipmentListCategory(eCode || 'VAN:VAN');
 }
 
 function getLandstarCommodity(value) {
@@ -2849,6 +2869,12 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
   if (!importedLoads.length) {
     throw new Error('Every load in this list goes to or from Mexico or uses equipment we skip (INT/oversized), so nothing was imported. Existing loads were not deleted.');
   }
+  // RXO's van, flatbed and reefer lists are uploaded separately: a full-list import only
+  // replaces existing loads in the equipment categories the file contains. Loads of other
+  // equipment stay, and their Landstar postings are never dropped.
+  const equipmentScope = !additive && isRxoCustomer(customer)
+    ? new Set(importedLoads.map(load => getRxoEquipmentListCategory(load)))
+    : null;
   const loadKey = load => normalizeLoadId(getBaseLoadId(load));
   const importedById = new Map();
   let duplicateCount = 0;
@@ -2938,6 +2964,8 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
     // Same for loads to or from Mexico imported before that rule.
     if (isMexicoLoad(load)) return false;
     if (isSkippableEquipment(load.eCode)) return false;
+    // RXO separate lists: equipment categories not in this file are left alone.
+    if (equipmentScope && !equipmentScope.has(getRxoEquipmentListCategory(load))) return true;
     const exportedAt = Date.parse(load.landstarExportedAt);
     // A full customer list is the truth: anything not on it is deleted (exported ENT loads
     // too; their rates stay in the rate history). Booked and hand-added loads stay (above),
@@ -2954,7 +2982,7 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
   });
   // Posted loads missing from this (full) list: the upload bot removes their Landstar
   // postings. Each is handed over once, so its saved posting details are cleared here.
-  const dropped = reportDroppedPostings ? findDroppedPostings(customer, importedLoads, existingLoads) : [];
+  const dropped = reportDroppedPostings ? findDroppedPostings(customer, importedLoads, existingLoads, equipmentScope) : [];
   const droppedIds = new Set(dropped.map(load => String(load.id)));
   const droppedPostings = dropped.map(load => ({ customer, loadId: String(load.id), posting: load.landstarPosting }));
   const loads = [...mergedLoads, ...retained].map(load => {
@@ -2964,7 +2992,7 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
   });
   return {
     loads, additive, processedLoads: mergedLoads, droppedPostings, skippedRxoVanCount, skippedMexicoCount, skippedEquipmentCount,
-    laneDayDuplicateCount,
+    laneDayDuplicateCount, equipmentScope,
     usesScreenshotStatus: holdsRedScreenshotLoads(customer)
       && importedLoads.some(load => ['ON HOLD', 'OPEN'].includes(load.screenshotStatus)),
     duplicateCount,
@@ -2973,8 +3001,9 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
 }
 
 function getImportReplacementMessage(replacement) {
+  const scopeLabel = replacement?.equipmentScope ? [...replacement.equipmentScope].join('/') : '';
   return replacement
-    ? `• ${replacement.additive ? 'Imported list merged' : 'Full list replaced'}; removed loads: ${replacement.removedCount}. ${replacement.additive ? 'Exported ENT loads retained for 30 days unless re-imported.' : 'Loads not on the list were deleted (booked and hand-added loads kept).'}\n` +
+    ? `• ${replacement.additive ? 'Imported list merged' : scopeLabel ? `${scopeLabel} list replaced` : 'Full list replaced'}; removed loads: ${replacement.removedCount}. ${replacement.additive ? 'Exported ENT loads retained for 30 days unless re-imported.' : scopeLabel ? `Loads missing from the file were deleted from the ${scopeLabel} list(s) only; other equipment, booked and hand-added loads kept.` : 'Loads not on the list were deleted (booked and hand-added loads kept).'}\n` +
       `• Duplicate load/day rows skipped: ${replacement.duplicateCount}; ${replacement.usesScreenshotStatus ? 'Para screenshot: red = ON HOLD, non-red = OPEN' : 'imported loads set to OPEN'}.\n`
       + (replacement.laneDayDuplicateCount ? `• Same-lane/pickup-day duplicates skipped: ${replacement.laneDayDuplicateCount} (first load kept).\n` : '')
       + (replacement.skippedRxoVanCount ? `• Skipped ${replacement.skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID.\n` : '')
@@ -4365,8 +4394,10 @@ function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip,
   const approvalsLeft = draft => Math.max(0, PARAMOUNT_AUTO_SEND_AFTER
     - readApprovedCount(draft.kind === 'paperwork' ? paperworkApprovedKey : draft.kind === 'driver' ? driverApprovedKey : draft.kind === 'rxo' ? rxoApprovedKey : paramountApprovedKey));
   const who = draft => (draft.kind === 'driver' ? 'Driver' : draft.kind === 'rxo' || draft.target === 'rxo' ? 'RXO' : 'Paramount');
+  // Paperwork drafts carry no addresses: the send replies on the customer's email thread.
+  const recipients = draft => [...(draft.to || []), ...(draft.cc || [])];
   return (
-    <div className="mt-3 text-xs text-white normal-case tracking-normal text-left">
+    <div data-email-draft={drafts.length ? 'waiting' : undefined} className="mt-3 text-xs text-white normal-case tracking-normal text-left">
       <div className="flex flex-wrap gap-2">
         {drafts.length > 0 && (
           <button
@@ -4405,7 +4436,9 @@ function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip,
           {draft.request && <p className="text-amber-100 mt-0.5">They asked: “{draft.request}”</p>}
           {draft.warning && <p role="alert" className="mt-1 bg-red-600 text-white font-bold rounded px-2 py-1">⚠ {draft.warning} Send only if it is; otherwise click Don&apos;t send.</p>}
           {draft.kind === 'rxo' && !draft.complete && <p className="text-amber-300 mt-0.5">Fill in the blanks (like the pickup ETA) before sending.</p>}
-          <p className="text-gray-300">Reply all to: {[...draft.to, ...draft.cc].join(', ')}</p>
+          <p className="text-gray-300">{recipients(draft).length
+            ? `Reply all to: ${recipients(draft).join(', ')}`
+            : `Sends with the files on the ${who(draft)} email thread`}</p>
           <textarea
             value={draft.text}
             onChange={event => onChangeText(draft, event.target.value)}
@@ -4810,10 +4843,17 @@ const paperworkApprovedKey = 'landstar_paperworkApprovedSends';
 function getDeliveredAt(load, tracking = load?.paramountTracking || {}) {
   const fromClarity = Date.parse(tracking.deliveredAt);
   if (Number.isFinite(fromClarity)) return fromClarity;
-  if ((load?.trackingStage || '') !== 'Delivered') return null;
-  const call = [...(Array.isArray(load.checkCalls) ? load.checkCalls : [])].reverse().find(item => item.stage === 'Delivered');
+  // Clarity sometimes reports a finished delivery with no time (deliveredAt: 'done').
+  if (!tracking.deliveredAt && (load?.trackingStage || '') !== 'Delivered') return null;
+  const call = [...(Array.isArray(load?.checkCalls) ? load.checkCalls : [])].reverse().find(item => item.stage === 'Delivered');
   const at = Date.parse(call?.at);
-  return Number.isFinite(at) ? at : null;
+  if (Number.isFinite(at)) return at;
+  // Delivered without any recorded time: when the TMS asked for the POD, else the
+  // scheduled delivery - so the paperwork check still picks the load up.
+  const podAt = Date.parse(load?.driverEmails?.pod?.at);
+  if (Number.isFinite(podAt)) return podAt;
+  const scheduled = parseScheduleStart(load?.deliveryTime);
+  return Number.isFinite(scheduled) ? scheduled : null;
 }
 
 // The customer email thread a driver's POD is forwarded to (Paramount or RXO), or ''.
@@ -6440,7 +6480,9 @@ export default function App({ sharing = null } = {}) {
   // One customer's list often comes as several Excel files (or tabs). Pick them all at
   // once: they are combined into one list first, so a Landstar posting is only removed
   // when its load is on none of them. Importing them one at a time treats each file as
-  // the whole list and removes the other files' postings.
+  // the whole list and removes the other files' postings. RXO is the exception: its van,
+  // flatbed and reefer lists can be uploaded one at a time — an import only replaces the
+  // equipment categories in the file (see replaceImportedCustomerLoads).
   const handleExcelImport = (e) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
@@ -7724,7 +7766,7 @@ export default function App({ sharing = null } = {}) {
         const tracking = load.paramountTracking || {};
         const deliveredAt = getDeliveredAt(load, tracking);
         // Already sent to the customer once: never again (even if the load is put back on the list).
-        if (!deliveredAt || load.paperworkReceivedAt || load.paperworkSentAt || !tracking.freightBill) continue;
+        if (!deliveredAt || load.paperworkDone || load.paperworkSentAt || !tracking.freightBill) continue;
         if (Date.now() - deliveredAt > (PAPERWORK_REMINDER_DAYS + 3) * 86400000) continue;
         const id = `paperwork|${customer}|${load.id}`;
         if (cancelled || paramountBusy.has(id)) continue;
@@ -7733,22 +7775,28 @@ export default function App({ sharing = null } = {}) {
           // From a day before delivery (scheduled or actual, whichever is earlier): drivers often send
           // the POD before the load is marked delivered.
           const scheduled = parseScheduleStart(load.deliveryTime);
-          const since = new Date(Math.min(deliveredAt, scheduled || deliveredAt) - 86400000).toISOString();
-          const { files = [] } = await callParamountEmail({ action: 'driverPaperwork', freightBill: tracking.freightBill, since });
-          if (cancelled || !files.length) { paramountBusy.delete(id); continue; }
+          const since = load.paperworkSince
+            || new Date(Math.min(deliveredAt, scheduled || deliveredAt) - 86400000).toISOString();
+          let names = Array.isArray(load.paperworkFiles) ? load.paperworkFiles : [];
           const target = getPaperworkTarget(customer);
-          const receivedAt = files[files.length - 1].at;
-          const names = files.map(file => file.filename);
-          patchParamountLoad(customer, load.id, current => ({
-            ...current,
-            paperworkReceivedAt: receivedAt,
-            paperworkFiles: names,
-            paperworkSince: since,
-            paperworkDone: !target,
-            notes: [current.notes, `Paperwork received from the driver: ${names.join(', ')}${target ? '' : ' (no customer tracking email to send it to)'}`].filter(Boolean).join('\n')
-          }));
-          alertDriverReply(`Paperwork received · load #${load.id}`, `${names.join(', ')}${target ? ' · ready to send to the customer' : ''}`);
-          if (!target) continue;
+          // Received but not sent yet (e.g. the tab reloaded before the Send click):
+          // skip straight to rebuilding the waiting email below.
+          if (!load.paperworkReceivedAt) {
+            const { files = [] } = await callParamountEmail({ action: 'driverPaperwork', freightBill: tracking.freightBill, since });
+            if (cancelled || !files.length) { paramountBusy.delete(id); continue; }
+            const receivedAt = files[files.length - 1].at;
+            names = files.map(file => file.filename);
+            patchParamountLoad(customer, load.id, current => ({
+              ...current,
+              paperworkReceivedAt: receivedAt,
+              paperworkFiles: names,
+              paperworkSince: since,
+              paperworkDone: !target,
+              notes: [current.notes, `Paperwork received from the driver: ${names.join(', ')}${target ? '' : ' (no customer tracking email to send it to)'}`].filter(Boolean).join('\n')
+            }));
+            alertDriverReply(`Paperwork received · load #${load.id}`, `${names.join(', ')}${target ? ' · ready to send to the customer' : ''}`);
+          }
+          if (!target || cancelled) continue;
           let greetingName = '';
           if (target === 'paramount') {
             const thread = await callParamountEmail({ action: 'thread', orderNumber: String(load.id) }).catch(() => ({}));
@@ -7869,7 +7917,7 @@ export default function App({ sharing = null } = {}) {
     const watchTimer = setInterval(() => { void pushWatchList(); queueMercuryGateJobs(); }, 60 * 1000);
     // First checks soon after the page opens (it reloads after every TMS update), then every 2 minutes.
     // Driver replies first (most urgent), soon after the page opens.
-    const driverFirst = setTimeout(() => { void checkOtherDriverReplies(); void checkDriverReplies(); void checkDriverEmails(); void checkReplies(); }, 15 * 1000);
+    const driverFirst = setTimeout(() => { void checkOtherDriverReplies(); void checkDriverReplies(); void checkDriverEmails(); void checkReplies(); void checkPaperwork(); }, 15 * 1000);
     const driverTimer = setInterval(() => { void checkDriverEmails(); void checkDriverReplies(); void checkOtherDriverReplies(); void checkPaperwork(); }, 2 * 60 * 1000);
     const rxoFirst = setTimeout(() => { void checkRxoRequests(); }, 20 * 1000);
     const replyTimer = setInterval(() => { void checkReplies(); void checkRxoRequests(); }, 2 * 60 * 1000);
@@ -8894,6 +8942,7 @@ export default function App({ sharing = null } = {}) {
                     <input type="file" accept=".json,application/json" onChange={handleBackupImport} className="hidden" />
                   </label>
                   <LoadListHistory onRestore={restoreLoadListSnapshot} />
+                  <Prospects />
                 </div>
               </div>
             </div>
@@ -9452,7 +9501,11 @@ export default function App({ sharing = null } = {}) {
             {(paramountDrafts.length > 0 || paramountReplies.length > 0) && (
               <button
                 type="button"
-                onClick={() => setView('booked')}
+                onClick={() => {
+                  setView('booked');
+                  // Already on Booked Loads (or right after the switch): jump to the first waiting email.
+                  setTimeout(() => document.querySelector('[data-email-draft]')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
+                }}
                 title="Tracking emails waiting for you on Booked Loads"
                 className="bg-amber-400 hover:bg-amber-300 text-black text-xs px-2.5 py-1 rounded font-bold cursor-pointer normal-case tracking-normal"
               >

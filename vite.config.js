@@ -5,6 +5,11 @@ import path from 'node:path'
 import { processRoadMilesRequest } from './api/road-miles.js'
 import { processDatRateRequest, getDatConfig } from './api/dat-rate.js'
 import { handleParamountEmail } from './api/_lib/gmailThread.js'
+import { getServiceClient } from './api/_lib/server.js'
+import { extractProspects, isLandstarProspect } from './src/lib/prospects.js'
+
+// The TMS account that owns imported prospects, looked up once per server run.
+let prospectOwnerId = null
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -124,6 +129,61 @@ export default defineConfig(({ mode }) => {
             } catch (error) {
               console.error('Paramount email request failed:', error.message)
               reply(502, { error: error.message || 'The Gmail request failed.' })
+            }
+          })
+
+          // "Save to TMS" bookmarklet on DAT: receives the DAT page text, pulls out the broker
+          // contacts (src/lib/prospects.js) and saves them as prospects in Supabase. The browser
+          // sends a preflight for https://one.dat.com -> http://127.0.0.1, so CORS answers too.
+          server.middlewares.use('/api/prospects-import', async (req, res) => {
+            res.setHeader('Access-Control-Allow-Origin', '*')
+            res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+            res.setHeader('Access-Control-Allow-Headers', 'content-type')
+            res.setHeader('Access-Control-Allow-Private-Network', 'true')
+            const reply = (status, body) => {
+              res.statusCode = status
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify(body))
+            }
+            if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end() }
+            if (req.method !== 'POST') return reply(405, { error: 'Use POST.' })
+            let body = ''
+            for await (const chunk of req) {
+              body += chunk
+              if (body.length > 2_000_000) return reply(413, { error: 'The page text is too large.' })
+            }
+            try {
+              const supabase = getServiceClient()
+              if (!supabase) return reply(503, { error: 'Supabase is not set up in .env.' })
+              // Prospects belong to the office's main account: the user whose email matches
+              // the connected Gmail (gmail_connection), not whichever account lists first.
+              if (!prospectOwnerId) {
+                const { data: connection } = await supabase.from('gmail_connection').select('email').eq('id', 1).maybeSingle()
+                const { data, error } = await supabase.auth.admin.listUsers({ page: 1, perPage: 100 })
+                if (error) throw error
+                const ownerEmail = String(connection?.email || '').toLowerCase()
+                const match = (data?.users || []).find(user => String(user.email || '').toLowerCase() === ownerEmail)
+                prospectOwnerId = match?.id || data?.users?.[0]?.id
+                if (!prospectOwnerId) return reply(503, { error: 'No TMS user account found.' })
+              }
+              const found = extractProspects(body)
+                .filter(item => !isLandstarProspect(item)
+                  && !/@dat\.com$/i.test(item.email) && item.email !== 'trucks1224@gmail.com')
+              if (!found.length) {
+                return reply(200, { saved: 0, skipped: 0, error: 'No broker emails on this DAT page. Open the posting so the contact email shows, then click the bookmark again.' })
+              }
+              const { data, error } = await supabase.from('prospects').upsert(
+                found.map(item => ({
+                  owner_id: prospectOwnerId, company: item.company || '', contact: item.contact || '',
+                  email: item.email, phone: item.phone || '', lane: item.lane || ''
+                })),
+                { onConflict: 'owner_id,email', ignoreDuplicates: true }
+              ).select('id')
+              if (error) throw error
+              reply(200, { saved: (data || []).length, skipped: found.length - (data || []).length })
+            } catch (error) {
+              console.error('Prospects import failed:', error.message)
+              reply(502, { error: error.message || 'The prospects import failed.' })
             }
           })
 

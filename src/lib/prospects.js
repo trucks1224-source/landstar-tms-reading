@@ -6,7 +6,7 @@
 //   - Lead with "we do not double broker" and "we stay on top of our updates".
 
 export const LANDSTAR_MC = '166960';
-export const FOLLOW_UP_AFTER_DAYS = 3;
+export const FOLLOW_UP_AFTER_DAYS = 1;
 
 const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 const PHONE_PATTERN = /(?:\(\d{3}\)\s*|\b\d{3}[-. ])\d{3}[-. ]\d{4}\b(?:\s*(?:x|ext\.?)\s*\d{1,5})?/i;
@@ -124,9 +124,9 @@ export function defaultSubject() {
   return `Truck capacity for your loads - Landstar agent MC# ${LANDSTAR_MC}`;
 }
 
-// Landstar agencies posting on DAT are not prospects (we never email fellow agents).
-export function isLandstarProspect(prospect = {}) {
-  return /landstar/i.test(`${prospect.company || ''} ${prospect.email || ''} ${prospect.contact || ''}`);
+// Brokers we never email: Landstar agencies (fellow agents) and TQL (Daniel's rule, 2026-11-09).
+export function isBlockedProspect(prospect = {}) {
+  return /landstar|\btql\b|total quality logistics/i.test(`${prospect.company || ''} ${prospect.email || ''} ${prospect.contact || ''}`);
 }
 
 // A follow-up is due a few days after the intro email when nobody answered.

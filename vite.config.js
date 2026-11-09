@@ -6,7 +6,7 @@ import { processRoadMilesRequest } from './api/road-miles.js'
 import { processDatRateRequest, getDatConfig } from './api/dat-rate.js'
 import { handleParamountEmail } from './api/_lib/gmailThread.js'
 import { getServiceClient } from './api/_lib/server.js'
-import { extractProspects, isLandstarProspect } from './src/lib/prospects.js'
+import { extractProspects, isBlockedProspect } from './src/lib/prospects.js'
 
 // The TMS account that owns imported prospects, looked up once per server run.
 let prospectOwnerId = null
@@ -167,7 +167,7 @@ export default defineConfig(({ mode }) => {
                 if (!prospectOwnerId) return reply(503, { error: 'No TMS user account found.' })
               }
               const found = extractProspects(body)
-                .filter(item => !isLandstarProspect(item)
+                .filter(item => !isBlockedProspect(item)
                   && !/@dat\.com$/i.test(item.email) && item.email !== 'trucks1224@gmail.com')
               if (!found.length) {
                 return reply(200, { saved: 0, skipped: 0, error: 'No broker emails on this DAT page. Open the posting so the contact email shows, then click the bookmark again.' })

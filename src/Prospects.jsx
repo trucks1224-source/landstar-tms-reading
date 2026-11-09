@@ -12,13 +12,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/supabase';
 import {
-  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, isFollowUpDue, isLandstarProspect, FOLLOW_UP_AFTER_DAYS
+  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, isFollowUpDue, isBlockedProspect, FOLLOW_UP_AFTER_DAYS
 } from './lib/prospects';
 
 const PROSPECT_EMAIL_URL = '/api/paramount-email';
 const settingsKey = 'landstar_prospectSettings';
-const approvedKey = 'landstar_prospectApprovedSends';
-const AUTO_SEND_AFTER = 3;
 
 const canSendHere = () => typeof window !== 'undefined'
   && ['127.0.0.1', 'localhost'].includes(window.location.hostname);
@@ -36,10 +34,6 @@ function readSettings() {
   } catch {
     return { yourName: '', agencyName: '', phone: '484-575-6486', email: '', subject: defaultSubject() };
   }
-}
-
-function readApproved() {
-  try { return Number(localStorage.getItem(approvedKey)) || 0; } catch { return 0; }
 }
 
 async function callEmailApi(body) {
@@ -73,7 +67,6 @@ export default function Prospects() {
   const [reading, setReading] = useState('');
   const [preview, setPreview] = useState(null); // { prospect, kind, subject, text }
   const [busyId, setBusyId] = useState(null);
-  const [approved, setApproved] = useState(readApproved);
   const [selected, setSelected] = useState(() => new Set());
   const [bulkProgress, setBulkProgress] = useState('');
   const checkedReplies = useRef(false);
@@ -128,6 +121,37 @@ export default function Prospects() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // Fully automatic outreach (Daniel's rule, 2026-11-09): new brokers get the intro email
+  // within ~10 minutes of being saved, and the day-after follow-up when nobody answered -
+  // no approval clicks. Runs even with the panel closed; needs only the sender name in
+  // Settings. Blocked brokers (Landstar agencies, TQL) are never emailed.
+  useEffect(() => {
+    if (!supabase || !canSendHere()) return undefined;
+    const run = async () => {
+      const current = readSettings();
+      if (!current.yourName.trim()) return;
+      const { data } = await supabase.from('prospects').select('*').in('status', ['new', 'emailed']).limit(500);
+      if (!data || !data.length) return;
+      // Anyone who answered is marked "replied" first and never followed up.
+      const emailed = data.filter(row => row.status === 'emailed');
+      if (emailed.length) await checkReplies(emailed);
+      const { data: fresh } = await supabase.from('prospects').select('*').in('status', ['new', 'emailed']).limit(500);
+      for (const prospect of (fresh || []).filter(row => !isBlockedProspect(row))) {
+        if (prospect.status === 'new') {
+          // eslint-disable-next-line no-await-in-loop
+          await sendTo(prospect, 'intro', current.subject, buildProspectEmail(prospect, current), { auto: true });
+        } else if (isFollowUpDue(prospect)) {
+          // eslint-disable-next-line no-await-in-loop
+          await sendTo(prospect, 'followUp', `RE: ${current.subject}`, buildFollowUpEmail(prospect, current), { auto: true });
+        }
+      }
+    };
+    const first = setTimeout(run, 45 * 1000);
+    const timer = setInterval(run, 10 * 60 * 1000);
+    return () => { clearTimeout(first); clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ---------- Capture: OCR a pasted DAT screenshot ----------
   const readImage = async blob => {
     setReading('Loading OCR engine…');
@@ -159,7 +183,7 @@ export default function Prospects() {
       await worker.setParameters({ tessedit_pageseg_mode: '3' });
       const { data } = await worker.recognize(canvas);
       const existing = new Set(rows.map(row => row.email.toLowerCase()));
-      const all = extractProspects(data.text || '').filter(item => !isLandstarProspect(item));
+      const all = extractProspects(data.text || '').filter(item => !isBlockedProspect(item));
       const found = all.filter(item => !existing.has(item.email));
       const already = all.length - found.length;
       setCaptured(current => {
@@ -230,8 +254,8 @@ export default function Prospects() {
   };
 
   const sendTo = async (prospect, kind, subject, text, { auto = false } = {}) => {
-    if (isLandstarProspect(prospect)) {
-      setStatus(`${prospect.email} looks like a Landstar agency - we never email fellow agents. Marked dead.`);
+    if (isBlockedProspect(prospect)) {
+      setStatus(`${prospect.email} is on the do-not-email list (Landstar agencies and TQL). Marked dead.`);
       await supabase.from('prospects').update({ status: 'dead', updated_at: new Date().toISOString() }).eq('id', prospect.id);
       await loadRows();
       return;
@@ -244,11 +268,6 @@ export default function Prospects() {
         ? { status: 'followed-up', followed_up_at: now, updated_at: now }
         : { status: 'emailed', emailed_at: now, updated_at: now };
       await supabase.from('prospects').update(change).eq('id', prospect.id);
-      if (!auto) {
-        const next = readApproved() + 1;
-        try { localStorage.setItem(approvedKey, String(next)); } catch { /* counts again next time */ }
-        setApproved(next);
-      }
       setPreview(null);
       await loadRows();
       setStatus(`Sent to ${prospect.email}.`);
@@ -269,7 +288,7 @@ export default function Prospects() {
     });
   };
 
-  // After the first few approved sends, one click emails every remaining "new" prospect.
+  // One click emails every remaining "new" prospect without waiting for the 10-minute timer.
   const sendAllNew = async () => {
     if (!settingsReady()) return;
     const targets = rows.filter(row => row.status === 'new');
@@ -314,7 +333,6 @@ export default function Prospects() {
 
   if (!supabase) return null;
   const sendable = canSendHere();
-  const autoUnlocked = approved >= AUTO_SEND_AFTER;
   const newCount = rows.filter(row => row.status === 'new').length;
   const selectedNewCount = rows.filter(row => row.status === 'new' && selected.has(row.id)).length;
   const sorted = [...rows].sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
@@ -405,7 +423,7 @@ export default function Prospects() {
                 <input type="text" value={preview.subject} onChange={event => setPreview(current => ({ ...current, subject: event.target.value }))} className={`${inputClass} mb-1`} />
                 <textarea value={preview.text} onChange={event => setPreview(current => ({ ...current, text: event.target.value }))} rows={14} className={`${inputClass} font-mono leading-snug`} />
                 <div className="flex items-center justify-between mt-1">
-                  <span className="text-[10px] text-gray-400">{autoUnlocked ? '"Send all new" is unlocked.' : `${AUTO_SEND_AFTER - approved} more approved send(s) until "Send all new" unlocks.`}</span>
+                  <span className="text-[10px] text-gray-400">New brokers are emailed automatically within 10 minutes - this preview is only for sending with your own edits.</span>
                   <button
                     type="button"
                     disabled={!sendable || busyId !== null}
@@ -439,7 +457,7 @@ export default function Prospects() {
                     ✉ Email selected ({selectedNewCount})
                   </button>
                 )}
-                {autoUnlocked && newCount > 0 && (
+                {newCount > 0 && (
                   <button type="button" disabled={!sendable || busyId !== null || Boolean(bulkProgress)} onClick={sendAllNew} className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-2 py-1 text-[10px] font-bold rounded text-white cursor-pointer">
                     Send intro to all new ({newCount})
                   </button>

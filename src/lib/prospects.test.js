@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, isFollowUpDue, isLandstarProspect, LANDSTAR_MC
+  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, isFollowUpDue, isBlockedProspect, LANDSTAR_MC
 } from './prospects.js';
 
 test('extractProspects reads company, email, phone and lane from DAT OCR text', () => {
@@ -60,13 +60,16 @@ test('subject carries the MC number', () => {
   assert.match(defaultSubject(), new RegExp(`MC# ${LANDSTAR_MC}`));
 });
 
-test('Landstar agencies are never prospects', () => {
-  assert.equal(isLandstarProspect({ company: 'Landstar Ligon', email: 'x@y.com' }), true);
-  assert.equal(isLandstarProspect({ company: 'Acme Freight', email: 'kim@landstarmail.com' }), true);
-  assert.equal(isLandstarProspect({ company: 'Acme Freight', email: 'kim@acme.com' }), false);
+test('Landstar agencies and TQL are never prospects', () => {
+  assert.equal(isBlockedProspect({ company: 'Landstar Ligon', email: 'x@y.com' }), true);
+  assert.equal(isBlockedProspect({ company: 'Acme Freight', email: 'kim@landstarmail.com' }), true);
+  assert.equal(isBlockedProspect({ company: 'TQL', email: 'bob@tql.com' }), true);
+  assert.equal(isBlockedProspect({ company: 'Total Quality Logistics', email: 'bob@x.com' }), true);
+  assert.equal(isBlockedProspect({ company: 'Acme Freight', email: 'loads@tql.com' }), true);
+  assert.equal(isBlockedProspect({ company: 'Acme Freight', email: 'kim@acme.com' }), false);
 });
 
-test('follow-up is due 3 days after the intro email, only while still "emailed"', () => {
+test('follow-up is due 1 day after the intro email, only while still "emailed"', () => {
   const now = Date.parse('2026-11-09T12:00:00Z');
   const emailed = { status: 'emailed', emailed_at: '2026-11-05T12:00:00Z' };
   assert.equal(isFollowUpDue(emailed, now), true);

@@ -13,6 +13,7 @@ import { extractProspects, isBlockedProspect } from './src/lib/prospects.js'
 // The TMS account that owns imported prospects, looked up once per server run.
 let prospectOwnerId = null
 const { readRatesStatus } = createRequire(import.meta.url)('./bot/status-server.js')
+const { readBotControl, writeBotControl } = createRequire(import.meta.url)('./bot/local-bot-control.js')
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -40,6 +41,53 @@ export default defineConfig(({ mode }) => {
           // requests from other web pages are refused by the Origin check).
           let lastBotStart = 0
           let lastRatesStart = 0
+          server.middlewares.use('/api/local-bots', (req, res) => {
+            res.setHeader('Content-Type', 'application/json')
+            res.setHeader('Cache-Control', 'no-store')
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              res.statusCode = 403
+              return res.end(JSON.stringify({ error: 'Only the local TMS can control these bots.' }))
+            }
+            if (req.method === 'GET') {
+              try { return res.end(JSON.stringify({ enabled: readBotControl() })) } catch (error) {
+                res.statusCode = 500
+                return res.end(JSON.stringify({ error: `Cannot read bot control: ${error.message}` }))
+              }
+            }
+            if (req.method !== 'POST') {
+              res.statusCode = 405
+              return res.end(JSON.stringify({ error: 'Use GET or POST.' }))
+            }
+            let body = ''
+            req.on('data', chunk => {
+              body += chunk
+              if (body.length > 1024) req.destroy()
+            })
+            req.on('end', () => {
+              try {
+                const { enabled } = JSON.parse(body)
+                writeBotControl(enabled)
+                res.end(JSON.stringify({ enabled }))
+              } catch (error) {
+                res.statusCode = 400
+                res.end(JSON.stringify({ error: `Cannot change bot control: ${error.message}` }))
+              }
+            })
+          })
+          const requireBotsEnabled = res => {
+            try {
+              if (readBotControl()) return true
+              res.statusCode = 409
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'Local bots are paused. Turn them on first.' }))
+            } catch (error) {
+              res.statusCode = 503
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: `Cannot read bot control: ${error.message}` }))
+            }
+            return false
+          }
           server.middlewares.use('/api/rates/status', (req, res) => {
             res.setHeader('Content-Type', 'application/json')
             res.setHeader('Cache-Control', 'no-store')
@@ -65,6 +113,7 @@ export default defineConfig(({ mode }) => {
             if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
               return reply(403, { error: 'Only the local TMS can start the rate worker.' })
             }
+            if (!requireBotsEnabled(res)) return
             if (process.platform !== 'win32') return reply(501, { error: 'Starting the rate worker from the TMS only works on Windows.' })
             const status = readRatesStatus()
             if (status.state !== 'off' && status.pid) {
@@ -108,6 +157,7 @@ export default defineConfig(({ mode }) => {
             if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
               return reply(403, { error: 'Only the TMS on this computer can start the helper bot.' })
             }
+            if (!requireBotsEnabled(res)) return
             if (process.platform !== 'win32') return reply(501, { error: 'Starting the helper bot only works on Windows.' })
             if (Date.now() - lastHelperStart < 30_000) return reply(200, { ok: true, starting: true })
             lastHelperStart = Date.now()
@@ -138,6 +188,7 @@ export default defineConfig(({ mode }) => {
             if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
               return reply(403, { error: 'Only the TMS on this computer can start the bot.' })
             }
+            if (!requireBotsEnabled(res)) return
             if (process.platform !== 'win32') return reply(501, { error: 'Starting the bot from the TMS only works on Windows.' })
             try {
               const policy = JSON.parse(readFileSync(path.resolve(process.cwd(), 'bot', 'automation-policy.json'), 'utf8'))

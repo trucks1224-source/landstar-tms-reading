@@ -16,6 +16,7 @@ const path = require('path');
 const { chromium } = require('playwright');
 const { setStatus, readHelperStatus, readAssignQueue, readTrackingWatch, readTrackingBills, reportTrackingResults, readMercuryGateQueue, reportDuplicateBills, HELPER_STATUS_FILE } = require('./status-server');
 const { openBoard } = require('./rate-check');
+const { readBotControl } = require('./local-bot-control');
 const { processAssignQueue } = require('./assign');
 const { checkTracking } = require('./clarity');
 const { runNextMercuryGateJob, hasDueMercuryGateJob } = require('./mercurygate-job');
@@ -167,6 +168,11 @@ const off = () => {
   let lastActivity = Date.now();
   while (!closed) {
     try {
+      if (!readBotControl()) {
+        setStatus('logged-in', 'Local bots paused');
+        await sleep(LOOP_MS);
+        continue;
+      }
       if (readAssignQueue().length) {
         setStatus('working', 'Assigning capacity');
         console.log(`\n[${timeNow()}] Assigning capacity on booked loads...`);

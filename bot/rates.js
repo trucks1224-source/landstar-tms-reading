@@ -8,6 +8,7 @@ const { setStatus, readRatesStatus } = require('./status-server');
 const { openBoard, checkFiles } = require('./rate-check');
 const { checkHazmatRates } = require('./hazmat-watch');
 const { pendingRateFiles, prepareRateFile, dedicatedRatesReady } = require('./rate-work');
+const { readBotControl } = require('./local-bot-control');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sourceFolder = process.argv.slice(2).find(arg => !arg.startsWith('--')) || path.join(os.homedir(), 'Downloads');
@@ -40,6 +41,11 @@ async function main() {
       hazmatError ? `${message}. Hazmat check needs attention: ${hazmatError}` : message);
     while (!closed) {
       try {
+        if (!readBotControl()) {
+          setStatus('logged-in', 'Local bots paused');
+          await sleep(5000);
+          continue;
+        }
         const response = await fetch('http://127.0.0.1:47615/status', { signal: AbortSignal.timeout(3000) });
         if (!response.ok || !dedicatedRatesReady(await response.json())) {
           setStatus('blocked', 'Waiting for posting and helper workers to restart in dedicated-rate mode');

@@ -23,6 +23,7 @@ const ROOT = path.resolve(__dirname, '..');
 const BOT_DIR = __dirname;
 const HELPER_STATUS_FILE = path.join(BOT_DIR, 'helper-status.json');
 const { removalActive, readRatesStatus } = require('./status-server');
+const { readBotControl } = require('./local-bot-control');
 
 const TMS_URL = 'http://127.0.0.1:5173';
 const BOT_STATUS_URL = 'http://127.0.0.1:47615/status';
@@ -90,6 +91,7 @@ function maybeRestart(key, isUp, start, label) {
 async function check() {
   const [tmsUp, botUp] = await Promise.all([answers(TMS_URL), answers(BOT_STATUS_URL)]);
   maybeRestart('tms', tmsUp, launchTms, 'The TMS dev server');
+  if (!readBotControl()) return;
   const postingEnabled = JSON.parse(fs.readFileSync(path.join(BOT_DIR, 'automation-policy.json'), 'utf8')).automaticPostingEnabled !== false;
   if (postingEnabled) maybeRestart('bot', botUp, () => launch('Start Landstar Bot.bat', 'Landstar Bot'), 'The upload bot');
   maybeRestart('helper', helperRunning(), () => launch('Start Helper Bot.bat', 'Landstar Helper Bot'), 'The helper bot');

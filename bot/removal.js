@@ -6,6 +6,7 @@ const { chromium } = require('playwright');
 const { readQueue, setStatus, readRemovalStatus } = require('./status-server');
 const { openBoard } = require('./rate-check');
 const { processUnpostQueue } = require('./unpost');
+const { readBotControl } = require('./local-bot-control');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function main() {
@@ -35,6 +36,11 @@ async function main() {
     console.log('Removal bot signed in. Processing only the existing removal queue.');
     while (!closed) {
       try {
+        if (!readBotControl()) {
+          setStatus('logged-in', 'Local bots paused');
+          await sleep(10000);
+          continue;
+        }
         const count = readQueue().length;
         if (count) {
           setStatus('working', `Removing ${count} queued load(s)`);

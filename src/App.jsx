@@ -5576,6 +5576,53 @@ const BOT_START_GRACE_MS = 45_000;
 const canStartBotHere = () => typeof window !== 'undefined'
   && ['127.0.0.1', 'localhost'].includes(window.location.hostname);
 
+function LocalBotsSwitch() {
+  const [enabled, setEnabled] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const check = async () => {
+      try {
+        const response = await fetch('/api/local-bots', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+        const result = await response.json();
+        if (!response.ok || typeof result.enabled !== 'boolean') throw new Error(result.error || 'Invalid bot control status');
+        if (active) { setEnabled(result.enabled); setError(''); }
+      } catch (err) {
+        if (active) { setEnabled(null); setError(`Bot control unavailable: ${err.message}`); }
+      }
+    };
+    void check();
+    const timer = setInterval(check, 5000);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
+  const toggle = async () => {
+    setBusy(true);
+    try {
+      const response = await fetch('/api/local-bots', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !enabled }), signal: AbortSignal.timeout(3000)
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not change bot control');
+      setEnabled(result.enabled);
+      setError('');
+    } catch (err) { setError(`Bot control unavailable: ${err.message}`); }
+    finally { setBusy(false); }
+  };
+  return (
+    <span className="inline-flex items-center gap-1">
+      <button type="button" disabled={enabled === null || busy} onClick={toggle}
+        aria-label={enabled ? 'Pause local bots' : 'Resume local bots'}
+        title="Pauses posting, helper, rate and removal workers after their current task. Email automation is separate. Start Everything must be running to restart missing workers."
+        className="bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white text-xs px-2.5 py-1 rounded">
+        {enabled === null ? 'Bot control unavailable' : enabled ? 'Pause all local bots' : 'Resume local bots'}
+      </button>
+      {error && <span role="alert" className="text-amber-300 text-xs">{error}</span>}
+    </span>
+  );
+}
+
 export function BotStatusLight() {
   const [status, setStatus] = useState({ state: 'off', message: 'Upload bot is not running' });
   const startRequestedAt = useRef(0);
@@ -5664,6 +5711,7 @@ export function BotStatusLight() {
   if (clickable) {
     return (
       <span className="inline-flex items-center gap-1.5 max-w-full">
+      <LocalBotsSwitch />
       <button
         type="button"
         onClick={startBot}
@@ -5680,6 +5728,7 @@ export function BotStatusLight() {
   const detail = status.state === 'off' ? '' : describeBotProgress(status);
   return (
     <span className="inline-flex items-center gap-1.5 max-w-full">
+      <LocalBotsSwitch />
       <span
         className="inline-flex items-center gap-1.5 bg-slate-800 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal max-w-full"
         title={[style.label, detail].filter(Boolean).join(' · ') || status.message}

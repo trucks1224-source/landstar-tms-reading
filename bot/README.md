@@ -27,6 +27,15 @@ and exports unchanged; no dry-truck alternate is automatically added.
 
 ## Keep the bot on while you work (recommended)
 
+In the local TMS, **Pause all local bots** pauses posting, helper, rate and
+removal workers on that computer after their current task completes. Their
+browser windows remain open; the watchdog does not restart them while paused.
+**Resume local bots** allows them to continue, but does not override the
+separate automatic-posting policy or clear any upload-review error. Start
+Everything must be running to restart missing workers. The setting is stored
+on that computer only and is not shared with teammates. Browser-based email
+automation is separate and is not controlled by this switch.
+
 Entering a driver's phone number in the TMS moves an unbooked load to the
 **OFFER** folder (also when picking a saved driver fills the phone number).
 The **OFFER** tab shows offers and their customer names across all customers.

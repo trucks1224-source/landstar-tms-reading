@@ -27,6 +27,8 @@ bot/tracking-watch.json
 bot/tracking-bills.json
 bot/duplicate-bills.json
 bot/posting-maintenance.json
+bot/local-bot-control.json
+bot/local-bot-control.json.*.tmp
 bot/posting-maintenance.json.*.tmp
 bot/posting-refresh-state.json
 bot/posting-refresh-state.json.*.tmp

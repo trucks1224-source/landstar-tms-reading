@@ -21,6 +21,7 @@ const uploadProgress = { uploaded: 0, waiting: 0 };
 const { raiseWindow } = require('./raise-window');
 const { reviewFiles, assertUploadReady, submitFileOnce } = require('./upload-safety');
 const { processRefresh } = require('./refresh');
+const { readBotControl } = require('./local-bot-control');
 function assertPostingEnabled() {
   const policy = JSON.parse(fs.readFileSync(path.join(__dirname, 'automation-policy.json'), 'utf8'));
   if (policy.automaticPostingEnabled === false) throw new Error('Automatic posting is paused by request. No loads will be uploaded or refreshed.');
@@ -531,6 +532,18 @@ async function runWatch() {
   let uploadPauseMessage = '';
 
   while (!closed) {
+    try {
+      if (!readBotControl()) {
+        setStatus('logged-in', 'Local bots paused');
+        await sleep(5000);
+        continue;
+      }
+    } catch (error) {
+      setStatus('blocked', `Local bot control could not be read: ${error.message}`);
+      console.error(`Local bot control could not be read: ${error.message}`);
+      await sleep(5000);
+      continue;
+    }
     if (Date.now() >= cleanupDueAt) {
       cleanupDueAt = Date.now() + 6 * 60 * 60 * 1000;
       try { cleanOldExports(); } catch (err) { console.error(`Cleanup failed: ${err.message}`); }

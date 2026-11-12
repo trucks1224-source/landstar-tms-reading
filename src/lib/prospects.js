@@ -7,6 +7,9 @@
 
 export const LANDSTAR_MC = '166960';
 export const FOLLOW_UP_AFTER_DAYS = 1;
+// Daily check-ins ("any loads available today?") go out at most once every 22 hours,
+// so the 10-minute sender keeps them around the same time each morning.
+export const DAILY_CHECKIN_AFTER_HOURS = 22;
 
 const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 const PHONE_PATTERN = /(?:\(\d{3}\)\s*|\b\d{3}[-. ])\d{3}[-. ]\d{4}\b(?:\s*(?:x|ext\.?)\s*\d{1,5})?/i;
@@ -127,6 +130,57 @@ export function defaultSubject() {
   return `Truck capacity for your loads - Landstar agent MC# ${LANDSTAR_MC}`;
 }
 
+// A reply that turns Landstar down: "Sorry we can't work with Landstar", "we do not
+// work with you", "not able to work with Landstar", etc. A negation must lead straight
+// into "work with", so questions ("can you work with us?") and warm replies ("we can't
+// wait to work with you") never match - a false apology is worse than a missed one.
+const REFUSAL_PATTERN = /\b(?:can'?t|cannot|can\s+not|won'?t|will\s+not|would\s+not|wouldn'?t|don'?t|do\s+not|refuse\s+to|unable\s+to|not\s+able\s+to|no\s+longer(?:\s+able\s+to)?)\s+(?:(?:want|wish|plan|intend)\s+to\s+|be\s+able\s+to\s+|to\s+)?(?:work|do\s+business|partner)\s+with\b/i;
+
+export function isLandstarRefusal(text) {
+  return REFUSAL_PATTERN.test(String(text || ''));
+}
+
+// The answer to "we can't work with Landstar" (Daniel's rule, 2026-11-10): apologize for
+// how horrible other agents have been, and leave the door open - if they ever want to
+// work with Landstar, they should let Daniel know right away.
+export function buildDeclineReplyEmail(prospect = {}, settings = {}) {
+  const hello = firstName(prospect.contact) ? `Hello ${firstName(prospect.contact)},` : 'Hello,';
+  return `${hello}
+
+Thank you for the honest reply - and I am sorry. I know some agents out there have given Landstar a bad name: horrible communication, missed updates, freight handed off behind your back. I have heard the stories and I completely understand the hesitation.
+
+That is exactly why I run my agency the opposite way: we do not double broker, and we stay on top of our updates on every single load.
+
+If you ever want to work with Landstar, please let me know right away - I will personally make sure your freight is handled the right way.
+
+${signature(settings)}`;
+}
+
+// The daily check-in: a short, friendly "good morning, anything I can help with?"
+// note to customers we already work with - no sales pitch, no bullet points.
+export function dailyCheckInSubject() {
+  return 'Good morning - anything I can help with today?';
+}
+
+export function buildDailyCheckInEmail(broker = {}, settings = {}) {
+  const hello = firstName(broker.contact) ? `Good morning ${firstName(broker.contact)},` : 'Good morning,';
+  return `${hello}
+
+I hope your day is off to a great start. Just checking in to see if there is anything I can help you with today - any loads that need coverage or lanes you would like a rate on, I am happy to take care of it.
+
+As always, we have trucks ready and available whenever you need us.
+
+${signature(settings)}`;
+}
+
+// A check-in is due when the broker is active and the last one went out over
+// DAILY_CHECKIN_AFTER_HOURS ago (or never).
+export function isDailyCheckInDue(broker, now = Date.now()) {
+  if (!broker || broker.active === false || isBlockedProspect(broker)) return false;
+  const sentAt = Date.parse(broker.lastSentAt || '');
+  return !Number.isFinite(sentAt) || now - sentAt >= DAILY_CHECKIN_AFTER_HOURS * 3600000;
+}
+
 // The posting's lane leads the subject so the broker sees we mean their load:
 // "Truck for your DALLAS, TX -> ATLANTA, GA load - Landstar agent MC# 166960".
 export function prospectSubject(prospect = {}, baseSubject = '') {
@@ -135,14 +189,15 @@ export function prospectSubject(prospect = {}, baseSubject = '') {
   return String(baseSubject || '').trim() || defaultSubject();
 }
 
-// Brokers we never email: Landstar agencies (fellow agents) and TQL (Daniel's rule, 2026-11-09).
+// Prospecting exclusions do not apply to booked-load customer updates.
 export function isBlockedProspect(prospect = {}) {
-  return /landstar|\btql\b|total quality logistics/i.test(`${prospect.company || ''} ${prospect.email || ''} ${prospect.contact || ''}`);
+  return /landstar|\btql\b|total quality logistics|\bnolan\b|\bntg\b|@(?:[^@\s.]+\.)*(?:ntgfreight|nolantransportation|nolantransportationgroup|nolan)\.com\b/i
+    .test(`${prospect.company || ''} ${prospect.email || ''} ${prospect.contact || ''}`);
 }
 
 // A follow-up is due a few days after the intro email when nobody answered.
 export function isFollowUpDue(prospect, now = Date.now()) {
-  if (!prospect || prospect.status !== 'emailed') return false;
+  if (!prospect || prospect.status !== 'emailed' || isBlockedProspect(prospect)) return false;
   const emailedAt = Date.parse(prospect.emailed_at);
   return Number.isFinite(emailedAt) && now - emailedAt > FOLLOW_UP_AFTER_DAYS * 86400000;
 }

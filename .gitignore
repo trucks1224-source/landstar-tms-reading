@@ -10,14 +10,27 @@ eng.traineddata
 bot/auth.json
 bot/browser-profile/
 bot/browser-profile-helper/
+bot/browser-profile-removal/
+bot/browser-profile-rates/
 # Upload bot: live queues, results and status (change every few seconds)
 bot/*-queue.json
 bot/unpost-queue.backup-*.json
 bot/bot-results.json
 bot/helper-status.json
+bot/removal-status.json
+bot/rates-status.json
+bot/rates-status.json.*.tmp
+bot/unpost-queue.json.lock
+bot/assign-queue.json.lock
+bot/assign-queue.json.attempts/
 bot/tracking-watch.json
 bot/tracking-bills.json
 bot/duplicate-bills.json
+bot/posting-maintenance.json
+bot/posting-maintenance.json.*.tmp
+bot/posting-refresh-state.json
+bot/posting-refresh-state.json.*.tmp
+bot/refresh-exports/
 # Customer rate confirmations, MercuryGate screenshots, OCR cache, debugging leftovers
 bot/ratecons/
 bot/mercurygate-shots/

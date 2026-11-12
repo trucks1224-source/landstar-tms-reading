@@ -19,10 +19,19 @@ const { setStatus, setProgress } = require('./status-server');
 // Files uploaded since the bot started, and files still waiting in Downloads.
 const uploadProgress = { uploaded: 0, waiting: 0 };
 const { raiseWindow } = require('./raise-window');
+const { reviewFiles, assertUploadReady, submitFileOnce } = require('./upload-safety');
+const { processRefresh } = require('./refresh');
+function assertPostingEnabled() {
+  const policy = JSON.parse(fs.readFileSync(path.join(__dirname, 'automation-policy.json'), 'utf8'));
+  if (policy.automaticPostingEnabled === false) throw new Error('Automatic posting is paused by request. No loads will be uploaded or refreshed.');
+}
 
 // Before uploading, raise each load's rate to beat other agencies' postings on
 // the same lane and pickup date (see rate-check.js). Skip with --no-rate-check.
 const runRateCheck = !process.argv.includes('--no-rate-check');
+const dedicatedRates = process.argv.includes('--dedicated-rates');
+if (dedicatedRates && !runRateCheck) throw new Error('--dedicated-rates cannot be combined with --no-rate-check.');
+const { withExportOwnership } = require('./rate-work');
 const crypto = require('crypto');
 const { removeDuplicatePostings } = require('./dedupe');
 const { processUnpostQueue } = require('./unpost');
@@ -34,7 +43,7 @@ const TRACKING_CHECK_MS = 5 * 60 * 1000;
 const { readMercuryGateQueue } = require('./status-server');
 const { runNextMercuryGateJob, hasDueMercuryGateJob } = require('./mercurygate-job');
 // While the helper bot (helper.js) runs, it does Assign Capacity, Clarity and MercuryGate.
-const { helperActive } = require('./status-server');
+const { helperActive, removalActive } = require('./status-server');
 
 // Booked Paramount loads: fill MercuryGate (see mercurygate-job.js). One job per round.
 const mercurygateSafely = (context, log = console.log) => runNextMercuryGateJob(context, log);
@@ -65,6 +74,7 @@ async function assignSafely(context, log = console.log) {
 // Loads that dropped off a customer's list in the TMS get their Landstar postings
 // removed (see unpost.js). Never lets a problem stop uploads; it retries later.
 async function unpostSafely(context, log = console.log) {
+  if (removalActive()) return;
   if (!readUnpostQueue().length) return;
   try {
     await processUnpostQueue(context, { log });
@@ -91,7 +101,7 @@ async function dedupeSafely(context, log = console.log) {
 // Every 30 minutes, keep every hazmat posting the highest on its lane: raise it to the
 // top competing rate + $25 (see hazmat-watch.js). Skip with --no-hazmat-watch.
 const { checkHazmatRates } = require('./hazmat-watch');
-const runHazmatWatch = !process.argv.includes('--no-hazmat-watch');
+const runHazmatWatch = !dedicatedRates && !process.argv.includes('--no-hazmat-watch');
 const HAZMAT_CHECK_MS = 30 * 60 * 1000;
 
 async function hazmatSafely(context, log = console.log) {
@@ -110,6 +120,7 @@ const PROFILE_DIR = path.join(__dirname, 'browser-profile');
 // Folder to scan for exported spreadsheets. Default: your Downloads folder.
 const sourceFolder = process.argv.slice(2).find(a => !a.startsWith('--')) || path.join(os.homedir(), 'Downloads');
 const uploadedFolder = path.join(sourceFolder, 'landstar-uploaded');
+const reviewFolder = path.join(sourceFolder, 'landstar-upload-review');
 
 // Uploaded and skipped exports older than a day are deleted (Daniel's rule, 2026-11-09):
 // they pile up by the hundreds and are never needed again after the upload.
@@ -155,11 +166,11 @@ function fileHash(filePath) {
 }
 
 function alreadyUploaded() {
-  if (!fs.existsSync(uploadedFolder)) return new Set();
   return new Set(
-    fs.readdirSync(uploadedFolder)
+    (fs.existsSync(uploadedFolder) ? fs.readdirSync(uploadedFolder) : [])
       .map(name => path.join(uploadedFolder, name))
       .filter(full => fs.statSync(full).isFile())
+      .concat(reviewFiles(reviewFolder))
       .map(fileHash)
   );
 }
@@ -173,8 +184,9 @@ async function waitForUploadToFinish(page) {
   // a fixed settle time so the next click isn't intercepted.
   await page.waitForFunction(
     () => !document.querySelector('.cdk-overlay-backdrop'),
+    null,
     { timeout: 60000 }
-  ).catch(() => {});
+  );
   await page.waitForTimeout(4000);
 
   // Confirm the upload button is clickable again (no overlay intercepting).
@@ -183,10 +195,11 @@ async function waitForUploadToFinish(page) {
     if (await page.$('.cdk-overlay-backdrop') === null) break;
     await page.waitForTimeout(1000);
   }
-  await btn.waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
+  await btn.waitFor({ state: 'visible', timeout: 30000 });
 }
 
 async function uploadOne(page, filePath) {
+  assertPostingEnabled();
   const fileName = path.basename(filePath);
   console.log(`  Uploading: ${fileName}`);
 
@@ -309,14 +322,20 @@ async function openBulkPostings(context, page, { waitForever = false } = {}) {
   await page.waitForTimeout(2000);
 }
 
-// Rate-checks then uploads the given files, moving each uploaded file into the
-// "landstar-uploaded" folder. Returns the files that could not be uploaded.
+// Rate-checks then submits each file once. Uncertain/rejected submissions stay
+// in review and block later uploads rather than generating more error drafts.
 // Throws if the rate check fails, so nothing posts unchecked.
 async function processFiles(context, page, files, { waitForever = false } = {}) {
+  return withExportOwnership(files, async () => {
+  if (dedicatedRates && files.some(file => !isPrechecked(file))) {
+    throw new Error('Waiting for the dedicated rate worker. Unchecked exports will not be posted.');
+  }
+  await openBulkPostings(context, page, { waitForever });
+  await assertUploadReady(page, reviewFolder);
   // Files the helper bot already rate-checked (and that haven't changed since) skip the check.
   const toCheck = files.filter(file => !isPrechecked(file));
   if (toCheck.length < files.length) console.log(`  ${files.length - toCheck.length} file(s) already rate-checked by the helper bot.`);
-  if (runRateCheck && toCheck.length) {
+  if (runRateCheck && !dedicatedRates && toCheck.length) {
     const boardPage = await openBoard(context);
     const checked = await checkFiles(boardPage, toCheck, { apply: true });
     if (checked.length !== toCheck.length) throw new Error('Rate check did not cover every file.');
@@ -337,44 +356,20 @@ async function processFiles(context, page, files, { waitForever = false } = {}) 
   await openBulkPostings(context, page, { waitForever });
   if (!fs.existsSync(uploadedFolder)) fs.mkdirSync(uploadedFolder, { recursive: true });
 
-  const failed = [];
   for (const file of files) {
-    let ok = false;
-    // Retry each file a few times; the page re-renders between uploads and
-    // occasionally needs a second attempt. Reload between retries.
-    for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
-      try {
-        setStatus('uploading', `Uploading ${path.basename(file).replace(/^Landstar_Bulk_/, '').replace(/\.xlsx$/i, '')}`);
-        await uploadOne(page, file);
-        // Move to the uploaded folder so it is never sent twice. Keep a
-        // unique name: the same export name recurs between runs.
-        let target = path.join(uploadedFolder, path.basename(file));
-        if (fs.existsSync(target)) {
-          const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
-          const ext = path.extname(file);
-          target = path.join(uploadedFolder, `${path.basename(file, ext)}__${stamp}${ext}`);
-        }
-        fs.renameSync(file, target);
-        ok = true;
-        uploadProgress.uploaded += 1;
-        uploadProgress.waiting = Math.max(0, uploadProgress.waiting - 1);
-        setProgress(uploadProgress);
-      } catch (err) {
-        console.error(`  attempt ${attempt} failed: ${path.basename(file)} -> ${err.message}`);
-        // Back to Bulk Postings: this also catches a Landstar logout (the window comes to
-        // the front and the bot waits for the login) instead of reloading a login page.
-        await openBulkPostings(context, page, { waitForever }).catch(() => {});
-        await page.locator('button[aria-label="Upload Template Spreadsheet"], input[type=file]')
-          .first().waitFor({ state: 'attached', timeout: 30000 }).catch(() => {});
-        await page.waitForTimeout(3000);
-      }
-    }
-    if (!ok) {
-      console.error(`  SKIPPED after retries: ${path.basename(file)}`);
-      failed.push(file);
-    }
+    setStatus('uploading', `Uploading ${path.basename(file).replace(/^Landstar_Bulk_/, '').replace(/\.xlsx$/i, '')}`);
+    await submitFileOnce(page, file, {
+      reviewFolder, uploadedFolder, submit: uploadOne,
+      verify: dedicatedRates ? target => {
+        if (!isPrechecked(target)) throw new Error('Export changed after its rate check. Posting paused for another check.');
+      } : undefined
+    });
+    uploadProgress.uploaded += 1;
+    uploadProgress.waiting = Math.max(0, uploadProgress.waiting - 1);
+    setProgress(uploadProgress);
   }
-  return failed;
+  return [];
+  });
 }
 
 // Daniel keeps the bot on his far-left screen (the small one he doesn't use), so it can
@@ -454,8 +449,8 @@ async function runOnce() {
     try {
       failed = await processFiles(context, page, toUpload);
     } catch (err) {
-      console.error(`\nRate check or login failed: ${err.message}`);
-      console.error('No files were uploaded. Fix the problem, or run "node upload.js --no-rate-check" to upload at the exported rates.');
+      console.error(`\nUploads stopped: ${err.message}`);
+      setStatus('logged-in', err.message);
       return;
     }
 
@@ -494,7 +489,9 @@ async function runOnce() {
 async function runWatch() {
   console.log('Landstar bot: ON (watch mode)');
   console.log(`Watching for new exports in:\n  ${sourceFolder}`);
-  console.log('Export from the TMS as usual; each new file is rate-checked and uploaded automatically.');
+  console.log(dedicatedRates
+    ? 'Posting only: waiting for the dedicated rate worker to prepare each export.'
+    : 'Export from the TMS as usual; each new file is rate-checked and uploaded automatically.');
   console.log('To turn the bot off, close its browser window (or press Ctrl+C here).\n');
 
   const context = await launchBrowser();
@@ -519,7 +516,7 @@ async function runWatch() {
 
   const page = await getWorkPage(context);
   // Sign in up front so the TMS light is green before the first export.
-  if (runRateCheck) await openBoard(context);
+  if (runRateCheck && !dedicatedRates) await openBoard(context);
   await openBulkPostings(context, page, { waitForever: true });
   setStatus('logged-in', 'Watching for exports');
   console.log(`[${timeNow()}] Logged in. Waiting for exports...`);
@@ -530,6 +527,8 @@ async function runWatch() {
   let hazmatDueAt = Date.now() + 2 * 60 * 1000; // first hazmat rate check shortly after start
   let trackingDueAt = Date.now() + 60 * 1000; // first Clarity check a minute after start
   let cleanupDueAt = Date.now() + 5 * 60 * 1000; // old uploaded exports deleted every 6 hours
+  let uploadBlockedUntil = 0;
+  let uploadPauseMessage = '';
 
   while (!closed) {
     if (Date.now() >= cleanupDueAt) {
@@ -546,6 +545,7 @@ async function runWatch() {
     setProgress(waiting || uploadProgress.uploaded ? uploadProgress : null);
     files = files
       .filter(file => !isLockedByHelper(file)) // the helper is rate-checking these right now
+      .filter(file => !dedicatedRates || isPrechecked(file))
       .sort((a, b) => path.basename(a).localeCompare(path.basename(b), undefined, { numeric: true })) // 3of108 before 10of108
       .slice(0, WATCH_BATCH_FILES);
 
@@ -575,13 +575,20 @@ async function runWatch() {
         if (!closed) console.error(`[${timeNow()}] Could not return to Bulk Postings: ${err.message}`);
       }
       lastActivity = Date.now();
-    } else if (files.length) {
+    } else if (!readAssignQueue().length && !reviewFiles(reviewFolder).length && await processRefresh(context, {
+      uploadedFolder, reviewFolder, submit: uploadOne,
+      openUpload: target => openBulkPostings(context, target, { waitForever: false })
+    })) {
+      lastActivity = Date.now();
+      setStatus('logged-in', 'Important-load refresh: replacement submitted or verified');
+    } else if (files.length && !reviewFiles(reviewFolder).length && Date.now() >= uploadBlockedUntil) {
       console.log(`\n[${timeNow()}] New export(s): ${files.map(f => path.basename(f)).join(', ')}`
         + (waiting > files.length ? `  (${waiting - files.length} more waiting)` : ''));
       const keyOf = file => { try { return `${file}|${fs.statSync(file).mtimeMs}`; } catch { return file; } };
       const keys = new Map(files.map(file => [file, keyOf(file)]));
       try {
         const failed = await processFiles(context, page, files, { waitForever: true });
+        uploadPauseMessage = '';
         failed.forEach(file => failures.set(keys.get(file), (failures.get(keys.get(file)) || 0) + 1));
         const uploaded = files.length - failed.length;
         console.log(`[${timeNow()}] Uploaded ${uploaded} file(s)${failed.length ? `, ${failed.length} failed (left in Downloads)` : ''}. Watching...`);
@@ -589,10 +596,10 @@ async function runWatch() {
         if (uploaded > 0 && runDedupe) dedupeDueAt = Date.now() + DEDUPE_DELAY_MS;
       } catch (err) {
         if (closed) break;
-        // Rate check or login failed: nothing was uploaded; try again next round.
-        files.forEach(file => failures.set(keys.get(file), (failures.get(keys.get(file)) || 0) + 1));
-        console.error(`[${timeNow()}] Could not process the export: ${err.message}. Will retry.`);
-        setStatus('signing-in', 'Retrying after an error');
+        console.error(`[${timeNow()}] Uploads stopped: ${err.message}`);
+        uploadPauseMessage = err.message;
+        uploadBlockedUntil = Date.now() + 30000;
+        setStatus('logged-in', err.message);
       }
       lastActivity = Date.now();
     } else if (readUnpostQueue().length) {
@@ -659,13 +666,23 @@ async function runWatch() {
       }
       lastActivity = Date.now();
     }
+    if (reviewFiles(reviewFolder).length) {
+      setStatus('logged-in', `Uploads paused: review the submitted file in ${reviewFolder}. It will not be automatically resent.`);
+    } else if (uploadPauseMessage) {
+      setStatus('logged-in', uploadPauseMessage);
+    } else if (dedicatedRates && waiting && !files.length) {
+      setStatus('logged-in', `Waiting for the rate worker: ${waiting} export(s) pending. Unchecked files are not posted.`);
+    }
     await sleep(WATCH_INTERVAL_MS);
   }
   console.log('Bot window closed. Landstar bot: OFF');
   process.exit(0);
 }
 
-(watchMode ? runWatch() : runOnce()).catch(err => {
+Promise.resolve().then(() => {
+  assertPostingEnabled();
+  return watchMode ? runWatch() : runOnce();
+}).catch(err => {
   console.error('Upload bot failed:', err.message);
   process.exit(1);
 });

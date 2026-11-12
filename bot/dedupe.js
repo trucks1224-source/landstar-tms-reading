@@ -140,9 +140,25 @@ function protectedLoadIds() {
   }
 }
 
-async function cancelPostings(page, requestedIds, log = console.log) {
+async function cancelPostings(page, requestedIds, log = console.log, { refreshLoad, confirmedAllOwnAvailable = false } = {}) {
+  const { readSnapshot, isProtectedPosting, refreshIsCurrent, postingKey } = require('./posting-maintenance');
+  const snapshot = readSnapshot();
+  const refreshAllowed = refreshLoad && refreshIsCurrent(refreshLoad, snapshot);
   const protectedIds = protectedLoadIds();
-  const unprotected = requestedIds.filter(id => !protectedIds.has(String(id)));
+  const unprotected = requestedIds.filter(id => {
+    if (confirmedAllOwnAvailable) {
+      const posting = seenPostings.get(String(id));
+      return posting && OWN_POSTING_CODES.includes(String(posting.Agency || '').trim().toUpperCase());
+    }
+    if (protectedIds.has(String(id))) return false;
+    const posting = seenPostings.get(String(id));
+    if (!posting || !isProtectedPosting(posting, snapshot)) return true;
+    if (!refreshAllowed) return false;
+    const key = require('./bot-postings').postingSignature(posting);
+    // A refresh may replace its own protected posting, never another protected load.
+    return snapshot.loads.filter(item => postingKey(item.posting) === key)
+      .every(item => `${item.customer}|${item.loadId}` === `${refreshLoad.customer}|${refreshLoad.loadId}`);
+  });
   if (unprotected.length < requestedIds.length) {
     log(`  Kept ${requestedIds.length - unprotected.length} protected posting(s): ${requestedIds.filter(id => protectedIds.has(String(id))).join(', ')}`);
   }
@@ -150,7 +166,7 @@ async function cancelPostings(page, requestedIds, log = console.log) {
   // stay up even when they are not on the customer's list. See bot-postings.js.
   const signatures = uploadedSignatures();
   const isOwn = id => seenPostings.has(String(id)) && isBotPosting(seenPostings.get(String(id)), signatures);
-  const loadIds = unprotected.filter(isOwn);
+  const loadIds = confirmedAllOwnAvailable ? unprotected : unprotected.filter(isOwn);
   if (loadIds.length < unprotected.length) {
     log(`  Kept ${unprotected.length - loadIds.length} posting(s) not uploaded by the bot (posted by hand): ${unprotected.filter(id => !isOwn(id)).join(', ')}`);
   }

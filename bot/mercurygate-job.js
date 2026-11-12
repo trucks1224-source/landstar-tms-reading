@@ -6,6 +6,7 @@
 //
 //   node mercurygate-job.js <order#> <freightBill> [booked|pickedUp] [--save]   (stop the bot first)
 
+const { automaticDispatchEnabled: AUTOMATIC_DISPATCH_ENABLED } = require('./automation-policy.json');
 const { openMercuryGate, openLoadWindow, closeLeftoverWindow, addCustomerReference, fillStop, addSpecialInstructions, uploadConfirmation } = require('./mercurygate');
 const { readRateConfirmation, downloadRateCon } = require('./ratecon');
 
@@ -18,6 +19,7 @@ const PARAMOUNT_NOTES = '***Please use the trucker tools link they will send you
 
 // onStepDone(name): a step that saved for real (so a retry doesn't save it twice).
 async function runMercuryGateJob(context, job, { dryRun = true, log = console.log, onStepDone = () => {} } = {}) {
+  if (!AUTOMATIC_DISPATCH_ENABLED) throw new Error('Automatic dispatch is disabled. Assign capacity on Landstar only; finish dispatch manually.');
   const done = new Set(job.done || []);
   const step = async (name, run) => {
     if (done.has(name)) return { skipped: true, message: `${name}: already saved on an earlier try` };
@@ -76,6 +78,7 @@ async function runMercuryGateJob(context, job, { dryRun = true, log = console.lo
 
 // Runs the first queued job (status-server's mercurygate-queue.json) and reports the result.
 async function runNextMercuryGateJob(context, log = console.log) {
+  if (!AUTOMATIC_DISPATCH_ENABLED) return;
   const { readMercuryGateQueue, writeMercuryGateQueue, reportMercuryGateResult } = require('./status-server');
   // Jobs waiting for a retry (MercuryGate down) are skipped until their time comes.
   const job = readMercuryGateQueue().find(item => !item.nextAt || item.nextAt <= Date.now());
@@ -115,6 +118,7 @@ async function runNextMercuryGateJob(context, log = console.log) {
 
 // A queued job that is due now (not waiting for a retry).
 function hasDueMercuryGateJob() {
+  if (!AUTOMATIC_DISPATCH_ENABLED) return false;
   const { readMercuryGateQueue } = require('./status-server');
   return readMercuryGateQueue().some(item => !item.nextAt || item.nextAt <= Date.now());
 }
@@ -123,6 +127,7 @@ module.exports = { runMercuryGateJob, runNextMercuryGateJob, hasDueMercuryGateJo
 
 if (require.main === module) {
   (async () => {
+    if (!AUTOMATIC_DISPATCH_ENABLED) throw new Error('Automatic dispatch is disabled. Finish dispatch manually after Assign Capacity.');
     const path = require('path');
     const { chromium } = require('playwright');
     const [order, freightBill, step = 'booked'] = process.argv.slice(2);

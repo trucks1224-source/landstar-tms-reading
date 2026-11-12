@@ -11,10 +11,49 @@
 //   node assign.js     <- process the queue once by hand (stop the bot first)
 
 const path = require('path');
+const fs = require('fs');
+const { createHash } = require('crypto');
 const { openBoard, OWN_POSTING_CODES } = require('./rate-check');
 const { listPostings, cancelPostings } = require('./dedupe');
 const { findMatchingPostings, statesFor } = require('./unpost');
-const { readAssignQueue, writeAssignQueue, reportAssignResult, setStatus } = require('./status-server');
+const { isBotPosting, uploadedSignatures } = require('./bot-postings');
+const { readAssignQueue, writeAssignQueue, reportAssignResult, setStatus, ASSIGN_QUEUE_FILE } = require('./status-server');
+
+function claimAssignQueue() {
+  const file = `${ASSIGN_QUEUE_FILE}.lock`;
+  try {
+    fs.writeFileSync(file, String(process.pid), { flag: 'wx' });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const owner = Number(fs.readFileSync(file, 'utf8'));
+    if (!Number.isInteger(owner) || owner <= 0) throw new Error('Invalid assignment lock; manual review required.');
+    try { process.kill(owner, 0); } catch (processError) {
+      if (processError.code !== 'ESRCH') throw processError;
+      throw new Error('Assignment worker stopped during processing. Check Landstar before manually clearing the assignment lock.');
+    }
+    return null;
+  }
+  return () => fs.unlinkSync(file);
+}
+
+// Never clear automatically: a timeout or crash after Assign may still create a freight bill.
+function reserveAssignment(landstarLoadId, truck, loadId) {
+  if (!/^\d+$/.test(String(landstarLoadId))) throw new Error('Invalid Landstar posting number.');
+  const directory = `${ASSIGN_QUEUE_FILE}.attempts`;
+  fs.mkdirSync(directory, { recursive: true });
+  try {
+    const record = JSON.stringify({ landstarLoadId, truck, loadId, at: new Date().toISOString() });
+    if (loadId) {
+      const key = createHash('sha256').update(String(loadId).trim()).digest('hex');
+      fs.writeFileSync(path.join(directory, `order-${key}.json`), record, { flag: 'wx' });
+    }
+    fs.writeFileSync(path.join(directory, `${landstarLoadId}.json`), record, { flag: 'wx' });
+    return true;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    return false;
+  }
+}
 
 const ASSIGN_URL = (loadId, scac = 'LRGR') => `https://portal.landstaronline.com/agent/assign-capacity/PORTAL/${loadId}/${scac}`;
 const MAX_ATTEMPTS = 3;
@@ -39,7 +78,7 @@ function isTractorOption(optionText, truck) {
 const clean = text => String(text || '').replace(/\s+/g, ' ').trim();
 
 // Fills Landstar's Assign Capacity form for one posting. Returns { ok, message, retry }.
-async function assignOnLandstar(context, landstarLoadId, truck, log) {
+async function assignOnLandstar(context, landstarLoadId, truck, log, loadId) {
   const page = await context.newPage();
   // Once Assign is clicked, Landstar may have assigned the truck even if it never confirms:
   // from then on the bot never retries (a retry would assign the truck to another copy of the
@@ -72,6 +111,9 @@ async function assignOnLandstar(context, landstarLoadId, truck, log) {
       return button && !button.disabled;
     }, null, { timeout: 15000 });
 
+    if (!reserveAssignment(landstarLoadId, truck, loadId)) {
+      return { ok: false, retry: false, unconfirmed: true, message: `An assignment was already attempted for Landstar load #${landstarLoadId}. Check its freight bill before any manual retry.` };
+    }
     const assigned = page.waitForResponse(r => /assign-capacity(\?|$)/.test(r.url()) && r.request().method() === 'POST', { timeout: 45000 })
       .then(r => ({ kind: 'response', status: r.status(), body: r.text().catch(() => '') }));
     const stopped = page.locator(STOP_DIALOGS).first().waitFor({ state: 'visible', timeout: 45000 })
@@ -106,6 +148,16 @@ async function assignOnLandstar(context, landstarLoadId, truck, log) {
 
 // Assigns every queued booking it can; returns how many were assigned.
 async function processAssignQueue(context, { log = console.log } = {}) {
+  const release = claimAssignQueue();
+  if (!release) return 0;
+  try {
+    return await processClaimedAssignQueue(context, { log });
+  } finally {
+    release();
+  }
+}
+
+async function processClaimedAssignQueue(context, { log }) {
   const queue = readAssignQueue();
   if (!queue.length) return 0;
   setStatus('logged-in', `Assigning capacity on ${queue.length} booked load(s)`);
@@ -117,14 +169,18 @@ async function processAssignQueue(context, { log = console.log } = {}) {
   const done = new Map(); // customer|loadId -> 'done' | 'retry'
   for (const item of queue) {
     const key = `${item.customer}|${item.loadId}`;
-    const matches = findMatchingPostings(postings, item.posting);
+    const candidates = findMatchingPostings(postings, item.posting);
+    const signatures = item.recoverPosting ? uploadedSignatures() : null;
+    const matches = item.recoverPosting ? candidates.filter(load => isBotPosting(load, signatures)) : candidates;
     const posting = pickPosting(matches);
     let result;
     if (!posting) {
-      result = { ok: false, retry: true, message: 'its Landstar posting was not found on the board' };
+      result = { ok: false, retry: true, message: item.recoverPosting
+        ? 'no matching bot-uploaded posting was verified using ZIPs, pickup/delivery times and weight'
+        : 'its Landstar posting was not found on the board' };
     } else {
       setStatus('logged-in', `Assigning truck ${item.truck} to load ${item.loadId}`);
-      result = await assignOnLandstar(context, posting.LoadId, item.truck, log);
+      result = await assignOnLandstar(context, posting.LoadId, item.truck, log, item.loadId);
       if (result.ok) {
         assignedCount += 1;
         // Other copies of the same load would stay posted for a covered load: remove them.
@@ -134,28 +190,33 @@ async function processAssignQueue(context, { log = console.log } = {}) {
     }
     const attempts = (item.attempts || 0) + 1;
     const finished = result.ok || !result.retry || attempts >= MAX_ATTEMPTS;
-    done.set(key, finished ? 'done' : 'retry');
+    done.set(key, { request: JSON.stringify(item), state: finished ? 'done' : 'retry' });
     log(`  ${item.customer} #${item.loadId} (truck ${item.truck}): ${result.ok ? 'assigned' : `NOT assigned - ${result.message}`}${!finished ? ' (will retry)' : ''}`);
     if (finished) {
       reportAssignResult({
         customer: item.customer, loadId: item.loadId, truck: item.truck, ok: result.ok,
+        ...(result.ok ? { posting: item.posting } : {}),
         landstarLoadId: posting?.LoadId ? String(posting.LoadId) : '', message: result.message, unconfirmed: Boolean(result.unconfirmed)
       });
     }
   }
 
   // Re-read: the TMS may have added more while this ran.
-  const remaining = readAssignQueue().flatMap(item => {
-    const state = done.get(`${item.customer}|${item.loadId}`);
-    if (state === 'done') return [];
-    if (state === 'retry') return [{ ...item, attempts: (item.attempts || 0) + 1 }];
-    return [item];
-  });
+  const remaining = reconcileAssignQueue(readAssignQueue(), done);
   writeAssignQueue(remaining);
   return assignedCount;
 }
 
-module.exports = { processAssignQueue, assignOnLandstar, isTractorOption, pickPosting };
+function reconcileAssignQueue(queue, done) {
+  return queue.flatMap(item => {
+    const processed = done.get(`${item.customer}|${item.loadId}`);
+    if (!processed || processed.request !== JSON.stringify(item)) return [item];
+    if (processed.state === 'done') return [];
+    return [{ ...item, attempts: (item.attempts || 0) + 1 }];
+  });
+}
+
+module.exports = { processAssignQueue, assignOnLandstar, isTractorOption, pickPosting, claimAssignQueue, reserveAssignment, reconcileAssignQueue };
 
 if (require.main === module) {
   const { chromium } = require('playwright');

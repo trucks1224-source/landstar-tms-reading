@@ -14,7 +14,7 @@ process.env.BOT_ROLE = 'helper'; // before status-server is loaded: no server, o
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
-const { setStatus, readAssignQueue, readTrackingWatch, readTrackingBills, reportTrackingResults, readMercuryGateQueue, reportDuplicateBills, HELPER_STATUS_FILE } = require('./status-server');
+const { setStatus, readHelperStatus, readAssignQueue, readTrackingWatch, readTrackingBills, reportTrackingResults, readMercuryGateQueue, reportDuplicateBills, HELPER_STATUS_FILE } = require('./status-server');
 const { openBoard } = require('./rate-check');
 const { processAssignQueue } = require('./assign');
 const { checkTracking } = require('./clarity');
@@ -136,15 +136,23 @@ async function launch() {
   return context;
 }
 
-const off = () => { try { fs.writeFileSync(HELPER_STATUS_FILE, JSON.stringify({ state: 'off', message: 'Helper bot is off', at: Date.now() })); } catch { /* ignore */ } };
+const off = () => {
+  if (readHelperStatus().pid === process.pid) setStatus('off', 'Helper bot is off');
+};
 
 (async () => {
-  console.log('Landstar HELPER bot: ON (Assign Capacity, Clarity, MercuryGate)');
+  console.log('Landstar HELPER bot: ON (Assign Capacity, Clarity; dispatch is manual)');
   console.log('Close its browser window to turn it off.\n');
   const context = await launch();
+  setStatus('starting', 'Opening helper worker');
+  const heartbeat = setInterval(() => {
+    const status = readHelperStatus();
+    setStatus(status.state, status.message);
+  }, 10000);
   let closed = false;
   context.on('close', () => {
     closed = true;
+    clearInterval(heartbeat);
     off();
     setTimeout(() => { console.log('Helper bot window closed. Helper bot: OFF'); process.exit(0); }, 3000);
   });
@@ -181,7 +189,7 @@ const off = () => { try { fs.writeFileSync(HELPER_STATUS_FILE, JSON.stringify({ 
         console.log(`\n[${timeNow()}] MercuryGate: checking recent freight bills for duplicates...`);
         await checkDuplicateBills(context, line => console.log(line));
         lastActivity = Date.now();
-      } else if (filesToHelpWith().length) {
+      } else if (!process.argv.includes('--dedicated-rates') && filesToHelpWith().length) {
         setStatus('working', 'Rate-checking an export');
         await helpWithExports(context, line => console.log(line));
         lastActivity = Date.now();

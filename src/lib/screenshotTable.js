@@ -58,16 +58,20 @@ export function detectScreenshotGrid(canvas) {
 export async function recognizeScreenshotEquipment(worker, canvas) {
   const normalizeCode = text => {
     const raw = text.trim().toUpperCase().replace(/[\s.]/g, '');
-    const code = { V53: 'V' }[raw] || raw;
-    return /^(VZ|VE|VR|VT|VM|RZ|R|F|SD|VAN|V)$/.test(code) ? code : '';
+    // The tiny colored cell confuses look-alike glyphs. "FV" (flatbed/stepdeck hazmat)
+    // is read as "FZ"/"E" (V->Z, and the F dropped); map those back. V53 is a van.
+    const code = { V53: 'V', FZ: 'FV', E: 'FV' }[raw] || raw;
+    return { code: /^(VZ|VE|VR|VT|VM|RZ|R|F|FV|FH|SD|VAN|V)$/.test(code) ? code : '', raw };
   };
   await worker.setParameters({
     tessedit_pageseg_mode: '8',
-    tessedit_char_whitelist: 'VEZRFSADNMT53'
+    // Include H so FH reads; F and V cover FV.
+    tessedit_char_whitelist: 'VEZRFSADNMT53H'
   });
   const { data } = await worker.recognize(canvas);
-  const code = normalizeCode(data.text);
-  if (code) return code;
+  const reads = [data.text];
+  const first = normalizeCode(data.text);
+  if (first.code) return first.code;
 
   // Small colored glyphs can disappear during OCR even though they are legible.
   // Retry a high-contrast copy without guessing an equipment code.
@@ -86,9 +90,12 @@ export async function recognizeScreenshotEquipment(worker, canvas) {
     }
     context.putImageData(pixels, 0, 0);
     const { data: retryData } = await worker.recognize(monochrome);
+    reads.push(retryData.text);
     const retryCode = normalizeCode(retryData.text);
-    if (retryCode) return retryCode;
+    if (retryCode.code) return retryCode.code;
   }
+  // Nothing matched. Remember what OCR saw so the skip message can show it.
+  recognizeScreenshotEquipment.lastRead = reads.map(text => String(text || '').trim()).filter(Boolean).join(' / ');
   return '';
 }
 
@@ -203,9 +210,25 @@ export async function readScreenshotGrid(worker, canvas, grid, onProgress, sourc
       nativeCanvas, equipmentLeft, equipmentTop, equipmentWidth, equipmentHeight,
       padding, padding, equipmentWidth * 5, equipmentHeight * 5
     );
-    const equipmentCode = await recognizeScreenshotEquipment(worker, equipmentCanvas);
-    if (!/^(VZ|VE|VR|VT|VM|RZ|R|F|SD|VAN|V)$/.test(equipmentCode)) {
-      skippedRows.push(`Row ${index + 1}: equipment unreadable for load ${digits}`);
+    recognizeScreenshotEquipment.lastRead = '';
+    let equipmentCode = await recognizeScreenshotEquipment(worker, equipmentCanvas);
+    if (!equipmentCode) {
+      // The tiny colored cell sometimes will not OCR. Fall back to the equipment text
+      // already read from the row's words (the same column), so FV/FH/etc. still import.
+      // word.bbox.x is in rowCanvas space (offset by -padding); grid.columns are canvas x.
+      const cellText = words
+        .filter(word => {
+          const center = (word.bbox.x0 + word.bbox.x1) / 2 + padding;
+          return center >= grid.columns[0] && center < grid.columns[1];
+        })
+        .map(word => word.text).join(' ')
+        .toUpperCase().replace(/[\s.]/g, '');
+      const fromText = { V53: 'V', FZ: 'FV', E: 'FV' }[cellText] || cellText;
+      if (/^(VZ|VE|VR|VT|VM|RZ|R|F|FV|FH|SD|VAN|V)$/.test(fromText)) equipmentCode = fromText;
+    }
+    if (!/^(VZ|VE|VR|VT|VM|RZ|R|F|FV|FH|SD|VAN|V)$/.test(equipmentCode)) {
+      const saw = recognizeScreenshotEquipment.lastRead ? ` (OCR saw "${recognizeScreenshotEquipment.lastRead}")` : '';
+      skippedRows.push(`Row ${index + 1}: equipment unreadable for load ${digits}${saw}`);
       continue;
     }
     lines.push({

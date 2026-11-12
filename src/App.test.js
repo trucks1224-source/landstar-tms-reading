@@ -6,18 +6,50 @@ import { transform } from 'esbuild';
 import * as XLSX from 'xlsx';
 import * as screenshotTable from './lib/screenshotTable.js';
 import * as ntgCards from './lib/ntgCards.js';
+import * as emailWorker from './lib/emailWorker.js';
 import zipcodes from 'zipcodes';
+import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
 
 const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8');
+test('editing an order number replaces the original load and keeps selection and booking details', () => {
+  const original = { id: '25', status: 'BOOKED', truck: '572203', rateInput: '6200' };
+  const other = { id: '2285956', status: 'OPEN' };
+  let map = { Para: [original, other] };
+  let selected;
+  let ids = ['25'];
+  const alerts = [];
+  const handler = source.slice(source.indexOf('  const handleInputChange ='), source.indexOf('  const handleOpenDatRateView ='));
+  const edit = vm.runInNewContext(`${handler}; handleInputChange`, {
+    selectedOrder: original, selectedBroker: 'Para', orders: map.Para,
+    normalizeLoadId: value => String(value).trim(),
+    alert: message => alerts.push(message),
+    setSelectedOrder: value => { selected = value; },
+    setCustomerOrdersMap: update => { map = update(map); },
+    setSelectedIds: update => { ids = update(ids); }
+  });
+  edit('id', '2285956');
+  assert.equal(alerts.length, 1);
+  assert.equal(map.Para[0], original, 'duplicate number must not overwrite either load');
+  edit('id', '2284615');
+  assert.equal(map.Para.length, 2);
+  assert.equal(map.Para[0].id, '2284615');
+  assert.equal(map.Para[0].truck, '572203');
+  assert.equal(map.Para[0].status, 'BOOKED');
+  assert.equal(map.Para[0].rateInput, '6200');
+  assert.equal(map.Para[1], other);
+  assert.equal(selected.id, '2284615');
+  assert.deepEqual(ids, ['2284615']);
+});
+
 const { code } = await transform(`${source}
 export {
-  preservesImportedLoadStatus, getReimportedLoadStatus,
+  preservesImportedLoadStatus, getReimportedLoadStatus, getPendingDriverStatusReply, getEmailPostingCode, getRxoEmailPostingCodes, describeRateWorker, hasPickupDayStarted, getCitySuggestions, applyLocationInput,
   keepPreviouslyExportedLoadsOpen, markDifferentScheduleLoadsEnt,
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
-  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber,
+  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
@@ -25,10 +57,10 @@ export {
   getFuelSurchargeRegion, getFuelSurchargeRate, normalizeFuelSurchargeRates, parseFuelSurchargeEmail,
   writeSyncedKey, initSyncGuardFromStorage, readDataVersions, getChangedSyncedKeys,
   isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted, classifyChangedSyncedKeys,
-  getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver,
-  getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getLoadedTimeWarning, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
+  getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver, getPostingMaintenanceLoads, getPostingRefreshDetails,
+  getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getPaperworkSince, checkBeforePodRequest, isDailyCustomerUpdateDue, getLoadedTimeWarning, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, copyLoadDetails, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer, getEquipmentListCategory
 };`, { loader: 'jsx', format: 'cjs' });
 // Test loads are dated October 2026, so "today" inside the TMS code is 10/1/2026:
@@ -42,8 +74,10 @@ const context = {
   Date: TestDate,
   module: { exports: {} },
   require(name) {
+    if (name === '../bot/automation-policy.json') return automationPolicy;
     if (name === './lib/screenshotTable.js') return screenshotTable;
     if (name === './lib/ntgCards.js') return ntgCards;
+    if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
     throw new Error(`Unexpected dependency: ${name}`);
   }
@@ -55,6 +89,39 @@ const customers = [
   'R X O 2429200 - ATZ P',
   'Nolan 965974 - ATZ H'
 ];
+
+test('driver status updates catch up only the newest recent confirmation, independently of Clarity', () => {
+  const now = TEST_NOW;
+  const pickup = { pickupTime: '10/01/2026 0800' };
+  const arrived = { id: 'arrival', status: 'arrived', at: new Date(now - 3600000).toISOString() };
+  const loaded = { id: 'loaded', status: 'loaded', at: new Date(now - 60000).toISOString() };
+  const replies = [loaded, { id: 'thanks', status: '', at: new Date(now).toISOString() }, arrived];
+  assert.equal(policy.getPendingDriverStatusReply(pickup, replies, now).id, 'loaded');
+  assert.equal(policy.getPendingDriverStatusReply({ ...pickup, customerStatusReplyIds: ['loaded'] }, replies, now), null,
+    'never send an older arrival after the loaded report has been sent');
+  assert.equal(policy.getPendingDriverStatusReply({ ...pickup, driverReplyIds: ['loaded'] }, replies, now).id, 'loaded',
+    'previously alerted replies are still forwarded');
+  assert.equal(policy.getPendingDriverStatusReply({ customerStatusReportedAt: new Date(now).toISOString() }, replies, now), null,
+    'a newer forwarded status prevents an older report from being sent');
+  assert.equal(policy.getPendingDriverStatusReply({}, [
+    { ...loaded, at: new Date(now - 25 * 3600000).toISOString() }
+  ], now), null);
+  assert.equal(policy.getPendingDriverStatusReply({}, [
+    { ...loaded, at: new Date(now + 60000).toISOString() }
+  ], now), null);
+});
+
+test('rate-worker status distinguishes login, stopped, blocked and working without inventing success', () => {
+  assert.equal(policy.describeRateWorker({ state: 'off' }), 'Rate worker off');
+  assert.equal(policy.describeRateWorker({ state: 'logged-in' }), 'Rate worker on');
+  assert.equal(policy.describeRateWorker({ state: 'working' }), 'Rate worker: checking');
+  assert.match(policy.describeRateWorker({ state: 'signing-in' }), /sign in to Landstar/);
+  assert.match(policy.describeRateWorker({ state: 'blocked' }), /needs attention/);
+  assert.match(policy.describeRateWorker({ state: 'starting' }), /starting/);
+  assert.match(policy.describeRateWorker({ state: 'nonsense' }), /unavailable/);
+  assert.match(policy.describeBotProgress({ state: 'logged-in', message: 'Uploads paused: 1 bulk error draft needs review' }), /Uploads paused/);
+  assert.match(policy.describeBotProgress({ state: 'logged-in', message: 'Waiting for the rate worker: 3 exports pending' }), /Waiting for the rate worker/);
+});
 const load = {
   id: '123456',
   status: 'OPEN',
@@ -82,6 +149,36 @@ test('pasted screenshots are accepted outside editable fields without intercepti
   assert.equal(policy.getPastedImage({ clipboardData, target: { isContentEditable: true } }), null);
   assert.equal(policy.getPastedImage({ clipboardData: { items: [{ type: 'text/plain' }] } }), null);
   assert.equal(policy.getPastedImage({}), null);
+});
+
+test('initial broker tracking links may precede pickup, but follow-ups and check-call alerts start on pickup day', () => {
+  const before = new Date(2026, 10, 12, 23, 59).getTime();
+  const midnight = new Date(2026, 10, 13, 0, 0).getTime();
+  const booked = {
+    status: 'BOOKED', pickupTime: '11/13/2026 1300 - 1500',
+    deliveryTime: '11/16/2026 0800', bookedAt: new Date(2026, 10, 10, 9).toISOString()
+  };
+  const tracking = { ok: true, freightBill: '1234567', trackingLink: 'https://example.com/tracking' };
+  assert.equal(policy.hasPickupDayStarted(booked, before), false);
+  assert.equal(policy.hasPickupDayStarted(booked, midnight), true);
+  assert.equal(policy.hasPickupDayStarted({ pickupTime: '' }, midnight), false);
+  assert.deepEqual([...policy.getDueParamountEmails(booked, tracking, before)], ['initial']);
+  assert.deepEqual([...policy.getDueParamountEmails(booked, { ...tracking, trackingLink: '' }, before)], []);
+  const introduced = { ...booked, paramountTracking: { emails: { initial: { at: new Date(before).toISOString() } } } };
+  assert.deepEqual([...policy.getDueParamountEmails(introduced, { ...tracking, arrivedShipperAt: 'confirmed' }, before)], []);
+  assert.deepEqual([...policy.getDueDriverEmails(booked, tracking, before)], ['dispatch']);
+  const confirmed = policy.markDriverEmail(booked, 'dispatch', { at: new Date(before).toISOString() });
+  assert.deepEqual([...policy.getDueDriverEmails(confirmed, tracking, before)], [], 'no pre-pickup follow-ups or duplicate confirmation');
+  assert.deepEqual([...policy.getDueDriverEmails({ ...booked, trackingStage: 'Loaded' }, tracking, before)], []);
+  assert.deepEqual([...policy.getDueDriverEmails(booked, { ...tracking, deliveredAt: 'confirmed' }, before)], []);
+  assert.deepEqual([...policy.getDueDriverEmails(booked, tracking, midnight)], ['dispatch']);
+  assert.equal(policy.getTrackingAlert(booked, before), null);
+  assert.equal(policy.getTrackingAlert(booked, midnight), null, 'booking age does not make pickup midnight overdue');
+  assert.equal(policy.getTrackingAlert(booked, midnight + 5 * 3600000).level, 'due');
+  assert.equal(policy.getTruckerToolsStatus(booked, 'Para 1522166 - ATZ', before), null);
+  assert.equal(policy.getPendingDriverStatusReply(booked, [
+    { id: 'report', status: 'loaded', at: new Date(before).toISOString() }
+  ], before), null);
 });
 
 test('clipboard screenshot reading accepts image data and prefers PNG', async () => {
@@ -149,6 +246,20 @@ test('search finds load numbers, origin/destination cities and states across eve
   assert.equal(policy.getLoadSearchEntries(map, customers[0], '  ')[0].order, first);
   assert.equal(policy.getLoadSearchEntries(map, customers[0], '').length, 1);
   assert.equal(Object.hasOwn(second, 'customer'), false);
+});
+
+test('search matches city + state together and bare state codes', () => {
+  const order = { ...load, route: '', origCity: 'CITY OF COMMERCE', origSt: 'CA', destCity: 'CALEXICO', destSt: 'CA' };
+  assert.equal(policy.loadMatchesSearch(order, 'city of commerce ca'), true);
+  assert.equal(policy.loadMatchesSearch(order, 'City of Commerce, CA'), true);
+  assert.equal(policy.loadMatchesSearch(order, 'commerce ca'), true);
+  assert.equal(policy.loadMatchesSearch(order, 'calexico ca'), true);
+  assert.equal(policy.loadMatchesSearch(order, 'CA'), true);
+  // A state that is not on the load does not match, and "ca" does not hit "CAlexico" text.
+  const other = { ...load, route: '', origCity: 'Canton', origSt: 'OH', destCity: 'Aline', destSt: 'OK' };
+  assert.equal(policy.loadMatchesSearch(other, 'ca'), false);
+  assert.equal(policy.loadMatchesSearch(other, 'canton oh'), true);
+  assert.equal(policy.loadMatchesSearch(other, 'canton ca'), false);
 });
 
 test('search forgives small city misspellings and finds driver, truck and freight bill', () => {
@@ -249,6 +360,18 @@ test('FH imports and exports as FH and is not hazmat unless flagged', () => {
   assert.equal(policy.getLoadCommodity({ eCode: 'F' }), 'CGAPP');
 });
 
+test('FV (flatbed/stepdeck hazmat) imports as flatbed hazmat', () => {
+  assert.equal(policy.getLandstarEquipmentCode('FV'), 'FLAT');
+  assert.equal(policy.getLandstarCommodity('FV'), 'HAZMAT');
+  assert.equal(policy.isHazmatLoad({ eCode: 'FV' }), true);
+  assert.equal(policy.getLoadCommodity({ eCode: 'FV' }), 'HAZMAT');
+  assert.match(policy.getEquipmentDescription('FV'), /53FL/);
+  assert.match(policy.getEquipmentDescription('FV'), /STEP:SD/);
+  assert.equal(policy.isFlatbedEquipment('FV'), true);
+  assert.equal(policy.getLandstarEquipment2({ eCode: 'FV' }), 'STEP');
+  assert.equal(policy.getEquipmentListCategory('FV'), 'flatbed');
+});
+
 test('DAT city correction fixes Long Island region OCR misreads', () => {
   for (const misread of ['LONGLISLAND', 'LONGISLAND', 'LONG SLAND', 'LONG ISLAND']) {
     const loads = [{ origCity: 'AMELIA', origSt: 'OH', destCity: misread, destSt: 'NY', route: '' }];
@@ -259,6 +382,20 @@ test('DAT city correction fixes Long Island region OCR misreads', () => {
   const other = [{ origCity: 'VISALIA', origSt: 'CA', destCity: 'MURRAY', destSt: 'KY', route: '' }];
   policy.correctDatCities(other, zipcodes);
   assert.equal(other[0].destCity, 'MURRAY');
+});
+
+test('pickup and delivery schedule controls have large accessible date and time fields', () => {
+  const app = createAppHarness(customers[0], [{ ...load, pickupTime: '11/18/2026 0800 - 2000', deliveryTime: '11/19/2026 0800 - 1200' }]);
+  for (const schedule of ['Pickup', 'Delivery']) {
+    for (const side of ['from', 'to']) {
+      for (const type of ['date', 'time']) {
+        const input = app.find(node => node.props?.['aria-label'] === `${schedule} ${side} ${type}`);
+        assert.ok(input, `${schedule} ${side} ${type} has an accessible label`);
+        assert.match(input.props.className, /min-h-\[48px\]/);
+        assert.match(input.props.className, /text-base/);
+      }
+    }
+  }
 });
 
 test('schedule picker parts round-trip pickup and delivery ranges', () => {
@@ -581,6 +718,35 @@ test('VM screenshot equipment imports as team van', () => {
   assert.equal(policy.isTeamEquipment('V'), false);
 });
 
+test('FV screenshot equipment imports as flatbed hazmat (load 2284974)', () => {
+  const parsed = parseScreenshotTimes('2284974', [
+    '11/10/2026 1300', '11/10/2026 1400', '11/11/2026 0800', '11/11/2026 1530'
+  ], customers[0], false, 'FV', 'FV');
+  assert.equal(parsed.eCode, 'FV');
+  assert.equal(policy.getLandstarEquipmentCode(parsed.eCode), 'FLAT');
+  assert.equal(policy.isHazmatLoad(parsed), true);
+  assert.equal(policy.getLoadCommodity(parsed), 'HAZMAT');
+});
+
+test('a screenshot row with a readable order number but unreadable city still imports, flagged to verify', () => {
+  const columns = [0, 0.03, 0.09, 0.18, 0.28, 0.36, 0.46, 0.56, 0.59, 0.63, 0.7, 0.74, 0.78, 0.83, 0.87, 1];
+  const values = ['VZ', '2284974', '11/10/2026 1300', '11/10/2026 1400',
+    '11/11/2026 0800', '11/11/2026 1530', '', 'GA', '30901', 'ATLANTA',
+    'GA', '30315', '159.0', '41979', ''];
+  const words = values.map((text, index) => ({
+    text,
+    bbox: { x0: columns[index] * 1200 + 1, x1: columns[index + 1] * 1200 - 1, y0: 40, y1: 50 }
+  }));
+  const [parsed] = policy.parseScreenshotLines([{
+    words, text: values.join(' '), bbox: { y0: 40, y1: 50 },
+    verifiedOrderId: '2284974', screenshotColumns: columns
+  }], 1200, 497, customers[0]);
+  assert.ok(parsed, 'the row is not dropped');
+  assert.equal(parsed.id, '2284974');
+  assert.equal(parsed.destCity, 'ATLANTA');
+  assert.ok(/unreadable/i.test(parsed.notes), 'flagged to verify');
+});
+
 test('Canadian postal codes are normalized and provinces export as Canada', () => {
   assert.equal(policy.normalizeCanadianPostalCode('t4v4l7'), 'T4V 4L7');
   assert.equal(policy.normalizeCanadianPostalCode('T4V 4L7'), 'T4V 4L7');
@@ -612,8 +778,20 @@ test('screenshot equipment OCR restores the letter whitelist after reading load 
   assert.equal(recognized, 'VM');
   assert.deepEqual(parameters, [{
     tessedit_pageseg_mode: '8',
-    tessedit_char_whitelist: 'VEZRFSADNMT53'
+    tessedit_char_whitelist: 'VEZRFSADNMT53H'
   }]);
+});
+
+test('equipment OCR maps the FV look-alikes (FZ, E) to flatbed hazmat', async () => {
+  const recognize = text => screenshotTable.recognizeScreenshotEquipment({
+    async setParameters() {},
+    async recognize() { return { data: { text } }; }
+  }, {});
+  assert.equal(await recognize('FV'), 'FV');
+  assert.equal(await recognize('FZ'), 'FV');
+  assert.equal(await recognize('E'), 'FV');
+  assert.equal(await recognize('F'), 'F');
+  assert.equal(await recognize('VZ'), 'VZ');
 });
 
 test('equipment OCR retries unreadable cells in high contrast without guessing a van', async () => {
@@ -930,6 +1108,79 @@ test('repeating a full-list import is idempotent and reopens existing ON HOLD nu
   assert.equal(second.loads[0].status, 'OPEN');
 });
 
+test('SNB available updates send known details without invented movement, ETA or placeholders', () => {
+  const load = { id: '24596349', status: 'BOOKED' };
+  const empty = policy.buildRxoUpdateEmail(load, {}, { availableOnly: true });
+  assert.equal(empty.complete, true, 'missing tracking does not block SNB reply');
+  assert.match(empty.text, /status has not yet been confirmed/);
+  assert.match(empty.text, /Pickup ETA has not yet been confirmed/);
+  assert.doesNotMatch(empty.text, /____|empty and heading|on the way/);
+  const loaded = policy.buildRxoUpdateEmail({ ...load, trackingStage: 'Loaded' }, {
+    lastLocation: 'Shelby, NC', deliveryScheduled: '2026-10-02T09:00:00Z'
+  }, { availableOnly: true });
+  assert.match(loaded.text, /truck is loaded.*Departure has not been confirmed/);
+  assert.match(loaded.text, /Last reported location: Shelby, NC/);
+  assert.match(loaded.text, /Delivery ETA has not yet been confirmed/);
+  assert.doesNotMatch(loaded.text, /on the way|Reported delivery ETA:/);
+  const delivered = policy.buildRxoUpdateEmail({ ...load, trackingStage: 'Delivered' }, {}, { availableOnly: true });
+  assert.match(delivered.text, /marked delivered/);
+  assert.doesNotMatch(delivered.text, /ETA|heading/);
+});
+
+test('email posting codes use load overrides, profile defaults and fail closed for conflicting RXO orders', () => {
+  assert.equal(policy.getEmailPostingCode({ postingCode: ' anq ' }, 'SNB'), 'ANQ');
+  assert.equal(policy.getEmailPostingCode({}, 'snb'), 'SNB');
+  assert.equal(policy.getEmailPostingCode({}), '');
+  const codes = policy.getRxoEmailPostingCodes({
+    [customers[1]]: [
+      { id: '24596349', postingCode: 'SNB' },
+      { id: '12345678', postingCode: 'ANQ' },
+      { id: '87654321' }
+    ],
+    'R X O 2429200 - ATZ': [{ id: '24596349', postingCode: 'ANQ' }],
+    [customers[0]]: [{ id: '12345678', postingCode: 'SNB' }]
+  }, 'SNB');
+  assert.equal(codes['24596349'], '', 'conflicting records do not authorize forwarding');
+  assert.equal(codes['12345678'], 'ANQ', 'other customers cannot change RXO identity');
+  assert.equal(codes['87654321'], 'SNB');
+});
+
+test('pickup calendar has a large labeled trigger, keyboard focus and preserves date filtering', () => {
+  const harness = createAppHarness(customers[0], [load]);
+  const dateInput = () => harness.find(node => node.props.id === 'pickup-date-filter');
+  const trigger = harness.find(node => node.props['aria-label'] === 'Open pickup date calendar');
+  assert.equal(trigger.type, 'button');
+  assert.equal(trigger.props['aria-controls'], dateInput().props.id);
+  assert.match(trigger.props.className, /min-h-\[44px\]/);
+  assert.match(dateInput().props.className, /focus-visible:ring-2/);
+  let focused = 0;
+  let opened = 0;
+  const input = { focus() { focused++; }, showPicker() { opened++; } };
+  const event = { currentTarget: { parentElement: { querySelector: () => input } } };
+  trigger.props.onClick(event);
+  assert.equal(focused, 1);
+  assert.equal(opened, 1);
+  dateInput().props.onClick({ currentTarget: input });
+  assert.equal(opened, 2, 'the entire date field opens the picker');
+  delete input.showPicker;
+  trigger.props.onClick(event);
+  assert.equal(focused, 2, 'older browsers can still focus and edit the date');
+  dateInput().props.onChange({ target: { value: '2026-10-27' } });
+  harness.render();
+  assert.equal(dateInput().props.value, '2026-10-27');
+  const clear = harness.find(node => node.props['aria-label'] === 'Clear pickup date filter');
+  clear.props.onClick();
+  harness.render();
+  assert.equal(dateInput().props.value, '');
+  const shortcut = label => harness.find(node => node.type === 'button' && node.props.children.includes(label));
+  shortcut('Today').props.onClick();
+  harness.render();
+  assert.equal(dateInput().props.value, '2026-10-01');
+  shortcut('Tomorrow').props.onClick();
+  harness.render();
+  assert.equal(dateInput().props.value, '2026-10-02');
+});
+
 function createAppHarness(customer, existing, supabase = null, savedRates = {}, extraContext = {}) {
   const storage = new Map([
     ['landstar_brokers', JSON.stringify([customer])],
@@ -972,6 +1223,8 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
     require(name) {
       if (name === './lib/screenshotTable.js') return screenshotTable;
       if (name === './lib/ntgCards.js') return ntgCards;
+      if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
+      if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === 'react') return react;
       if (name === 'xlsx') return XLSX;
       if (name === './lib/supabase') return { supabase };
@@ -1040,6 +1293,71 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
   };
 }
 
+test('tracking events enqueue broker emails in the owning worker instead of sending concurrently', async () => {
+  const listeners = new Map();
+  const calls = [];
+  const requested = [];
+  let tasks;
+  let owner = true;
+  let stopped = false;
+  const booked = { ...load, id: '2283600', status: 'BOOKED', truck: '583737', pickupTime: '10/01/2026 0800' };
+  const app = createAppHarness(customers[0], [booked], null, {}, {
+    setInterval: () => 1,
+    clearInterval() {},
+    setTimeout: () => 1,
+    clearTimeout() {},
+    AbortSignal,
+    window: {
+      location: { hostname: '127.0.0.1' },
+      addEventListener: (name, callback) => listeners.set(name, callback),
+      removeEventListener: name => listeners.delete(name)
+    },
+    navigator: { locks: {} },
+    emailWorkerModule: {
+      ...emailWorker,
+      createEmailWorker(options) {
+        tasks = options.tasks;
+        return {
+          start() {},
+          stop() { stopped = true; },
+          isOwner: () => owner,
+          request: id => requested.push(id),
+          reportIssue() {}
+        };
+      }
+    },
+    fetch: async (url, options) => {
+      if (url === 'http://127.0.0.1:47615/posting-maintenance') return { ok: true };
+      assert.equal(url, '/api/paramount-email');
+      calls.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ to: ['broker@example.com'], cc: [] }) };
+    }
+  });
+  const cleanup = app.effects.at(-1)();
+  try {
+    const info = {
+      customer: customers[0], loadId: booked.id, ok: true, freightBill: '4431900',
+      trackingLink: 'https://clarity.example.com/tracking', at: new Date(TEST_NOW).toISOString()
+    };
+    listeners.get('landstar-tracking-result')({ detail: info });
+    assert.deepEqual(calls, [], 'tracking events never bypass the polling queue');
+    assert.deepEqual(requested, ['tracking-emails']);
+    app.render();
+    await tasks.find(task => task.id === 'tracking-emails').run();
+    assert.deepEqual(calls.map(call => call.action), ['thread'], 'first-send approval remains required');
+    app.render();
+    assert.ok(app.find(node => node.type === 'button' && /1 email to send/.test(String(node.props.children))),
+      'the event still produces a draft after storing tracking without the transient ok flag');
+    owner = false;
+    listeners.get('landstar-tracking-result')({ detail: info });
+    assert.equal(requested.length, 1, 'standby tabs cannot enqueue automatic emails');
+    const status = app.find(node => node.type === 'details' && node.props['aria-label'] === 'Driver-to-broker worker');
+    assert.ok(status, 'the worker status is rendered');
+  } finally { cleanup(); }
+  assert.equal(stopped, true);
+  assert.equal(listeners.size, 0);
+});
+
 // Runs the module in a fresh context sharing one storage map, simulating two tabs.
 function createSyncContext(storage) {
   const ctx = {
@@ -1050,8 +1368,10 @@ function createSyncContext(storage) {
       setItem: (key, value) => storage.set(key, String(value))
     },
     require(name) {
+      if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === './lib/screenshotTable.js') return screenshotTable;
       if (name === './lib/ntgCards.js') return ntgCards;
+      if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
       throw new Error(`Unexpected dependency: ${name}`);
     }
@@ -1317,7 +1637,7 @@ test('Excel equipment text normalizes to TMS equipment codes', () => {
   assert.equal(policy.normalizeEquipmentCode('Flatbed w/Tarps'), 'F');
   assert.equal(policy.normalizeEquipmentCode('Flatbed or Step Deck'), 'SD');
   assert.equal(policy.normalizeEquipmentCode('Flatbed or Conestoga'), 'FLCS');
-  assert.equal(policy.normalizeEquipmentCode('Straight Truck - Large'), 'D-LG,D-ST');
+  assert.equal(policy.normalizeEquipmentCode('Straight Truck - Large'), 'D-ST');
   assert.equal(policy.normalizeEquipmentCode('Conestoga'), 'FLCS');
   assert.equal(policy.normalizeEquipmentCode('Step Deck'), 'SD');
   assert.equal(policy.normalizeEquipmentCode('Stepdeck'), 'SD');
@@ -1421,11 +1741,36 @@ test('RXO allLoadsSearch export imports pickup and delivery times from its own c
   assert.equal(app.errors.length, 0);
 });
 
-test('straight trucks import as D-LG,D-ST and export to Landstar as D-LG with D-ST alternate', () => {
-  for (const code of ['D-LG', 'D-LG,D-ST']) {
-    assert.equal(policy.getLandstarEquipmentCode(code), 'D-LG', code);
-    assert.equal(policy.getLandstarEquipment2({ eCode: code }), 'D-ST', code);
+test('equipment dropdowns save two alternates and allow removing automatic alternates', () => {
+  const app = createAppHarness(customers[0], [load]);
+  app.find(node => node.props?.id === 'load-equipment-primary').props.onChange({ target: { value: 'D-ST' } });
+  app.render();
+  assert.equal(app.states[6].eCode, 'D-ST');
+  assert.equal(policy.getLandstarEquipment2(app.states[6]), 'D-LG');
+  app.find(node => node.props?.id === 'load-equipment2').props.onChange({ target: { value: '' } });
+  app.render();
+  assert.equal(policy.getLandstarEquipment2(app.states[6]), '');
+  app.find(node => node.props?.id === 'load-equipment3').props.onChange({ target: { value: 'VAN' } });
+  app.render();
+  assert.equal(app.states[6].equipment3, 'VAN');
+  assert.equal(policy.copyLoadDetails(app.states[6], 'copy-equipment').equipment3, 'VAN');
+  app.find(node => node.props?.id === 'load-equipment-primary').props.onChange({ target: { value: 'D-RF' } });
+  app.render();
+  assert.equal(app.states[6].eCode, 'D-RF');
+  assert.equal(policy.getLandstarEquipmentCode('D-RF'), 'D-RF');
+  assert.equal(policy.getLandstarEquipment2(app.states[6]), '', 'reefer straight trucks do not accept dry equipment automatically');
+  assert.equal(policy.normalizeEquipmentCode('Straight truck refrigerated'), 'D-RF');
+});
+
+test('straight trucks use D-ST with D-LG alternate unless a liftgate is required', () => {
+  for (const code of ['D-ST', 'D-ST,D-LG', 'D-LG,D-ST']) {
+    assert.equal(policy.getLandstarEquipmentCode(code), 'D-ST', code);
+    assert.equal(policy.getLandstarEquipment2({ eCode: code }), 'D-LG', code);
   }
+  assert.equal(policy.getLandstarEquipmentCode('D-LG'), 'D-LG');
+  assert.equal(policy.getLandstarEquipment2({ eCode: 'D-LG' }), '');
+  assert.equal(policy.normalizeEquipmentCode('Straight truck lift gate required'), 'D-LG');
+  assert.equal(policy.normalizeEquipmentCode('Straight truck no liftgate'), 'D-ST');
   assert.equal(policy.getLandstarEquipment2({ eCode: 'V' }), '');
   assert.equal(policy.getLandstarEquipment2({ eCode: 'F,SD' }), 'STEP');
   assert.equal(policy.getLandstarEquipment2({ eCode: 'VM' }), '53VN');
@@ -1759,6 +2104,73 @@ test('assignment fields save with the load and survive reload and re-import', ()
   assert.equal(replaced.pickupTime, load.pickupTime);
 });
 
+test('global search includes all statuses and customers regardless of the pickup calendar', () => {
+  const statuses = ['OPEN', 'ON HOLD', 'OFFER', 'ENT', 'BOOKED'];
+  const app = createAppHarness(customers[0], []);
+  app.states[2][customers[1]] = statuses.map((status, index) => ({
+    ...load, id: `search-${index}`, status, origCity: 'SEARCHCITY',
+    pickupTime: '11/20/2026 0900', rateInput: '',
+    ...(status === 'BOOKED' ? { trackingStage: 'Delivered', paperworkReceivedAt: '2026-11-21', paperworkDone: true } : {})
+  }));
+  app.render();
+  app.find(node => node.type === 'button' && textOf(node) === 'OPEN').props.onClick();
+  app.find(node => node.props?.id === 'pickup-date-filter').props.onChange({ target: { value: '2026-12-01' } });
+  app.render();
+  app.find(node => node.props?.['aria-label'] === 'Search loads across all customers')
+    .props.onChange({ target: { value: 'SEARCHCITY' } });
+  app.render();
+  const cards = [];
+  app.find(node => {
+    if (node.props?.className?.includes('tms-load-card')) cards.push(node);
+    return false;
+  });
+  assert.equal(cards.length, 5, 'a selected pickup date cannot hide global search matches');
+  app.find(node => node.props?.id === 'pickup-date-filter').props.onChange({ target: { value: '2026-11-20' } });
+  app.render();
+  const matching = [];
+  app.find(node => {
+    if (node.props?.className?.includes('tms-load-card')) matching.push(node);
+    return false;
+  });
+  assert.equal(matching.length, 5, 'includes completed booked loads, offers, holds and exported loads on the selected day');
+});
+
+test('pickup and delivery state filters cannot hide global search across customers and statuses', () => {
+  const app = createAppHarness(customers[0], [
+    { ...load, id: 'to-nc', origCity: 'FORT SMITH', origSt: 'AR', destSt: 'NC', status: 'OPEN' },
+    { ...load, id: 'to-tx', origCity: 'FORT SMITH', origSt: 'AR', destSt: 'TX', status: 'OPEN' }
+  ]);
+  app.states[2][customers[1]] = [
+    { ...load, id: 'foreign-nc', origCity: 'FORT SMITH', origSt: 'AR', destSt: 'NC', status: 'BOOKED' },
+    { ...load, id: 'wrong-origin', origCity: 'FORT SMITH', origSt: 'TX', destSt: 'NC', status: 'OFFER' }
+  ];
+  app.render();
+  app.find(node => node.props?.['aria-label'] === 'Search loads across all customers')
+    .props.onChange({ target: { value: 'FORT SMITH' } });
+  app.render();
+  const ids = () => {
+    const cards = [];
+    app.find(node => {
+      if (node.props?.className?.includes('tms-load-card')) cards.push(node);
+      return false;
+    });
+    return cards.map(card => card.props.id).sort();
+  };
+  assert.equal(ids().length, 4);
+  app.find(node => node.props?.['aria-label'] === 'Filter by delivery state')
+    .props.onChange({ target: { value: 'NC' } });
+  app.render();
+  assert.equal(ids().length, 4);
+  app.find(node => node.props?.['aria-label'] === 'Filter by pickup state')
+    .props.onChange({ target: { value: 'AR' } });
+  app.render();
+  assert.equal(ids().length, 4);
+  app.find(node => node.props?.['aria-label'] === 'Filter by delivery state')
+    .props.onChange({ target: { value: '' } });
+  app.render();
+  assert.equal(ids().length, 4);
+});
+
 test('global search opens the owning customer and keeps bulk selection customer-scoped', () => {
   const app = createAppHarness(customers[0], [load]);
   const foreign = { ...load, id: load.id, origCity: 'Vernon', origSt: 'CA', route: '' };
@@ -1780,6 +2192,78 @@ test('global search opens the owning customer and keeps bulk selection customer-
   assert.equal(app.find(node => node.type === 'input' && node.props.title === 'Select load').props.disabled, false);
   selectAll().props.onChange();
   assert.deepEqual(Array.from(app.states[18]), [foreign.id]);
+});
+
+test('OFFER Select All selects every customer using distinct identities for repeated load numbers', () => {
+  const own = { ...load, id: 'offer-1', status: 'OFFER', tag: 'OFFER', rateInput: '1000' };
+  const foreign = { ...own, rateInput: '', origCity: 'Vernon', route: 'Vernon, CA to Dallas, TX' };
+  const app = createAppHarness(customers[0], [own, { ...load, id: 'open-1', status: 'OPEN' }]);
+  app.states[2][customers[1]] = [foreign, { ...load, id: 'booked-1', status: 'BOOKED' }];
+  app.render();
+  app.find(node => node.type === 'button' && textOf(node) === 'OFFER (2)').props.onClick();
+  app.render();
+  const cards = () => {
+    const matches = [];
+    app.find(node => {
+      if (node.props?.className?.includes('tms-load-card')) matches.push(node);
+      return false;
+    });
+    return matches;
+  };
+  assert.equal(cards().length, 2);
+  assert.ok(cards().some(card => textOf(card).includes(customers[0])));
+  assert.ok(cards().some(card => textOf(card).includes(customers[1])));
+  assert.ok(app.find(node => node.type === 'button' && textOf(node) === 'All (2)'));
+  assert.ok(app.find(node => node.type === 'button' && textOf(node) === 'With rate (1)'));
+  assert.ok(app.find(node => node.type === 'button' && textOf(node) === 'No rate (1)'));
+  const selectAll = () => app.find(node => node.type === 'input' && node.props.className === 'cursor-pointer accent-blue-600');
+  selectAll().props.onChange();
+  app.render();
+  assert.deepEqual(Array.from(app.states[18]).sort(), [
+    JSON.stringify([customers[0], own.id]), JSON.stringify([customers[1], foreign.id])
+  ].sort());
+  assert.ok(app.find(node => textOf(node) === 'Select All (all customers)'));
+  assert.ok(app.find(node => node.type === 'button' && textOf(node).includes('Copy Selected (2)')));
+  const checkboxes = [];
+  app.find(node => {
+    if (node.type === 'input' && node.props.title === 'Select load') checkboxes.push(node);
+    return false;
+  });
+  assert.equal(checkboxes.length, 2);
+  assert.ok(checkboxes.every(node => node.props.checked && !node.props.disabled));
+  checkboxes[1].props.onChange({ stopPropagation() {} });
+  app.render();
+  assert.equal(app.states[18].length, 1, 'one customer can be unchecked without affecting the other');
+  selectAll().props.onChange();
+  app.render();
+  assert.equal(app.states[18].length, 2);
+  const foreignCard = cards().find(card => textOf(card).includes(customers[1]));
+  foreignCard.props.onClick();
+  app.render();
+  assert.equal(app.states[1], customers[1]);
+  assert.equal(app.states[6], foreign);
+  assert.equal(app.states[18].length, 0);
+  assert.equal(cards().length, 2, 'opening another customer does not narrow offers');
+  app.find(node => node.props?.['aria-label'] === 'Search loads across all customers')
+    .props.onChange({ target: { value: 'vernon' } });
+  app.render();
+  assert.equal(cards().length, 1, 'search still filters all-customer offers');
+});
+
+test('OFFER bulk move updates selected loads across customers without touching unselected loads', () => {
+  const own = { ...load, id: 'same', status: 'OFFER', tag: 'OFFER' };
+  const app = createAppHarness(customers[0], [own, { ...load, id: 'keep', status: 'OPEN' }]);
+  app.states[2][customers[1]] = [{ ...own }];
+  app.render();
+  app.find(node => node.type === 'button' && textOf(node) === 'OFFER (2)').props.onClick();
+  app.render();
+  app.find(node => node.type === 'input' && node.props.className === 'cursor-pointer accent-blue-600').props.onChange();
+  app.render();
+  app.find(node => node.type === 'button' && node.props.title === 'Move 2 selected loads to ON HOLD').props.onClick();
+  app.render();
+  assert.equal(app.states[2][customers[0]][0].status, 'ON HOLD');
+  assert.equal(app.states[2][customers[1]][0].status, 'ON HOLD');
+  assert.equal(app.states[2][customers[0]][1].status, 'OPEN');
 });
 
 test('manual rate persists and auto-fills a future Excel load with different ZIPs after reload', async () => {
@@ -1868,7 +2352,7 @@ test(`${customer} Excel import persists one OPEN load per lane/day and removes o
       '', '', 'Destination City', 'Destination State', 'Destination Zip', 'Weight', '',
       'Pickup Time', 'Delivery Time', 'Miles'],
     ...['100001', '100002', '100003'].map((id, index) => [
-      id, 'VZ', '', '', '', '', 'Chicago', 'IL', '60601', '', '', 'Dallas', 'TX',
+      id, 'V', '', '', '', '', 'Chicago', 'IL', '60601', '', '', 'Dallas', 'TX',
       '75201', '42000', '', `10/${index === 2 ? '28' : '27'}/2026 ${index === 1 ? '1400' : '0800'} - 1600`,
       '10/30/2026 0800 - 1600', '900'
     ])
@@ -1893,7 +2377,7 @@ for (const customer of customers) {
         '', '', 'Destination City', 'Destination State', 'Destination Zip', 'Weight', '',
         'Pickup Time', 'Delivery Time', 'Miles'],
       ...[load.id, load.id, '444444'].map((id, index) => [
-        id, 'VZ', '', '', '', '', 'Chicago', 'IL', '60601', '', '', id === '444444' ? 'Austin' : 'Dallas', 'TX',
+        id, 'V', '', '', '', '', 'Chicago', 'IL', '60601', '', '', id === '444444' ? 'Austin' : 'Dallas', 'TX',
         '75201', '42000', '', `10/${index === 1 ? '29' : '28'}/2026 0800 - 1200`,
         '10/30/2026 0800 - 1600', '900'
       ])
@@ -2039,7 +2523,9 @@ test('picking a known driver fills phone, truck and trailer; Book Load moves the
 
   const bookedTab = app.find(node => node.type === 'button' && textOf(node) === 'BOOKED (2)');
   assert.ok(bookedTab, 'Booked Loads tab shows the count');
-  assert.equal(app.alerts.length, 0);
+  assert.equal(app.alerts.length, 1);
+  assert.match(app.alerts[0], /Booked in the TMS only.*not assigned automatically/);
+  assert.ok(app.find(node => node.props?.role === 'alert' && textOf(node).includes('not assigned automatically')));
 });
 
 test('Book Load without a driver warns and keeps the load open', () => {
@@ -2096,16 +2582,18 @@ test('check calls record stage and note and keep the last 20', () => {
   assert.equal(policy.logCheckCall(tracked, { stage: 'Nonsense' }).trackingStage, 'In Transit');
 });
 
-test('booked loads from every customer are listed by pickup, delivered last', () => {
+test('booked loads from every customer are listed by pickup date and time, missing dates last', () => {
   const entries = policy.getBookedLoads({
     A: [
       { ...load, id: 'a1', status: 'BOOKED', pickupTime: '11/07/2026 0800' },
       { ...load, id: 'a2', status: 'OPEN' },
-      { ...load, id: 'a3', status: 'BOOKED', pickupTime: '11/01/2026 0800', trackingStage: 'Delivered' }
+      { ...load, id: 'a3', status: 'BOOKED', pickupTime: '11/01/2026 0800', trackingStage: 'Delivered' },
+      { ...load, id: 'a4', status: 'BOOKED', pickupTime: '' },
+      { ...load, id: 'a5', status: 'BOOKED', pickupTime: '11/05/2026 0700' }
     ],
     B: [{ ...load, id: 'b1', status: 'BOOKED', pickupTime: '11/05/2026 0800' }]
   });
-  assert.deepEqual(Array.from(entries, e => `${e.customer}:${e.load.id}`), ['B:b1', 'A:a1', 'A:a3']);
+  assert.deepEqual(Array.from(entries, e => `${e.customer}:${e.load.id}`), ['A:a3', 'A:a5', 'B:b1', 'A:a1', 'A:a4']);
 });
 
 test('BOOKED tab opens the Booked Loads page; stage changes save and Open returns to the load', () => {
@@ -2232,6 +2720,59 @@ test('exported rates become past rates for the lane, one entry per distinct rate
   assert.equal(history.find(entry => entry.rate === '3175').savedAt, '2026-11-05T12:00:00.000Z');
 });
 
+test('entering a driver phone moves an unbooked load to OFFER without assigning capacity', () => {
+  for (const status of ['OPEN', 'ENT', 'ON HOLD']) {
+    const app = createAppHarness(customers[0], [{ ...load, id: '1', status, tag: policy.getStatusTag(status) }]);
+    app.find(node => node.props?.id === 'assignment-driver-phone').props.onChange({ target: { value: '555-111-2222' } });
+    app.render();
+    assert.equal(app.states[6].status, 'OFFER');
+    assert.equal(app.states[6].tag, 'OFFER');
+    assert.equal(app.states[6].driverPhone, '555-111-2222');
+    assert.equal(app.states[6].bookedAt, undefined);
+    assert.equal(app.storage.has('landstar_assignQueue'), false);
+    const tab = app.find(node => node.type === 'button' && textOf(node) === 'OFFER (1)');
+    assert.ok(tab);
+    tab.props.onClick();
+    app.render();
+    assert.ok(app.find(node => node.props?.id === 'assignment-driver-phone'), 'offer stays accessible');
+  }
+});
+
+test('phone edits keep booked loads booked and clearing an offer phone does not reopen it', () => {
+  for (const status of ['BOOKED', 'OFFER', 'OPEN']) {
+    const app = createAppHarness(customers[0], [{ ...load, id: '1', status, tag: policy.getStatusTag(status) }]);
+    for (const value of ['   ', ...(status === 'BOOKED' ? ['555-111-2222'] : [])]) {
+      app.find(node => node.props?.id === 'assignment-driver-phone').props.onChange({ target: { value } });
+      app.render();
+      assert.equal(app.states[6].status, status);
+    }
+  }
+});
+
+test('picking a saved driver with a phone creates an offer, not a booking', () => {
+  const app = createAppHarness(customers[0], [
+    { ...load, id: '1', status: 'OPEN', tag: 'OPEN', driverPhone: '' },
+    { ...load, id: '2', status: 'BOOKED', tag: 'BOOKED', driver: 'Test Driver', driverPhone: '555-111-2222', truck: '123456' }
+  ]);
+  app.find(node => node.props?.id === 'assignment-driver').props.onChange({ target: { value: 'Test Driver' } });
+  app.render();
+  assert.equal(app.states[6].status, 'OFFER');
+  assert.equal(app.states[6].driverPhone, '555-111-2222');
+  assert.equal(app.storage.has('landstar_assignQueue'), false);
+});
+
+test('same-day reimports and exports preserve the OFFER folder', () => {
+  const offered = { ...load, status: 'OFFER', tag: 'OFFER', driverPhone: '555-111-2222' };
+  const merged = policy.replaceImportedCustomerLoads(customers[0], [{ ...load }], [offered]).loads[0];
+  assert.equal(merged.status, 'OFFER');
+  assert.equal(merged.tag, 'OFFER');
+  assert.equal(merged.driverPhone, offered.driverPhone);
+  const exported = policy.markLoadsExported([offered], new Set([String(offered.id)]), '2026-10-01T12:00:00Z')[0];
+  assert.equal(exported.status, 'OFFER');
+  assert.equal(exported.tag, 'OFFER');
+  assert.equal(exported.landstarExportedAt, '2026-10-01T12:00:00Z');
+});
+
 test('a pickup window that already started is posted from now; an ended window is not posted', () => {
   // 11/04/2026 08:22 local + 30 min lead -> 08:52, rounded up to 09:00.
   const earliest = policy.getEarliestPickupSerial(new Date(2026, 10, 4, 8, 22));
@@ -2262,6 +2803,54 @@ test('removing capacity clears the truck and tracking, keeps the rate, and moves
   for (const field of ['bookedAt', 'trackingStage', 'checkCalls']) assert.equal(field in open, false, field);
   assert.equal(open.rateInput, '3175');
   assert.equal(open.landstarComment, 'Load Ready now');
+  assert.equal(open.manualEntry, true, 'reopened load is protected from customer-list replacement');
+  assert.equal(open.needsCapacity, 'true', 'reopened load is important and needs replacement capacity');
+});
+
+test('posting maintenance protects manual, booked and capacity-needed loads, and refreshes only available important loads', () => {
+  const posting = { originZip: '30349', destZip: '92504', pickupThru: '11/12/26 16:00' };
+  const make = (id, fields) => ({ ...load, id, landstarPosting: posting, truck: '', ...fields });
+  const entries = policy.getPostingMaintenanceLoads({ c: [
+    make('manual', { manualEntry: true }), make('booked', { status: 'BOOKED' }),
+    make('rework', { needsCapacity: 'true', status: 'OPEN' }),
+    make('offer', { needsCapacity: 'true', status: 'OFFER' }),
+    make('hold', { needsCapacity: 'true', status: 'ON HOLD' }),
+    make('truck', { needsCapacity: 'true', status: 'OPEN', truck: '123456' }),
+    make('regular', { status: 'OPEN' })
+  ] });
+  assert.deepEqual([...entries.map(entry => entry.loadId)], ['manual', 'booked', 'rework', 'offer', 'hold', 'truck']);
+  assert.deepEqual([...entries.filter(entry => entry.refresh).map(entry => entry.loadId)], ['rework']);
+  const oldDriver = { ...load, status: 'BOOKED', driverEmails: { dispatch: { at: 'old' } },
+    paramountTracking: { freightBill: '1234567' }, paperworkDone: true, driverReplyIds: ['old'] };
+  const reopened = policy.removeCapacity(oldDriver);
+  for (const field of ['driverEmails', 'paramountTracking', 'paperworkDone', 'driverReplyIds']) {
+    assert.equal(field in reopened, false, field);
+  }
+  assert.equal('needsCapacity' in policy.bookLoad({ ...reopened, driver: 'New Driver' }), false);
+});
+
+test('a load reopened after removing capacity survives imports and posting cleanup', () => {
+  const reopened = policy.removeCapacity({
+    ...load, id: '2284615', status: 'BOOKED', driver: 'Driver', rateInput: '6200',
+    pickupTime: '11/12/2026 0800', landstarExportedAt: '2026-09-01T00:00:00Z',
+    landstarPosting: { originZip: '30349', destZip: '92504', pickupThru: '11/12/26 16:00' }
+  });
+  const other = { ...load, id: '2285956', pickupTime: '11/30/2026 0900' };
+  for (const customer of ['Para 1522166 - ATZ', 'Para 1522166 - ATZ H', 'R X O 2429200 - ATZ V']) {
+    const result = policy.replaceImportedCustomerLoads(customer, [other], [reopened]);
+    const retained = result.loads.find(order => order.id === reopened.id);
+    assert.ok(retained, `${customer}: missing from new list but still available`);
+    assert.equal(retained.status, 'OPEN');
+    assert.equal(retained.rateInput, '6200');
+    assert.deepEqual(result.droppedPostings, []);
+    assert.deepEqual(policy.findDroppedPostings(customer, [other], [reopened]), []);
+  }
+  const exported = { ...reopened, status: 'ENT' };
+  assert.equal(policy.removeExpiredExportedLoads({ c: [exported] }, Date.parse('2026-11-12')).c.length, 1);
+  const important = { ...exported, manualEntry: false, needsCapacity: 'true' };
+  assert.equal(policy.removeExpiredExportedLoads({ c: [important] }, Date.parse('2026-11-12')).c.length, 1);
+  assert.deepEqual(policy.findDroppedPostings('Other', [other], [important]), []);
+  assert.deepEqual(policy.findDroppedPostings('Other', [other], [{ ...important, needsCapacity: '', status: 'BOOKED' }]), []);
 });
 
 test('a booked load shows Remove capacity, keeps its rate editable, and goes back to OPEN after confirming', () => {
@@ -2291,6 +2880,31 @@ test('exported posting details use the Landstar board time format', () => {
   }) }, { originZip: '60007', destZip: '76063', pickupThru: '11/06/26 13:00', deliveryThru: '11/08/26 07:00', weight: 42000 });
 });
 
+test('full customer lists automatically queue missing postings, including Paramount, with large-drop confirmation', () => {
+  const queued = [];
+  let sends = 0;
+  let confirmations = 0;
+  const handler = source.slice(source.indexOf('  const queueDroppedPostings ='), source.indexOf('  const unseenInquiryCount ='));
+  const queueDropped = vm.runInNewContext(`${handler}; queueDroppedPostings`, {
+    LARGE_DROP_MIN: 10,
+    addToUnpostQueue: items => queued.push(...items),
+    sendUnpostQueueToBot: () => { sends += 1; },
+    window: { confirm: () => { confirmations += 1; return false; } }
+  });
+  const dropped = [{ customer: 'Para 1522166 - ATZ', loadId: '222222', posting: { originZip: '60007' } }];
+  assert.equal(queueDropped({ droppedPostings: dropped }, [{ landstarPosting: {} }], { interactive: false }), 1);
+  assert.equal(queued.length, 1, 'background full lists queue ordinary Paramount removals too');
+  assert.equal(sends, 1);
+  assert.equal(confirmations, 0);
+  const many = Array.from({ length: 11 }, (_, i) => ({ ...dropped[0], loadId: String(i) }));
+  const posted = many.map(() => ({ landstarPosting: {} }));
+  assert.equal(queueDropped({ droppedPostings: many }, posted, { interactive: false }), 0);
+  assert.equal(confirmations, 0, 'background imports cannot confirm a large drop');
+  assert.equal(queueDropped({ droppedPostings: many }, posted), 0);
+  assert.equal(confirmations, 1, 'interactive Paramount imports retain the large-drop safeguard');
+  assert.equal(queued.length, 1);
+});
+
 test('posted loads missing from a list are handed to the bot once, Nolan included; DAT screenshots never are', () => {
   const posting = { originZip: '60007', destZip: '76063', pickupThru: '11/06/26 13:00', deliveryThru: '11/08/26 07:00', weight: 42000 };
   const existing = [
@@ -2299,6 +2913,11 @@ test('posted loads missing from a list are handed to the bot once, Nolan include
     { ...load, id: '333333', origCity: 'Austin', origSt: 'TX' }
   ];
   const imported = [{ ...load, id: '111111' }];
+  existing.push(
+    { ...load, id: '444444', manualEntry: true, landstarPosting: posting },
+    { ...load, id: '555555', needsCapacity: 'true', landstarPosting: posting },
+    { ...load, id: '666666', status: 'BOOKED', landstarPosting: posting }
+  );
 
   const result = policy.replaceImportedCustomerLoads(customers[0], imported, existing);
   assert.deepEqual(Array.from(result.droppedPostings, item => item.loadId), ['222222']);
@@ -2306,6 +2925,9 @@ test('posted loads missing from a list are handed to the bot once, Nolan include
   assert.equal(result.droppedPostings[0].customer, customers[0]);
   assert.equal(result.loads.some(item => item.id === '222222'), false, 'the dropped load is deleted from the TMS');
   assert.ok(result.loads.find(item => item.id === '111111').landstarPosting, 'loads still on the list keep their posting');
+  for (const id of ['444444', '555555', '666666']) {
+    assert.ok(result.loads.find(item => item.id === id)?.landstarPosting, `${id} stays protected`);
+  }
 
   assert.deepEqual(Array.from(policy.replaceImportedCustomerLoads(customers[2], imported, existing).droppedPostings, item => item.loadId), ['222222'], 'Nolan removals are automatic too');
   assert.equal(policy.replaceImportedCustomerLoads(customers[0], imported, existing, { reportDroppedPostings: false }).droppedPostings.length, 0);
@@ -2382,6 +3004,28 @@ test('RXO van, flatbed and reefer lists upload separately: each import replaces 
   ], existing);
   assert.deepEqual(Array.from(fullResult.loads, l => l.id).sort(), ['24500010', '24500020', '24500030']);
   assert.deepEqual(Array.from(fullResult.droppedPostings, item => item.loadId).sort(), ['24500001', '24500002', '24500003']);
+});
+
+test('RXO hazmat lists upload separately: hazmat uploads never touch the van list and vice versa', () => {
+  const rxo = 'R X O 2429200 - ATZ';
+  const posting = { originZip: '60007', destZip: '76063', pickupThru: '11/06/26 13:00', deliveryThru: '11/08/26 07:00', weight: 42000 };
+  const existing = [
+    { ...load, id: '24510001', eCode: 'VAN:VAN', status: 'ENT', tag: 'ENT', landstarExportedAt: new Date().toISOString(), landstarPosting: posting },
+    { ...load, id: '24510002', eCode: 'VZ', status: 'ENT', tag: 'ENT', landstarExportedAt: new Date().toISOString(), landstarPosting: { ...posting, originZip: '07001' } },
+    { ...load, id: '24510003', eCode: 'VAN:VAN', hazmat: 'true', origCity: 'Denver', origSt: 'CO', status: 'ENT', tag: 'ENT', landstarExportedAt: new Date().toISOString(), landstarPosting: { ...posting, originZip: '80202' } }
+  ];
+  // Uploading the hazmat list replaces only hazmat loads; the van list stays posted.
+  const hazmatResult = policy.replaceImportedCustomerLoads(rxo, [
+    { ...load, id: '24510010', eCode: 'VZ' }
+  ], existing);
+  assert.deepEqual(Array.from(hazmatResult.loads, l => l.id).sort(), ['24510001', '24510010']);
+  assert.deepEqual(Array.from(hazmatResult.droppedPostings, item => item.loadId).sort(), ['24510002', '24510003'], 'only the missing hazmat postings drop');
+  // Uploading the van list replaces only van loads; the hazmat loads stay.
+  const vanResult = policy.replaceImportedCustomerLoads(rxo, [
+    { ...load, id: '24510020', eCode: 'VAN:VAN' }
+  ], hazmatResult.loads);
+  assert.deepEqual(Array.from(vanResult.loads, l => l.id).sort(), ['24510010', '24510020']);
+  assert.deepEqual(Array.from(vanResult.droppedPostings, item => item.loadId), ['24510001'], 'only the missing van posting drops');
 });
 
 test('loads to or from Mexico are recognized by Mexican state or country code', () => {
@@ -2597,6 +3241,127 @@ test('Para ATZ H screenshots put red order numbers on hold too; other customers 
   assert.equal(rxo.loads[0].status, 'OPEN', 'red holds are only for the Para accounts');
 });
 
+test('Add Load opens a new manual load without an order-number prompt', () => {
+  const app = createAppHarness(customers[0], [load], null, {}, {
+    window: { prompt: () => { throw new Error('Must not ask for an order number'); } }
+  });
+  app.find(node => node.type === 'button' && textOf(node) === '＋ Add Load').props.onClick();
+  app.render();
+  const added = app.states[6];
+  assert.match(added.id, /^MANUAL-/);
+  assert.equal(added.manualEntry, true);
+  assert.equal(added.status, 'OPEN');
+  assert.equal(added.miles, '');
+  assert.equal(app.states[2][customers[0]].length, 2);
+  assert.ok(app.states[2][customers[0]].some(order => order.id === load.id));
+  assert.ok(app.find(node => node.type === 'input' && node.props.placeholder === 'Optional order number' && node.props.value === ''));
+  assert.notEqual(policy.createManualLoad().id, policy.createManualLoad().id);
+});
+
+test('Add Load clears search and calendar filters and leaves Offers to show the new load', () => {
+  const app = createAppHarness(customers[0], [{ ...load, status: 'OFFER' }]);
+  app.find(node => node.props?.['aria-label'] === 'Search loads across all customers')
+    .props.onChange({ target: { value: 'no-match-for-new-load' } });
+  app.render();
+  app.find(node => node.props?.id === 'pickup-date-filter')
+    .props.onChange({ target: { value: '2026-12-01' } });
+  app.render();
+  app.find(node => node.type === 'button' && textOf(node) === '＋ Add Load').props.onClick();
+  app.render();
+  assert.equal(app.find(node => node.props?.id === 'pickup-date-filter').props.value, '');
+  assert.equal(app.find(node => node.props?.['aria-label'] === 'Search loads across all customers').props.value, '');
+  assert.ok(app.find(node => node.props?.className?.includes('tms-load-card') && textOf(node).includes(app.states[6].id)));
+  assert.ok(app.find(node => node.type === 'input' && node.props.placeholder === 'Optional order number'));
+});
+
+test('commodity choices control hazmat classification and survive copies and reimports', () => {
+  const manual = { ...load, id: 'commodity-test', eCode: 'VZ', commodity: 'CHEM' };
+  assert.equal(policy.getLoadCommodity(manual), 'CHEM');
+  assert.equal(policy.isHazmatLoad(manual), false);
+  assert.equal(policy.getLoadCommodity({ ...manual, commodity: '' }), 'HAZMAT');
+  assert.equal(policy.isHazmatLoad({ ...manual, eCode: 'VAN:VAN', commodity: 'HAZMAT' }), true);
+  assert.equal(policy.copyLoadDetails(manual, 'commodity-copy').commodity, 'CHEM');
+  const imported = policy.replaceImportedCustomerLoads('Other', [{ ...load, id: manual.id }], [manual]);
+  assert.equal(imported.loads.find(order => order.id === manual.id).commodity, 'CHEM');
+  const app = createAppHarness(customers[0], [manual]);
+  app.find(node => node.props?.id === 'load-commodity').props.onChange({ target: { value: 'CGAPP' } });
+  app.render();
+  assert.equal(app.states[6].commodity, 'CGAPP');
+});
+
+test('city suggestions distinguish states and selecting a location fills its representative ZIP', () => {
+  const suggestions = policy.getCitySuggestions(zipcodes, 'Athens');
+  assert.ok(suggestions.some(place => place.state === 'TX'));
+  assert.ok(suggestions.some(place => place.state === 'GA'));
+  assert.equal(new Set(suggestions.map(place => `${place.city}|${place.state}`)).size, suggestions.length);
+  assert.equal(policy.getCitySuggestions(zipcodes, 'A').length, 0);
+  const manual = policy.createManualLoad();
+  const pickup = policy.applyLocationInput(manual, 'origCity', 'ATHENS, TX', zipcodes);
+  assert.equal(pickup.origCity, 'ATHENS');
+  assert.equal(pickup.origSt, 'TX');
+  assert.equal(zipcodes.lookup(pickup.origZip).city, 'Athens');
+  assert.equal(zipcodes.lookup(pickup.origZip).state, 'TX');
+  const delivery = policy.applyLocationInput(pickup, 'destCity', 'HARLINGEN, TX', zipcodes);
+  assert.equal(delivery.destCity, 'HARLINGEN');
+  assert.equal(zipcodes.lookup(delivery.destZip).city, 'Harlingen');
+  assert.equal(delivery.origZip, pickup.origZip);
+  const typed = policy.applyLocationInput({ ...manual, origCity: 'ATHENS' }, 'origSt', 'TX', zipcodes);
+  assert.equal(typed.origZip, pickup.origZip);
+  const zip = policy.applyLocationInput(manual, 'origZip', '75751', zipcodes);
+  assert.equal(zip.origCity, 'ATHENS');
+  assert.equal(zip.origSt, 'TX');
+});
+
+test('changing a location invalidates automatic miles but preserves a manual override', () => {
+  const auto = {
+    ...load, origCity: 'ATHENS', origSt: 'TX', origZip: '75751', miles: '522', milesSource: 'google'
+  };
+  const changed = policy.applyLocationInput(auto, 'origCity', 'DALLAS, TX', zipcodes);
+  assert.equal(changed.origCity, 'DALLAS');
+  assert.equal(changed.miles, '');
+  const manual = policy.applyLocationInput({ ...auto, milesSource: 'manual' }, 'origCity', 'DALLAS, TX', zipcodes);
+  assert.equal(manual.miles, '522');
+  const typing = policy.applyLocationInput(auto, 'origCity', 'DALL', zipcodes);
+  assert.equal(typing.origZip, '', 'do not calculate from the previous city ZIP while typing');
+});
+
+test('automatic mileage requests city and state without ZIPs and preserves later manual edits', async () => {
+  const start = source.indexOf('  // Calculate city-to-city driving miles');
+  const effect = source.slice(start, source.indexOf('  // ＋ Add Load:', start));
+  for (const zip of ['', '75751']) {
+    const original = {
+      id: 'manual-city', origCity: 'Athens', origSt: 'TX', destCity: 'Harlingen', destSt: 'TX',
+      origZip: zip, destZip: zip ? '78552' : '', miles: ''
+    };
+    let timer;
+    let selected = original;
+    let map = { Para: [original] };
+    let requested;
+    vm.runInNewContext(effect, {
+      selectedOrder: original, selectedBroker: 'Para',
+      normalizeMilesValue: value => value,
+      getRoadMilesLaneKey: policy.getRoadMilesLaneKey,
+      getGoogleRoadMiles: async order => { requested = order; return '522'; },
+      useEffect: callback => callback(),
+      setTimeout: callback => { timer = callback; return 1; }, clearTimeout: () => {},
+      setCustomerOrdersMap: update => { map = update(map); },
+      setSelectedOrder: update => { selected = update(selected); },
+      pushNotice: message => { throw new Error(message); }
+    });
+    await timer();
+    assert.equal(requested.origZip, '');
+    assert.equal(requested.destZip, '');
+    assert.equal(requested.origCity, 'Athens');
+    assert.equal(requested.destSt, 'TX');
+    assert.equal(map.Para[0].miles, '522');
+    assert.equal(selected.milesSource, 'google');
+    map.Para[0] = { ...original, miles: '600', milesSource: 'manual' };
+    selected = map.Para[0];
+    await timer();
+    assert.equal(map.Para[0].miles, '600');
+  }
+});
+
 test('a load added by hand stays until you delete it', () => {
   const manual = policy.createManualLoad('2283650', {
     origCity: 'GREEN BAY', origSt: 'WI', origZip: '54313', destCity: 'OREGON', destSt: 'OH', destZip: '43616',
@@ -2614,6 +3379,36 @@ test('a load added by hand stays until you delete it', () => {
   // Exported long ago: still not expired.
   const now = Date.parse('2026-11-05T00:00:00Z');
   assert.equal(policy.removeExpiredExportedLoads({ c: [manual] }, now).c.length, 1);
+});
+
+test('Copy Load carries the details but starts OPEN with no driver or tracking', () => {
+  const booked = {
+    ...load,
+    id: '2283650', status: 'BOOKED', tag: 'BOOKED', bookedAt: '2026-10-01T00:00:00Z',
+    eCode: 'V', route: 'Chicago, IL → Dallas, TX', origZip: '60601', destZip: '75201',
+    weight: '42000', miles: '967', rateInput: '2500', rateSource: 'DAT', brokerable: 'true',
+    postingCode: 'ABC', landstarComment: 'Drop trailer', planningComment: 'Hazmat load',
+    notes: 'Call ahead', team: 'true', hazmat: 'true', tanker: 'true',
+    driver: 'John', driverPhone: '555-1234', truck: 'T1', trailer: 'TR9',
+    pickupEta: '10/27/2026 07:00', emptyLocation: 'Toledo, OH',
+    trackingStartedAt: '2026-10-02T00:00:00Z', landstarExportedAt: '2026-10-01T00:00:00Z'
+  };
+  const copy = policy.copyLoadDetails(booked, '2283651');
+  assert.equal(copy.id, '2283651');
+  assert.equal(copy.manualEntry, true, 'kept by imports like a load added by hand');
+  assert.equal(copy.status, 'OPEN');
+  assert.equal(copy.tag, 'OPEN');
+  for (const field of ['eCode', 'route', 'origCity', 'origSt', 'origZip', 'destCity', 'destSt', 'destZip',
+    'pickupTime', 'deliveryTime', 'weight', 'miles', 'rateInput', 'rateSource', 'brokerable',
+    'postingCode', 'landstarComment', 'planningComment', 'notes', 'team', 'hazmat', 'tanker']) {
+    assert.equal(copy[field], booked[field], `${field} is copied`);
+  }
+  for (const field of ['driver', 'driverPhone', 'truck', 'trailer', 'pickupEta', 'emptyLocation', 'carrier']) {
+    assert.equal(copy[field] || '', '', `${field} is not copied`);
+  }
+  assert.equal(copy.bookedAt, undefined);
+  assert.equal(copy.trackingStartedAt, undefined);
+  assert.equal(copy.landstarExportedAt, undefined);
 });
 
 test('miles are estimated from the two ZIPs when Google Routes cannot answer', () => {
@@ -2657,7 +3452,21 @@ test('booking sends the truck and the exported posting to the bot for Landstar A
   assert.equal(item.loadId, '2283600');
   assert.deepEqual({ ...item.posting }, posting);
   assert.match(policy.buildAssignRequest('Para 1522166 - ATZ H', { ...booked, truck: '' }).reason, /no truck number/);
-  assert.match(policy.buildAssignRequest('Para 1522166 - ATZ H', { ...booked, landstarPosting: undefined }).reason, /not posted to Landstar by the bot/);
+  const missingPosting = policy.buildAssignRequest('Para 1522166 - ATZ H', { ...booked, origZip: '', landstarPosting: undefined });
+  assert.match(missingPosting.reason, /required to safely recover/);
+  assert.equal(missingPosting.item, undefined, 'missing metadata must not queue an unsafe truck assignment');
+  const recovered = policy.buildAssignRequest('RXO', {
+    ...booked, landstarPosting: undefined, origZip: '07032', destZip: '32207', weight: '38,000',
+    pickupTime: '11/06/2026 1400 - 1500', deliveryTime: '11/09/2026 1000 - 1100'
+  });
+  assert.equal(recovered.item.recoverPosting, true);
+  assert.deepEqual({ ...recovered.item.posting }, posting);
+  const singleTime = policy.buildAssignRequest('RXO', {
+    ...booked, landstarPosting: undefined, origZip: '07032', destZip: '32207', weight: '38,000',
+    pickupTime: '11/06/2026 1400', deliveryTime: '11/09/2026 1000'
+  });
+  assert.deepEqual({ ...singleTime.item.posting }, posting, 'single-time windows match the export widening rules');
+  assert.deepEqual({ ...policy.applyAssignResult(booked, { ok: true, posting }).landstarPosting }, posting);
 
   const ok = policy.applyAssignResult({ ...booked, notes: 'Call before' }, { ok: true, truck: '420371', landstarLoadId: '187371843', message: 'Assigned 420371 - LDWY Rocway Xpress LLC to Landstar load #187371843', at: 1 });
   assert.equal(ok.landstarAssignment.ok, true);
@@ -2685,7 +3494,7 @@ test('Paramount tracking emails: both Para accounts, the right emails at the rig
     pickupEta: '2026-11-06T13:00:00Z', pickupScheduled: '2026-11-06T13:00:00Z', arrivedShipperAt: null, leftShipperAt: null
   };
   assert.deepEqual([...policy.getDueParamountEmails(booked, { ...info, trackingLink: '' })], [], 'no link yet: wait');
-  assert.deepEqual([...policy.getDueParamountEmails(booked, info)], ['initial']);
+  assert.deepEqual([...policy.getDueParamountEmails(booked, info, now)], ['initial']);
   const first = policy.buildParamountEmail('initial', booked, info, { greetingName: 'Heather', phone: '4845756486' });
   assert.match(first, /^Hi Heather and team,/);
   assert.match(first, /order 2283600/);
@@ -2701,10 +3510,10 @@ test('Paramount tracking emails: both Para accounts, the right emails at the rig
   assert.match(sent.notes, /Paramount email sent: tracking link/);
   assert.deepEqual([...policy.getDueParamountEmails(sent, info)], [], 'nothing new');
   const arrived = { ...info, arrivedShipperAt: '2026-11-06T13:05:00Z' };
-  assert.deepEqual([...policy.getDueParamountEmails(sent, arrived)], ['arrived']);
+  assert.deepEqual([...policy.getDueParamountEmails(sent, arrived, now)], ['arrived']);
   assert.equal(policy.applyParamountTrackingInfo(sent, arrived).trackingStage, 'At Pickup');
   const left = { ...arrived, leftShipperAt: '2026-11-06T15:00:00Z', deliveryEta: '2026-11-07T14:00:00Z' };
-  assert.deepEqual([...policy.getDueParamountEmails(sent, left)], ['departed'], 'left before the arrived email went out: one email covers both');
+  assert.deepEqual([...policy.getDueParamountEmails(sent, left, now)], ['departed'], 'left before the arrived email went out: one email covers both');
   assert.equal(policy.applyParamountTrackingInfo(sent, left).trackingStage, 'Loaded');
   assert.match(policy.buildParamountEmail('departed', booked, left), /left the shipper in Kearny, NJ .*heading to Jacksonville, FL\. The estimated arrival at delivery is 11\/07 at 09:00 EST/);
   const done = policy.markParamountEmail(sent, 'departed');
@@ -2752,6 +3561,19 @@ test('RXO update requests: reply with status, location, typed pickup ETA and tra
   assert.equal(policy.buildRxoUpdateEmail(booked, {}).complete, false, 'not found in Clarity yet');
 });
 
+test('RXO ATZ V booked loads participate in tracking, exact-order replies and recipient routing', () => {
+  const customer = 'R X O 2429200 - ATZ V';
+  const booked = { ...load, id: '24466147', status: 'BOOKED', truck: '583737', postingCode: 'SNB' };
+  const map = { [customer]: [booked, { ...booked, id: '24466148', status: 'OPEN' }] };
+  assert.deepEqual([...policy.getRxoWatchList(map).map(item => `${item.customer}|${item.loadId}|${item.billTo}`)],
+    [`${customer}|24466147|rxo`]);
+  assert.equal(policy.findRxoLoadForRequest(map, '24466147').customer, customer);
+  assert.equal(policy.findRxoLoadForRequest(map, '24466148'), null);
+  assert.equal(policy.findRxoLoadForRequest(map, '2446614'), null);
+  assert.equal(policy.getRxoEmailPostingCodes(map, 'ANQ')['24466147'], 'SNB');
+  assert.equal(policy.getPaperworkTarget(customer), 'rxo');
+});
+
 test('no paperwork yet: the driver gets one reminder each morning for a week, about the 48-hour chargeback', () => {
   const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
   const tracking = { freightBill: '4574648', deliveredAt: new Date(at(9, 10)).toISOString(), deliveryCity: 'Jacksonville, FL' };
@@ -2771,6 +3593,36 @@ test('no paperwork yet: the driver gets one reminder each morning for a week, ab
   assert.match(text, /within 48 hours of delivery, or the customer can charge back/);
   assert.doesNotMatch(text, /TRACKING APP/);
   assert.match(policy.buildDriverEmail('pod', delivered, tracking), /within 48 hours of delivery/);
+});
+
+test('received paperwork suppresses the initial POD request even if no request was recorded', () => {
+  const delivered = { ...load, status: 'BOOKED', trackingStage: 'Delivered', paperworkReceivedAt: '2026-11-11T15:27:00Z' };
+  assert.deepEqual(Array.from(policy.getDueDriverEmails(delivered, { freightBill: '4764212' })), []);
+});
+
+test('POD requests check earlier driver attachments before sending and fail closed on Gmail errors', async () => {
+  const delivered = {
+    ...load, status: 'BOOKED', trackingStage: 'Delivered',
+    bookedAt: '2026-11-09T14:00:00Z', deliveryTime: '11/11/2026 1200'
+  };
+  const tracking = { freightBill: '4764212', deliveredAt: '2026-11-11T16:00:00Z' };
+  const files = [{ filename: 'POD.jpg', at: '2026-11-11T15:27:00Z' }];
+  const result = await policy.checkBeforePodRequest(delivered, tracking, async request => {
+    assert.equal(request.action, 'driverPaperwork');
+    assert.equal(request.freightBill, '4764212');
+    assert.ok(Date.parse(request.since) < Date.parse(files[0].at), 'includes POD sent before delivery was recorded');
+    return { files };
+  });
+  assert.equal(result.received, true);
+  assert.equal(result.files, files);
+  assert.equal((await policy.checkBeforePodRequest(delivered, tracking, async () => ({ files: [] }))).received, false);
+  await assert.rejects(policy.checkBeforePodRequest(delivered, tracking, async () => {
+    throw new Error('Gmail unavailable');
+  }), /Gmail unavailable/);
+  await assert.rejects(policy.checkBeforePodRequest(delivered, tracking, async () => ({})), /invalid attachment response/);
+  assert.equal((await policy.checkBeforePodRequest({ ...delivered, paperworkReceivedAt: files[0].at }, tracking, async () => {
+    assert.fail('known received paperwork must not require another Gmail lookup');
+  })).received, true);
 });
 
 test('paperwork status, completed only once it is in and handled, and the customer email', () => {
@@ -2808,11 +3660,15 @@ test('driver emails: 7 AM on pickup day, after pickup, 7 AM on delivery day, POD
   const tracking = { freightBill: '4574648', pickupCity: 'Kearny, NJ', deliveryCity: 'Jacksonville, FL' };
   const due = (l, t, now) => [...policy.getDueDriverEmails(l, t, now)];
   assert.deepEqual(due(booked, {}, at(6, 8)), [], 'no freight bill from Clarity yet: no BCO thread to reply in');
-  assert.deepEqual(due(booked, tracking, at(5, 20)), ['dispatch'], 'right after dispatch');
+  assert.equal(automationPolicy.automaticDispatchEnabled, false);
+  assert.deepEqual(due(booked, tracking, at(5, 20)), ['dispatch'], 'initial paperwork confirmation may precede pickup day');
+  assert.deepEqual(due(booked, tracking, at(6, 7)), ['dispatch'], 'driver follow-up begins on pickup day, independently of manual dispatch');
+  assert.deepEqual(due({ ...booked, status: 'OFFER' }, tracking, at(5, 20)), [], 'an offer is not an accepted load');
   const dispatchText = policy.buildDriverEmail('dispatch', booked, tracking, { customer: 'Para 1522166 - ATZ H' });
-  assert.match(dispatchText, /^Hi David,\n\n\*\*\* IMPORTANT: PLEASE TURN ON THE TRUCKER TOOLS TRACKING APP NOW \*\*\*/);
+  assert.match(dispatchText, /^Hi David,\n\n\*\*\* IMPORTANT: PLEASE TURN ON THE TRUCKER TOOLS TRACKING APP ON THE DAY OF PICKUP \*\*\*/);
   assert.match(dispatchText, /Thank you for taking load 4574648! Pickup is in Kearny, NJ \(appointment 11\/06\/2026 0800 - 1500\) and delivery is in Jacksonville, FL/);
   assert.match(dispatchText, /confirm you received the load details/);
+  assert.match(dispatchText, /attached documents, and that you will use Trucker Tools from pickup day through delivery/);
   const dispatched = policy.markDriverEmail(booked, 'dispatch', { at: new Date(at(5, 20)).toISOString() });
   assert.deepEqual(due(dispatched, tracking, at(5, 21)), [], 'day before pickup');
   assert.deepEqual(due(dispatched, tracking, at(6, 6, 59)), [], 'before 7 AM');
@@ -2859,11 +3715,17 @@ test('driver emails tell the driver to turn on the customer\'s tracking app, at 
   const booked = { ...load, id: '24466147', status: 'BOOKED', driver: 'ISMAEL BAILON', origCity: 'ABILENE', origSt: 'TX', destCity: 'SAN ANTONIO', destSt: 'TX', pickupTime: '11/10/2026 1300' };
   const tracking = { freightBill: '4532973' };
   const rxo = policy.buildDriverEmail('pickupMorning', booked, tracking, { customer: 'R X O 2429200 - ATZ P' });
-  assert.match(rxo, /^Good morning Ismael!\n\n\*\*\* IMPORTANT: PLEASE TURN ON THE MACROPOINT TRACKING APP NOW \*\*\*\nKeep MacroPoint on and tracking for the ENTIRE trip/);
+  assert.match(rxo, /^Good morning Ismael!\n\n\*\*\* IMPORTANT: PLEASE TURN ON THE MACROPOINT TRACKING APP ON THE DAY OF PICKUP \*\*\*\nKeep MacroPoint on and tracking for the ENTIRE trip/);
   const para = policy.buildDriverEmail('pickedUp', booked, tracking, { customer: 'Para 1522166 - ATZ H' });
-  assert.match(para, /^Hi Ismael,\n\n\*\*\* IMPORTANT: PLEASE TURN ON THE TRUCKER TOOLS TRACKING APP NOW \*\*\*/);
+  assert.match(para, /^Hi Ismael,\n\n\*\*\* IMPORTANT: PLEASE TURN ON THE TRUCKER TOOLS TRACKING APP ON THE DAY OF PICKUP \*\*\*/);
   assert.match(policy.buildDriverEmail('deliveryMorning', booked, tracking, { customer: 'Para 1522166 - ATZ' }), /TRUCKER TOOLS/);
-  assert.match(policy.buildDriverEmail('pickupMorning', booked, tracking, { customer: 'Nolan 965974' }), /PLEASE TURN ON YOUR TRACKING APP NOW/);
+  assert.match(policy.buildDriverEmail('pickupMorning', booked, tracking, { customer: 'Nolan 965974' }), /PLEASE TURN ON YOUR TRACKING APP ON THE DAY OF PICKUP/);
+  for (const customer of ['R X O 2429200 - ATZ P', 'Para 1522166 - ATZ H', 'Other customer']) {
+    const text = policy.buildDriverEmail('dispatch', booked, tracking, { customer });
+    assert.match(text, /ON THE DAY OF PICKUP/);
+    assert.doesNotMatch(text, /\bNOW\b/);
+    assert.match(text, /from pickup to delivery/);
+  }
   assert.doesNotMatch(policy.buildDriverEmail('pod', booked, tracking, { customer: 'R X O 2429200 - ATZ' }), /IMPORTANT/, 'not after delivery');
 });
 
@@ -2882,15 +3744,15 @@ test('a driver ETA reply becomes an update on Paramount\'s email thread', () => 
   assert.match(policy.buildParamountEtaEmail({ ...booked, trackingStage: 'Loaded' }, {}, '3:00 PM'), /ETA of 3:00 PM to the receiver in Jacksonville, FL/);
 });
 
-test('MercuryGate: new Paramount bookings are filled in once, the PDF after pickup', () => {
+test('MercuryGate dispatch and PDF uploads stay manual after booking and pickup', () => {
   const booked = { ...load, id: '2283700', status: 'BOOKED', bookedAt: '2026-11-06T17:30:00Z', notes: '' };
   const tracking = { freightBill: '4600001' };
   assert.equal(policy.getDueMercuryGateStep(booked, {}), '', 'no freight bill yet');
   assert.equal(policy.getDueMercuryGateStep({ ...booked, bookedAt: '2026-11-05T17:30:00Z' }, tracking), '', 'booked before: entered by hand');
-  assert.equal(policy.getDueMercuryGateStep(booked, tracking), 'booked');
+  assert.equal(policy.getDueMercuryGateStep(booked, tracking), '');
   const queued = { ...booked, mercurygate: { booked: '2026-11-06T17:31:00Z' } };
   assert.equal(policy.getDueMercuryGateStep(queued, tracking), '');
-  assert.equal(policy.getDueMercuryGateStep(queued, { ...tracking, leftShipperAt: 'done' }), 'pickedUp');
+  assert.equal(policy.getDueMercuryGateStep(queued, { ...tracking, leftShipperAt: 'done' }), '');
   assert.equal(policy.getDueMercuryGateStep({ ...queued, mercurygate: { ...queued.mercurygate, pickedUp: 'x' } }, { ...tracking, leftShipperAt: 'done' }), '');
   const done = policy.applyMercuryGateResult(booked, { step: 'booked', ok: true, at: 1, results: [{ message: 'Added Customer Reference Number 2283700' }, { message: 'Saved pickup: X' }] });
   assert.match(done.notes, /MercuryGate: Added Customer Reference Number 2283700\nMercuryGate: Saved pickup: X/);
@@ -2903,9 +3765,9 @@ test('arrived / left-shipper emails to Paramount always wait for Daniel, even af
   assert.equal(policy.paramountMaySendItself('departed'), false);
 });
 
-test('MercuryGate starts right after Assign Capacity, by the Landstar load number', () => {
+test('successful Assign Capacity never starts MercuryGate dispatch', () => {
   const booked = { ...load, id: '2282514', status: 'BOOKED', bookedAt: '2026-11-06T17:53:16Z', landstarAssignment: { ok: true, landstarLoadId: '187603287' } };
-  assert.equal(policy.getDueMercuryGateStep(booked, {}), 'booked', 'no freight bill needed');
+  assert.equal(policy.getDueMercuryGateStep(booked, {}), '', 'assignment stops before dispatch');
   assert.equal(policy.getDueMercuryGateStep({ ...booked, landstarAssignment: { ok: false, landstarLoadId: '' } }, {}), '');
 });
 
@@ -2921,9 +3783,9 @@ test('rolling loads get one customer location email a day from 9 AM', () => {
   const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
   const info = { ok: true, trackingLink: 'https://t', leftShipperAt: new Date(at(7, 13, 39)).toISOString(), lastLocation: 'Ashland, VA',
     lastLocationAt: new Date(at(8, 8, 50)).toISOString(), deliveryCity: 'Knightdale, NC' };
-  const withEmails = emails => ({ ...load, id: '2282980', paramountTracking: { emails } });
+  const withEmails = emails => ({ ...load, status: 'BOOKED', id: '2282980', paramountTracking: { emails } });
   const departed = withEmails({ initial: { at: 'x' }, departed: { at: new Date(at(7, 14)).toISOString() } });
-  const due = (l, i, now) => [...policy.getDueParamountEmails(l, i, now)];
+  const due = (l, i, now) => [...policy.getDueParamountEmails(l, { ...i, checkedAt: new Date(now).toISOString() }, now)];
   assert.deepEqual(due(withEmails({ initial: { at: 'x' } }), info, at(7, 14)), ['departed']);
   assert.deepEqual(due(departed, info, at(7, 18)), [], 'the loaded email went out today');
   assert.deepEqual(due(departed, info, at(8, 8, 59)), [], 'before 9 AM');
@@ -2936,6 +3798,23 @@ test('rolling loads get one customer location email a day from 9 AM', () => {
   const text = policy.buildParamountEmail('location', { ...load, id: '2282980' }, info, { greetingName: 'Heather' });
   assert.match(text, /^Hi Heather and team,\n\nDaily update on order 2282980: the truck is in Ashland, VA \(as of .*\), on the way to Knightdale, NC\./);
   assert.match(text, /Live tracking: https:\/\/t/);
+});
+
+test('daily customer updates require booked in-transit loads and fresh tracking, not initial email approval', () => {
+  const now = new Date(2026, 10, 11, 9).getTime();
+  const booked = { ...load, status: 'BOOKED', trackingStage: 'In Transit' };
+  const tracking = { lastLocation: 'Dallas, TX', checkedAt: new Date(now).toISOString() };
+  const due = (l = booked, t = tracking, time = now) => policy.isDailyCustomerUpdateDue(l, t, time);
+  assert.equal(due(), true);
+  assert.equal(due({ ...booked, status: 'OFFER' }), false);
+  assert.equal(due({ ...booked, trackingStage: 'Booked' }), false);
+  assert.equal(due({ ...booked, trackingStage: 'Delivered' }), false);
+  assert.equal(due(booked, { ...tracking, deliveredAt: 'done' }), false);
+  assert.equal(due(booked, { ...tracking, checkedAt: new Date(now - 31 * 60000).toISOString() }), false);
+  assert.equal(due(booked, { ...tracking, lastLocation: '' }), false);
+  assert.equal(due(booked, { ...tracking, checkedAt: '' }), false);
+  assert.equal(due(booked, tracking, now - 1), false);
+  assert.equal(due({ ...booked, paramountTracking: { emails: { location: { at: new Date(now).toISOString() } } } }), false);
 });
 
 test('driver texts: Google Voice link for the number and a short message for the stage', () => {
@@ -2971,9 +3850,9 @@ test('Trucker Tools: the "tracking started" email marks the load, reminders unti
   assert.equal(due(booked, at(6, 18)), false, 'no driver email sent yet');
   const dispatched = policy.markDriverEmail(booked, 'dispatch', { at: iso(at(6, 17)) });
   assert.equal(due(dispatched, at(6, 17, 30)), false, 'too soon after the first email');
-  assert.equal(due(dispatched, at(6, 17, 45)), true, '45 minutes after the first email');
+  assert.equal(due(dispatched, at(6, 17, 45)), false, 'even legacy early emails cannot start reminders before pickup day');
   assert.equal(due(dispatched, at(6, 17, 45), 'R X O 2429200 - ATZ'), false, 'Paramount only');
-  assert.equal(due(dispatched, at(6, 17, 45), 'Para 1522166 - ATZ H'), true, 'hazmat account too');
+  assert.equal(due(dispatched, at(7, 7), 'Para 1522166 - ATZ H'), true, 'hazmat account too, on pickup day');
   assert.equal(due(dispatched, at(6, 21, 30)), false, 'never overnight');
   assert.equal(due(dispatched, at(7, 6, 30)), false, 'not before 7 AM');
   assert.equal(due(dispatched, at(7, 7)), true);
@@ -2984,16 +3863,18 @@ test('Trucker Tools: the "tracking started" email marks the load, reminders unti
   let reminded = policy.markDriverEmail(dispatched, 'trackingReminder', { at: iso(at(6, 17, 46)) });
   assert.equal(reminded.driverEmails.trackingReminder.count, 1);
   assert.equal(due(reminded, at(6, 19)), false, 'next one 90 minutes later');
-  assert.equal(due(reminded, at(6, 19, 16)), true);
-  assert.match(policy.getTruckerToolsStatus(reminded, para).text, /^Waiting for Trucker Tools tracking · reminder 1 sent/);
+  assert.equal(due(reminded, at(6, 19, 16)), false);
+  assert.equal(policy.getTruckerToolsStatus(reminded, para, at(6, 19, 16)), null);
+  assert.match(policy.getTruckerToolsStatus(reminded, para, at(7, 7)).text, /^Waiting for Trucker Tools tracking · reminder 1 sent/);
   for (let i = 0; i < 5; i += 1) reminded = policy.markDriverEmail(reminded, 'trackingReminder', { at: iso(at(7, 8 + i * 2)) });
   assert.equal(reminded.driverEmails.trackingReminder.count, 6);
   assert.equal(due(reminded, at(7, 20)), false, 'stops after 6 reminders');
-  assert.equal(policy.getTruckerToolsStatus(reminded, para).level, 'late');
-  assert.match(policy.getTruckerToolsStatus(reminded, para).text, /call the driver/);
+  assert.equal(policy.getTruckerToolsStatus(reminded, para, at(7, 20)).level, 'late');
+  assert.match(policy.getTruckerToolsStatus(reminded, para, at(7, 20)).text, /call the driver/);
 
   const text = policy.buildDriverEmail('trackingReminder', dispatched, tracking, { customer: para });
-  assert.match(text, /^Hi John,\n\n\*\*\* IMPORTANT: PLEASE TURN ON THE TRUCKER TOOLS TRACKING APP NOW \*\*\*/);
+  assert.match(text, /^Hi John,\n\n\*\*\* IMPORTANT: PLEASE TURN ON THE TRUCKER TOOLS TRACKING APP ON THE DAY OF PICKUP \*\*\*/);
+  assert.doesNotMatch(text, /\bnow\b/i);
   assert.match(text, /Trucker Tools has not confirmed tracking for load 4574700 yet \(customer load #2282980\)/);
 
   const starts = [{ loadNumber: '2282980', at: '2026-11-06T23:51:00.000Z' }, { loadNumber: '2283600', at: '2026-11-06T20:00:00.000Z' }];
@@ -3001,10 +3882,10 @@ test('Trucker Tools: the "tracking started" email marks the load, reminders unti
   assert.equal(policy.findTruckerToolsStart({ ...dispatched, id: '228298' }, starts), '', 'exact load number only');
   const started = policy.markTrackingStarted(dispatched, '2026-11-06T23:51:00.000Z');
   assert.equal(due(started, at(7, 9)), false, 'tracking started: no more reminders');
-  const status = policy.getTruckerToolsStatus(started, para);
+  const status = policy.getTruckerToolsStatus(started, para, at(7, 9));
   assert.equal(status.level, 'ok');
   assert.match(status.text, /^Tracking started 11\/06, \d{1,2}:51 [AP]M$/);
   assert.match(started.notes, /Trucker Tools tracking started/);
-  assert.match(policy.getTruckerToolsStatus(policy.markTrackingStarted(dispatched, iso(at(7, 9)), { byHand: true }), para).text, /marked by hand/);
+  assert.match(policy.getTruckerToolsStatus(policy.markTrackingStarted(dispatched, iso(at(7, 9)), { byHand: true }), para, at(7, 9)).text, /marked by hand/);
   assert.equal(policy.getTruckerToolsStatus(dispatched, 'R X O 2429200 - ATZ'), null);
 });

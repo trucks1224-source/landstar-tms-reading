@@ -2,6 +2,8 @@ import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+import { createRequire } from 'node:module'
+import { readFileSync } from 'node:fs'
 import { processRoadMilesRequest } from './api/road-miles.js'
 import { processDatRateRequest, getDatConfig } from './api/dat-rate.js'
 import { handleParamountEmail } from './api/_lib/gmailThread.js'
@@ -10,6 +12,7 @@ import { extractProspects, isBlockedProspect } from './src/lib/prospects.js'
 
 // The TMS account that owns imported prospects, looked up once per server run.
 let prospectOwnerId = null
+const { readRatesStatus } = createRequire(import.meta.url)('./bot/status-server.js')
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -36,6 +39,62 @@ export default defineConfig(({ mode }) => {
           // Only this computer's TMS can call it (the dev server listens on 127.0.0.1 and
           // requests from other web pages are refused by the Origin check).
           let lastBotStart = 0
+          let lastRatesStart = 0
+          server.middlewares.use('/api/rates/status', (req, res) => {
+            res.setHeader('Content-Type', 'application/json')
+            res.setHeader('Cache-Control', 'no-store')
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              res.statusCode = 403
+              return res.end(JSON.stringify({ error: 'Only the local TMS can read rate-worker status.' }))
+            }
+            if (req.method !== 'GET') {
+              res.statusCode = 405
+              return res.end(JSON.stringify({ error: 'Use GET.' }))
+            }
+            res.end(JSON.stringify(readRatesStatus()))
+          })
+          server.middlewares.use('/api/rates/start', async (req, res) => {
+            const reply = (status, body) => {
+              res.statusCode = status
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify(body))
+            }
+            if (req.method !== 'POST') return reply(405, { error: 'Use POST.' })
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              return reply(403, { error: 'Only the local TMS can start the rate worker.' })
+            }
+            if (process.platform !== 'win32') return reply(501, { error: 'Starting the rate worker from the TMS only works on Windows.' })
+            const status = readRatesStatus()
+            if (status.state !== 'off' && status.pid) {
+              try {
+                process.kill(status.pid, 0)
+                return reply(200, { ok: true, alreadyRunning: true })
+              } catch (error) {
+                if (error.code !== 'ESRCH') return reply(500, { error: `Cannot verify the rate worker: ${error.message}` })
+              }
+            }
+            if (Date.now() - lastRatesStart < 30_000) return reply(200, { ok: true, starting: true })
+            lastRatesStart = Date.now()
+            const botDir = path.resolve(process.cwd(), 'bot')
+            const launcher = path.join(botDir, 'Start Rate Worker.bat')
+            try {
+              const child = spawn('cmd.exe', ['/c', `start "Landstar Rate Worker" "${launcher}"`], {
+                cwd: botDir, detached: true, stdio: 'ignore', windowsVerbatimArguments: true
+              })
+              await new Promise((resolve, reject) => {
+                child.once('spawn', resolve)
+                child.once('error', reject)
+              })
+              child.unref()
+              reply(200, { ok: true, starting: true })
+            } catch (error) {
+              lastRatesStart = 0
+              console.error('Could not start the rate worker:', error)
+              reply(500, { error: 'Could not start the rate worker. Double-click Start Rate Worker.bat in the bot folder.' })
+            }
+          })
           // "Helper off" light -> starts the helper bot (bot/helper.js) in its own window.
           let lastHelperStart = 0
           server.middlewares.use('/api/helper/start', async (req, res) => {
@@ -80,6 +139,15 @@ export default defineConfig(({ mode }) => {
               return reply(403, { error: 'Only the TMS on this computer can start the bot.' })
             }
             if (process.platform !== 'win32') return reply(501, { error: 'Starting the bot from the TMS only works on Windows.' })
+            try {
+              const policy = JSON.parse(readFileSync(path.resolve(process.cwd(), 'bot', 'automation-policy.json'), 'utf8'))
+              if (policy.automaticPostingEnabled === false) {
+                return reply(409, { error: 'Automatic posting is paused after the bulk takedown request. Starting the posting bot is disabled until posting is explicitly re-enabled.' })
+              }
+            } catch (error) {
+              console.error('Could not verify posting policy:', error)
+              return reply(503, { error: 'Cannot verify whether posting is allowed. The bot was not started.' })
+            }
             try {
               const running = await fetch('http://127.0.0.1:47615/status', { signal: AbortSignal.timeout(1000) })
               if (running.ok) return reply(200, { ok: true, alreadyRunning: true })

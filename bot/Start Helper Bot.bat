@@ -4,7 +4,7 @@ cd /d "%~dp0"
 echo Starting the Landstar HELPER bot (Assign Capacity, Clarity, MercuryGate)...
 echo Leave this window open. Close the helper's browser window to turn it off.
 echo.
-node helper.js
+node helper.js --dedicated-rates
 echo.
 echo The helper bot has stopped.
 pause

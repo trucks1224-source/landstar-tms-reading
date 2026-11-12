@@ -4,7 +4,9 @@
 // Intro and follow-up emails go out through the connected Gmail on this computer
 // (/api/paramount-email, local TMS only). The first few sends wait for an approval
 // click; after that "Send all" may send by itself. Replies found in Gmail move a
-// prospect to "replied" so hot leads stand out.
+// prospect to "replied" so hot leads stand out - except "we can't work with Landstar"
+// answers, which get an automatic apology reply and move to "dead". The Daily check-ins list emails chosen
+// brokers "any loads available today?" once a day (synced key landstar_dailyCheckins).
 //
 // Daniel's rules (2026-11-09): emails never mention Broski Transportation - the sender
 // is a Landstar agent, MC# 166960 - and they lead with "we do not double broker" and
@@ -12,11 +14,33 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/supabase';
 import {
-  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, FOLLOW_UP_AFTER_DAYS
+  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, FOLLOW_UP_AFTER_DAYS,
+  buildDailyCheckInEmail, dailyCheckInSubject, isDailyCheckInDue, isLandstarRefusal, buildDeclineReplyEmail
 } from './lib/prospects';
 
 const PROSPECT_EMAIL_URL = '/api/paramount-email';
 const settingsKey = 'landstar_prospectSettings';
+// Daily "any loads today?" brokers, synced through app_data (cloudSync syncedKeys).
+const checkinsKey = 'landstar_dailyCheckins';
+
+// Daniel's starting list (2026-11-10): brokers who get the daily check-in email.
+// Only used the first time, before the list exists in storage - deleting everyone
+// saves an empty list and does not bring these back.
+const seedCheckins = [
+  { id: 'seed-kevin-coolmore', contact: 'Kevin Presley', company: 'Coolmore Logistics', email: 'kevin@coolmorelogistics.com', active: true, lastSentAt: '' },
+  { id: 'seed-justin-traffictech', contact: 'Justin Mesch', company: 'TrafficTech', email: 'jmesch@traffictech.com', active: true, lastSentAt: '' }
+];
+
+function readCheckins() {
+  try {
+    const saved = window.localStorage.getItem(checkinsKey);
+    if (saved === null) return seedCheckins;
+    const list = JSON.parse(saved);
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
 
 const canSendHere = () => typeof window !== 'undefined'
   && ['127.0.0.1', 'localhost'].includes(window.location.hostname);
@@ -69,7 +93,34 @@ export default function Prospects() {
   const [busyId, setBusyId] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [bulkProgress, setBulkProgress] = useState('');
+  const [checkins, setCheckins] = useState(readCheckins);
+  const [newCheckin, setNewCheckin] = useState({ contact: '', company: '', email: '' });
   const checkedReplies = useRef(false);
+
+  const saveCheckins = next => {
+    setCheckins(next);
+    try { window.localStorage.setItem(checkinsKey, JSON.stringify(next)); } catch { /* kept for this tab only */ }
+  };
+
+  const addCheckin = () => {
+    const email = newCheckin.email.trim().toLowerCase();
+    if (!email.includes('@')) {
+      setStatus('Enter the broker email address to add a daily check-in.');
+      return;
+    }
+    if (checkins.some(item => item.email === email)) {
+      setStatus(`${email} is already on the daily check-in list.`);
+      return;
+    }
+    saveCheckins([...readCheckins(), {
+      id: `checkin-${Date.now()}`,
+      contact: newCheckin.contact.trim(),
+      company: newCheckin.company.trim(),
+      email, active: true, lastSentAt: ''
+    }]);
+    setNewCheckin({ contact: '', company: '', email: '' });
+    setStatus(`${email} added - the daily check-in starts with the next sender run.`);
+  };
 
   const saveSettings = next => {
     setSettings(next);
@@ -100,6 +151,26 @@ export default function Prospects() {
       for (const reply of replies || []) {
         const match = waiting.find(row => row.email.toLowerCase() === reply.from);
         if (!match || Date.parse(reply.at) <= (Date.parse(match.emailed_at) || 0)) continue;
+        // "We can't work with Landstar" gets an automatic apology that leaves the door
+        // open, and the prospect goes to "dead" so no more outreach goes out (Daniel's
+        // rule, 2026-11-10). Needs the sender name from Settings for the signature.
+        if (!isBlockedProspect(match) && isLandstarRefusal(reply.snippet) && settings.yourName.trim()) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            await callEmailApi({ action: 'prospectThreadReply', messageId: reply.id, company: match.company, text: buildDeclineReplyEmail(match, settings) });
+            // eslint-disable-next-line no-await-in-loop
+            await supabase.from('prospects').update({
+              status: 'dead', replied_at: reply.at,
+              reply_snippet: `${reply.snippet || ''} (apology auto-replied)`.trim(),
+              updated_at: new Date().toISOString()
+            }).eq('id', match.id);
+            setStatus(`${match.email} cannot work with Landstar - the apology reply went out automatically.`);
+            continue;
+          } catch (error) {
+            setStatus(`Could not auto-reply to ${match.email}: ${error.message}`);
+          }
+        }
+        // eslint-disable-next-line no-await-in-loop
         await supabase.from('prospects').update({
           status: 'replied', replied_at: reply.at, reply_snippet: reply.snippet || '', updated_at: new Date().toISOString()
         }).eq('id', match.id);
@@ -124,7 +195,7 @@ export default function Prospects() {
   // Fully automatic outreach (Daniel's rule, 2026-11-09): new brokers get the intro email
   // within ~10 minutes of being saved, and the day-after follow-up when nobody answered -
   // no approval clicks. Runs even with the panel closed; needs only the sender name in
-  // Settings. Blocked brokers (Landstar agencies, TQL) are never emailed.
+  // Settings. Blocked prospects (Landstar agencies, TQL, NTG) are never emailed.
   useEffect(() => {
     if (!supabase || !canSendHere()) return undefined;
     const run = async () => {
@@ -144,6 +215,11 @@ export default function Prospects() {
           // eslint-disable-next-line no-await-in-loop
           await sendTo(prospect, 'followUp', `RE: ${prospectSubject(prospect, current.subject)}`, buildFollowUpEmail(prospect, current), { auto: true });
         }
+      }
+      // Daily check-in brokers: one "any loads today?" email each, once a day.
+      for (const broker of readCheckins().filter(item => isDailyCheckInDue(item))) {
+        // eslint-disable-next-line no-await-in-loop
+        await sendCheckin(broker, current);
       }
     };
     const first = setTimeout(run, 45 * 1000);
@@ -255,14 +331,14 @@ export default function Prospects() {
 
   const sendTo = async (prospect, kind, subject, text, { auto = false } = {}) => {
     if (isBlockedProspect(prospect)) {
-      setStatus(`${prospect.email} is on the do-not-email list (Landstar agencies and TQL). Marked dead.`);
+      setStatus(`${prospect.email} is on the prospect do-not-email list (Landstar agencies, TQL and Nolan Transportation Group). Marked dead.`);
       await supabase.from('prospects').update({ status: 'dead', updated_at: new Date().toISOString() }).eq('id', prospect.id);
       await loadRows();
       return;
     }
     setBusyId(prospect.id);
     try {
-      await callEmailApi({ action: 'prospectSend', to: prospect.email, subject, text });
+      await callEmailApi({ action: 'prospectSend', to: prospect.email, company: prospect.company, subject, text });
       const now = new Date().toISOString();
       const change = kind === 'followUp'
         ? { status: 'followed-up', followed_up_at: now, updated_at: now }
@@ -275,6 +351,25 @@ export default function Prospects() {
       setStatus(`Could not send to ${prospect.email}: ${error.message}`);
     } finally {
       setBusyId(null);
+    }
+  };
+
+  // One daily check-in email to a broker; stamps lastSentAt so the next one waits a day.
+  const sendCheckin = async (broker, current) => {
+    if (isBlockedProspect(broker)) {
+      setStatus(`${broker.email} is on the prospect do-not-email list. Daily check-in not sent.`);
+      return;
+    }
+    try {
+      await callEmailApi({
+        action: 'prospectSend', to: broker.email, company: broker.company,
+        subject: dailyCheckInSubject(), text: buildDailyCheckInEmail(broker, current)
+      });
+      const sentAt = new Date().toISOString();
+      saveCheckins(readCheckins().map(item => (item.id === broker.id ? { ...item, lastSentAt: sentAt } : item)));
+      setStatus(`Daily check-in sent to ${broker.email}.`);
+    } catch (error) {
+      setStatus(`Could not send the daily check-in to ${broker.email}: ${error.message}`);
     }
   };
 
@@ -389,6 +484,35 @@ export default function Prospects() {
                 {reading || '📋 Paste DAT screenshot'}
               </button>
               <span className="text-[10px] text-gray-400">Snip broker postings on DAT with Win+Shift+S, then paste here (or Ctrl+V in this panel).</span>
+            </div>
+
+            <div className="border border-[#1c2541] rounded p-2 mb-3">
+              <div className="flex items-center justify-between mb-1 flex-wrap gap-1">
+                <span className="text-xs font-bold text-white">🔁 Daily check-ins</span>
+                <span className="text-[10px] text-gray-400">"Any loads available today?" emailed once a day while the TMS is open on this computer.</span>
+              </div>
+              {checkins.map(broker => (
+                <div key={broker.id} className="flex items-center justify-between gap-2 text-xs py-0.5">
+                  <div className={`min-w-0 flex-1 truncate ${broker.active === false ? 'text-gray-500' : 'text-white'}`}>
+                    <span className="font-bold">{broker.contact || broker.email}</span>
+                    {broker.company ? ` · ${broker.company}` : ''} · {broker.email}
+                    <span className="text-[10px] text-gray-500 ml-2">
+                      {broker.active === false ? 'paused' : (broker.lastSentAt ? `last sent ${new Date(broker.lastSentAt).toLocaleString()}` : 'not sent yet')}
+                    </span>
+                  </div>
+                  <div className="flex gap-1 shrink-0 items-center">
+                    <button type="button" disabled={!sendable || busyId !== null} onClick={() => { if (settingsReady()) void sendCheckin(broker, readSettings()); }} className="bg-sky-700 hover:bg-sky-600 disabled:opacity-50 px-2 py-0.5 text-[10px] font-bold rounded cursor-pointer">✉ Send now</button>
+                    <button type="button" onClick={() => saveCheckins(readCheckins().map(item => (item.id === broker.id ? { ...item, active: item.active === false } : item)))} className="text-[10px] text-amber-300 hover:text-amber-200 cursor-pointer">{broker.active === false ? 'Resume' : 'Pause'}</button>
+                    <button type="button" onClick={() => saveCheckins(readCheckins().filter(item => item.id !== broker.id))} className="text-[10px] text-red-400 hover:text-red-300 cursor-pointer" aria-label={`Remove ${broker.email}`}>✕</button>
+                  </div>
+                </div>
+              ))}
+              <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-1 mt-1">
+                <input type="text" value={newCheckin.contact} placeholder="Contact (Kevin)" onChange={event => setNewCheckin(current => ({ ...current, contact: event.target.value }))} className={inputClass} />
+                <input type="text" value={newCheckin.company} placeholder="Company" onChange={event => setNewCheckin(current => ({ ...current, company: event.target.value }))} className={inputClass} />
+                <input type="text" value={newCheckin.email} placeholder="Email" onChange={event => setNewCheckin(current => ({ ...current, email: event.target.value }))} className={inputClass} />
+                <button type="button" onClick={addCheckin} className="bg-emerald-700 hover:bg-emerald-600 px-2 py-1 text-[10px] font-bold rounded text-white cursor-pointer">Add</button>
+              </div>
             </div>
             {!sendable && <p className="text-[11px] text-amber-300 mb-2">Emails can only be sent from the TMS on the office computer (127.0.0.1:5173). Here you can still view and edit the list.</p>}
             {status && <p className="text-xs text-gray-300 mb-2">{status}</p>}

@@ -10,12 +10,35 @@
 // retried a few times and then dropped.
 
 const path = require('path');
+const fs = require('fs');
 const zipcodes = require('zipcodes');
 const { openBoard, OWN_POSTING_CODES } = require('./rate-check');
 const { listPostings, cancelPostings, STATES } = require('./dedupe');
-const { readQueue, writeQueue, setStatus } = require('./status-server');
+const { readQueue, writeQueue, setStatus, QUEUE_FILE } = require('./status-server');
 
 const MAX_ATTEMPTS = 3;
+
+// Both workers can reach this queue during a handover. Only one may cancel postings.
+function claimUnpostQueue() {
+  const file = `${QUEUE_FILE}.lock`;
+  try {
+    fs.writeFileSync(file, String(process.pid), { flag: 'wx' });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    let owner;
+    try { owner = Number(fs.readFileSync(file, 'utf8')); } catch (readError) {
+      if (readError.code === 'ENOENT') return null;
+      throw readError;
+    }
+    if (!Number.isInteger(owner) || owner <= 0) throw new Error('Invalid removal queue lock; check the worker before clearing it.');
+    try { process.kill(owner, 0); } catch (processError) {
+      if (processError.code !== 'ESRCH') throw processError;
+      fs.unlinkSync(file);
+    }
+    return null;
+  }
+  return () => fs.unlinkSync(file);
+}
 
 const clean = value => String(value ?? '').trim().toUpperCase();
 
@@ -47,6 +70,16 @@ function statesFor(queue) {
 
 // Removes the Landstar postings for every queued request it can match; returns how many were removed.
 async function processUnpostQueue(context, { log = console.log } = {}) {
+  const release = claimUnpostQueue();
+  if (!release) return 0;
+  try {
+    return await processClaimedQueue(context, { log });
+  } finally {
+    release();
+  }
+}
+
+async function processClaimedQueue(context, { log }) {
   const queue = readQueue();
   if (!queue.length) return 0;
   setStatus('logged-in', `Removing ${queue.length} dropped load(s) from Landstar`);
@@ -64,8 +97,19 @@ async function processUnpostQueue(context, { log = console.log } = {}) {
     log(`  ${item.customer} #${item.loadId}: ${matches.length ? `${matches.length} posting(s) found` : 'no posting found'}`);
   }
 
-  let removed = 0;
-  if (loadIds.size) removed = await cancelPostings(boardPage, [...loadIds], log);
+  // Landstar can accept a batch without actually removing its postings.
+  for (const id of loadIds) await cancelPostings(boardPage, [id], log);
+  const stillPosted = loadIds.size
+    ? await listPostings(boardPage, OWN_POSTING_CODES, log, statesFor(queue))
+    : [];
+  const remainingIds = new Set(stillPosted.map(load => String(load.LoadId)));
+  const removed = [...loadIds].filter(id => !remainingIds.has(String(id))).length;
+  for (const item of queue) {
+    const key = `${item.customer}|${item.loadId}`;
+    if (outcome.get(key) === 'matched' && findMatchingPostings(stillPosted, item.posting).length) {
+      outcome.set(key, 'retry');
+    }
+  }
 
   // Re-read: the TMS may have added more while this ran.
   const remaining = readQueue().flatMap(item => {
@@ -83,10 +127,13 @@ async function processUnpostQueue(context, { log = console.log } = {}) {
   });
   writeQueue(remaining);
   log(`  Removed ${removed} Landstar posting(s).${remaining.length ? ` ${remaining.length} will be retried.` : ''}`);
+  if ([...outcome.values()].includes('retry')) {
+    throw new Error('Some queued postings are still on Landstar after cancellation; retained for retry. Check agency permissions and protected loads.');
+  }
   return removed;
 }
 
-module.exports = { processUnpostQueue, findMatchingPostings, statesFor };
+module.exports = { processUnpostQueue, findMatchingPostings, statesFor, claimUnpostQueue };
 
 if (require.main === module) {
   const { chromium } = require('playwright');

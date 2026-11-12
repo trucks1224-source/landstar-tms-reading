@@ -13,6 +13,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { automaticDispatchEnabled } = require('./automation-policy.json');
 
 const PORT = 47615;
 // Tests point this at a temporary file.
@@ -69,6 +70,34 @@ const ASSIGN_QUEUE_FILE = process.env.ASSIGN_QUEUE_FILE || path.join(__dirname, 
 const RESULTS_FILE = process.env.BOT_RESULTS_FILE || path.join(__dirname, 'bot-results.json');
 const HELPER_STATUS_FILE = process.env.HELPER_STATUS_FILE || path.join(__dirname, 'helper-status.json');
 const IS_HELPER = process.env.BOT_ROLE === 'helper';
+const IS_REMOVAL = process.env.BOT_ROLE === 'removal';
+const IS_RATES = process.env.BOT_ROLE === 'rates';
+const REMOVAL_STATUS_FILE = process.env.REMOVAL_STATUS_FILE || path.join(__dirname, 'removal-status.json');
+const RATES_STATUS_FILE = process.env.RATES_STATUS_FILE || path.join(__dirname, 'rates-status.json');
+
+function readRatesStatus() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(RATES_STATUS_FILE, 'utf8'));
+    return Date.now() - Number(parsed.at) < 90000 ? parsed : { state: 'off', message: 'Rate worker is not running' };
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Could not read rate worker status:', error.message);
+    return { state: 'off', message: 'Rate worker is not running' };
+  }
+}
+
+function readRemovalStatus() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(REMOVAL_STATUS_FILE, 'utf8'));
+    return Date.now() - Number(parsed.at) < 90000 ? parsed : { state: 'off', message: 'Removal bot is not running' };
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Could not read removal bot status:', error.message);
+    return { state: 'off', message: 'Removal bot is not running' };
+  }
+}
+
+function removalActive() {
+  return ['logged-in', 'working', 'signing-in', 'starting'].includes(readRemovalStatus().state);
+}
 
 function readResults() {
   try {
@@ -125,7 +154,7 @@ function enqueueAssign(bookings) {
     const key = `${item.customer}|${item.loadId}`;
     const entry = {
       customer: String(item.customer || ''), loadId: String(item.loadId || ''), truck,
-      driver: String(item.driver || ''), attempts: 0,
+      driver: String(item.driver || ''), attempts: 0, recoverPosting: item.recoverPosting === true,
       posting: {
         originZip: String(posting.originZip), destZip: String(posting.destZip),
         pickupThru: String(posting.pickupThru), deliveryThru: String(posting.deliveryThru || ''),
@@ -237,6 +266,7 @@ function writeMercuryGateQueue(queue) {
 
 // One entry per load + step; a newer request (e.g. practice -> save) replaces it.
 function enqueueMercuryGate(jobs) {
+  if (!automaticDispatchEnabled) throw new Error('Automatic dispatch is disabled. Finish dispatch manually after Assign Capacity.');
   const queue = readMercuryGateQueue();
   (jobs || []).forEach(job => {
     const loadId = String(job?.loadId || '').trim();
@@ -258,7 +288,7 @@ function reportMercuryGateResult(result) {
 
 function start() {
   // Test scripts set BOT_NO_STATUS=1 so they never show up as the bot in the TMS.
-  if (server || process.env.BOT_NO_STATUS === '1' || IS_HELPER) return;
+  if (server || process.env.BOT_NO_STATUS === '1' || IS_HELPER || IS_REMOVAL || IS_RATES) return;
   server = http.createServer((req, res) => {
     // The TMS page (localhost or its live site) calls this; the Private-Network
     // header lets Chrome allow a web page to reach this local address.
@@ -273,7 +303,9 @@ function start() {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       const shared = readResults();
       const duplicates = readDuplicateBills();
-      res.end(JSON.stringify({ ...status, ...(progress ? { progress } : {}), helper: readHelperStatus(),
+      res.end(JSON.stringify({ ...status, ...(progress ? { progress } : {}), helper: readHelperStatus(), removal: readRemovalStatus(), rates: readRatesStatus(),
+        postingRefresh: require('./refresh').readRefreshStatus(),
+        coordination: { dedicatedRates: process.argv.includes('--dedicated-rates') },
         ...(shared.assign.length ? { assignResults: shared.assign } : {}),
         ...(Object.keys(shared.tracking).length ? { trackingResults: Object.values(shared.tracking) } : {}),
         ...(shared.mercurygate.length ? { mercurygateResults: shared.mercurygate } : {}),
@@ -289,6 +321,11 @@ function start() {
       return;
     }
     if (req.method === 'POST' && route === '/mercurygate') {
+      if (!automaticDispatchEnabled) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Automatic dispatch is disabled. Finish dispatch manually after Assign Capacity.' }));
+        return;
+      }
       let body = '';
       req.on('data', chunk => {
         body += chunk;
@@ -352,6 +389,31 @@ function start() {
       });
       return;
     }
+    if (req.method === 'POST' && route === '/posting-maintenance') {
+      const origin = req.headers.origin;
+      if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Only the local TMS can update posting protection.' }));
+        return;
+      }
+      let body = '';
+      req.on('data', chunk => {
+        body += chunk;
+        if (body.length > MAX_BODY) req.destroy();
+      });
+      req.on('end', () => {
+        try {
+          const count = require('./posting-maintenance').saveSnapshot(JSON.parse(body || '{}').loads);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, protected: count }));
+        } catch (error) {
+          console.error('Posting protection update failed:', error.message);
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: error.message }));
+        }
+      });
+      return;
+    }
     if (req.method === 'POST' && route === '/unpost') {
       let body = '';
       req.on('data', chunk => {
@@ -381,9 +443,22 @@ function start() {
 }
 
 function setStatus(state, message = '') {
+  if (IS_RATES) {
+    const rateState = state === 'logged-in' && /^(Rate-checking|Checking)/i.test(message) ? 'working' : state;
+    const temp = `${RATES_STATUS_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify({ state: rateState, message, at: Date.now(), pid: process.pid }));
+    fs.renameSync(temp, RATES_STATUS_FILE);
+    return;
+  }
+  if (IS_REMOVAL) {
+    fs.writeFileSync(REMOVAL_STATUS_FILE, JSON.stringify({ state, message, at: Date.now(), pid: process.pid }));
+    return;
+  }
   if (IS_HELPER) {
     // openBoard() etc. report "signing-in"/"logged-in": that is the helper's own light.
-    try { fs.writeFileSync(HELPER_STATUS_FILE, JSON.stringify({ state, message, at: Date.now() })); } catch { /* next time */ }
+    try { fs.writeFileSync(HELPER_STATUS_FILE, JSON.stringify({
+      state, message, at: Date.now(), pid: process.pid, dedicatedRates: process.argv.includes('--dedicated-rates')
+    })); } catch { /* next time */ }
     return;
   }
   start();
@@ -396,6 +471,8 @@ function setProgress(next) {
 }
 
 module.exports = {
+  readRatesStatus, RATES_STATUS_FILE,
+  readRemovalStatus, removalActive, REMOVAL_STATUS_FILE,
   readHelperStatus, helperActive, HELPER_STATUS_FILE, readResults,
   setStatus, setProgress, PORT, readQueue, writeQueue, enqueue, QUEUE_FILE,
   readAssignQueue, writeAssignQueue, enqueueAssign, reportAssignResult, ASSIGN_QUEUE_FILE,

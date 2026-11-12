@@ -7,6 +7,7 @@ export const syncedKeys = [
   'landstar_laneRates',
   'landstar_rateHistory',
   'landstar_exportedLoads',
+  'landstar_dailyCheckins',
   'landstar_profile',
   'landstar_dataVersion'
 ];

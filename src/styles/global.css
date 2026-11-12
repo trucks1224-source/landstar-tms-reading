@@ -1244,3 +1244,15 @@ body.tms-drawer-open .tms-sidebar {
     font-size: 14px;
   }
 }
+
+.tms-shell .tms-pickup-date-filter input[type='date'],
+.tms-shell .tms-pickup-date-filter button {
+  min-height: 48px;
+  font-size: 16px;
+}
+
+.tms-shell .tms-pickup-date-filter input[type='date']::-webkit-calendar-picker-indicator {
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+}

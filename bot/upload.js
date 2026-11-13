@@ -20,6 +20,7 @@ const { setStatus, setProgress } = require('./status-server');
 const uploadProgress = { uploaded: 0, waiting: 0 };
 const { raiseWindow } = require('./raise-window');
 const { reviewFiles, assertUploadReady, submitFileOnce } = require('./upload-safety');
+const { closeSuccessfulUploadConfirmation } = require('./upload-completion');
 const { processRefresh } = require('./refresh');
 const { readBotControl } = require('./local-bot-control');
 function assertPostingEnabled() {
@@ -172,6 +173,7 @@ function alreadyUploaded() {
       .map(name => path.join(uploadedFolder, name))
       .filter(full => fs.statSync(full).isFile())
       .concat(reviewFiles(reviewFolder))
+      .concat(reviewFiles(path.join(sourceFolder, 'landstar-upload-errors')))
       .map(fileHash)
   );
 }
@@ -181,13 +183,8 @@ async function waitForUploadToFinish(page) {
   // the modal (and its close animation) to fully clear before the next file.
   await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => {});
 
-  // Wait until no overlay backdrop is present, then give the close animation
-  // a fixed settle time so the next click isn't intercepted.
-  await page.waitForFunction(
-    () => !document.querySelector('.cdk-overlay-backdrop'),
-    null,
-    { timeout: 60000 }
-  );
+  // Landstar's success dialog stays open until Done is clicked.
+  await closeSuccessfulUploadConfirmation(page);
   await page.waitForTimeout(4000);
 
   // Confirm the upload button is clickable again (no overlay intercepting).
@@ -323,8 +320,8 @@ async function openBulkPostings(context, page, { waitForever = false } = {}) {
   await page.waitForTimeout(2000);
 }
 
-// Rate-checks then submits each file once. Uncertain/rejected submissions stay
-// in review and block later uploads rather than generating more error drafts.
+// Rate-checks then submits each file once. Uncertain submissions stay in review
+// without replay; later files can proceed after the upload page is reopened.
 // Throws if the rate check fails, so nothing posts unchecked.
 async function processFiles(context, page, files, { waitForever = false } = {}) {
   return withExportOwnership(files, async () => {
@@ -357,19 +354,34 @@ async function processFiles(context, page, files, { waitForever = false } = {}) 
   await openBulkPostings(context, page, { waitForever });
   if (!fs.existsSync(uploadedFolder)) fs.mkdirSync(uploadedFolder, { recursive: true });
 
+  const needsReview = [];
   for (const file of files) {
     setStatus('uploading', `Uploading ${path.basename(file).replace(/^Landstar_Bulk_/, '').replace(/\.xlsx$/i, '')}`);
-    await submitFileOnce(page, file, {
-      reviewFolder, uploadedFolder, submit: uploadOne,
-      verify: dedicatedRates ? target => {
-        if (!isPrechecked(target)) throw new Error('Export changed after its rate check. Posting paused for another check.');
-      } : undefined
-    });
-    uploadProgress.uploaded += 1;
+    let result;
+    try {
+      result = await submitFileOnce(page, file, {
+        reviewFolder, uploadedFolder, submit: uploadOne,
+        verify: dedicatedRates ? target => {
+          if (!isPrechecked(target)) throw new Error('Export changed after its rate check. Posting paused for another check.');
+        } : undefined
+      });
+    } catch (error) {
+      if (!error.uncertainUpload) throw error;
+      console.error(`  ! ${error.message}`);
+      needsReview.push(file);
+      uploadProgress.waiting = Math.max(0, uploadProgress.waiting - 1);
+      setProgress(uploadProgress);
+      await openBulkPostings(context, page, { waitForever });
+      continue;
+    }
+    if (result.state === 'drafts') {
+      console.error(`  ! ${path.basename(file)}: ${result.message} The file is in ${result.file}; uploads will continue.`);
+      needsReview.push(file);
+    } else uploadProgress.uploaded += 1;
     uploadProgress.waiting = Math.max(0, uploadProgress.waiting - 1);
     setProgress(uploadProgress);
   }
-  return [];
+  return needsReview;
   });
 }
 
@@ -462,7 +474,7 @@ async function runOnce() {
     console.log('\nAll done. Uploaded files were moved to:');
     console.log(`  ${uploadedFolder}`);
     if (failed.length) {
-      console.log(`\n${failed.length} file(s) could not be uploaded and were left in Downloads:`);
+      console.log(`\n${failed.length} submitted file(s) need review in landstar-upload-errors:`);
       failed.forEach(f => console.log(`  - ${path.basename(f)}`));
     }
 
@@ -594,7 +606,7 @@ async function runWatch() {
     })) {
       lastActivity = Date.now();
       setStatus('logged-in', 'Important-load refresh: replacement submitted or verified');
-    } else if (files.length && !reviewFiles(reviewFolder).length && Date.now() >= uploadBlockedUntil) {
+    } else if (files.length && Date.now() >= uploadBlockedUntil) {
       console.log(`\n[${timeNow()}] New export(s): ${files.map(f => path.basename(f)).join(', ')}`
         + (waiting > files.length ? `  (${waiting - files.length} more waiting)` : ''));
       const keyOf = file => { try { return `${file}|${fs.statSync(file).mtimeMs}`; } catch { return file; } };
@@ -604,8 +616,8 @@ async function runWatch() {
         uploadPauseMessage = '';
         failed.forEach(file => failures.set(keys.get(file), (failures.get(keys.get(file)) || 0) + 1));
         const uploaded = files.length - failed.length;
-        console.log(`[${timeNow()}] Uploaded ${uploaded} file(s)${failed.length ? `, ${failed.length} failed (left in Downloads)` : ''}. Watching...`);
-        setStatus('logged-in', `Watching for exports · last upload ${timeNow()}`);
+        console.log(`[${timeNow()}] Uploaded ${uploaded} file(s)${failed.length ? `, ${failed.length} need Landstar review` : ''}. Watching...`);
+        setStatus('logged-in', failed.length ? `${failed.length} submitted export(s) need Landstar review; continuing` : `Watching for exports · last upload ${timeNow()}`);
         if (uploaded > 0 && runDedupe) dedupeDueAt = Date.now() + DEDUPE_DELAY_MS;
       } catch (err) {
         if (closed) break;
@@ -679,12 +691,12 @@ async function runWatch() {
       }
       lastActivity = Date.now();
     }
-    if (reviewFiles(reviewFolder).length) {
-      setStatus('logged-in', `Uploads paused: review the submitted file in ${reviewFolder}. It will not be automatically resent.`);
-    } else if (uploadPauseMessage) {
+    if (uploadPauseMessage) {
       setStatus('logged-in', uploadPauseMessage);
     } else if (dedicatedRates && waiting && !files.length) {
       setStatus('logged-in', `Waiting for the rate worker: ${waiting} export(s) pending. Unchecked files are not posted.`);
+    } else if (reviewFiles(reviewFolder).length) {
+      setStatus('logged-in', `${reviewFiles(reviewFolder).length} submitted export(s) need Landstar review in ${reviewFolder}; uploads continue without resending them.`);
     }
     await sleep(WATCH_INTERVAL_MS);
   }

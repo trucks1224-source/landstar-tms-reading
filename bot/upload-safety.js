@@ -30,6 +30,64 @@ async function readBulkErrors(page) {
   });
 }
 
+async function readBulkErrorReport(page) {
+  return page.evaluate(async () => {
+    let user;
+    for (const storage of [sessionStorage, localStorage]) {
+      for (let i = 0; i < storage.length; i += 1) {
+        const key = storage.key(i);
+        if (!/^oidc\.user:/i.test(key)) continue;
+        const candidate = JSON.parse(storage.getItem(key));
+        if (candidate?.access_token && candidate.profile?.ls_unique_id) user = candidate;
+      }
+    }
+    if (!user) throw new Error('Cannot collect draft details: Landstar sign-in is missing.');
+    const headers = { Authorization: `Bearer ${user.access_token}`, 'Content-Type': 'application/json' };
+    const response = await fetch('/loadboards/v1/bulkUpload/unpostedDrafts?pageIndex=0&pageSize=200', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        loadStatuses: ['Active'], userId: String(user.profile.ls_unique_id),
+        sortColumn: 'PostingNumber', sortType: 'Desc', lockedInRate: false,
+      }),
+    });
+    if (!response.ok) throw new Error(`Cannot collect draft details: HTTP ${response.status}.`);
+    const result = await response.json();
+    if (!Number.isInteger(result.count) || result.count < 0 || !Array.isArray(result.data)) {
+      throw new Error('Cannot collect draft details: unexpected Landstar response.');
+    }
+    const drafts = [];
+    for (const draft of result.data) {
+      const { batchId, draftId } = draft;
+      if (batchId == null || draftId == null) throw new Error('Cannot collect draft details: missing draft identifiers.');
+      const detail = await fetch(`/loadboards/v1/bulkUpload/batch/${encodeURIComponent(batchId)}/draft/${encodeURIComponent(draftId)}/details`, { headers });
+      if (!detail.ok) throw new Error(`Cannot collect draft ${draftId}: HTTP ${detail.status}.`);
+      drafts.push({ batchId, draftId, listing: draft, details: await detail.json() });
+    }
+    return {
+      count: result.count,
+      truncated: result.count > result.data.length,
+      pageText: document.body?.innerText?.slice(0, 10000) || '',
+      drafts,
+    };
+  });
+}
+
+async function writeBulkErrorReport(page, reserved, observedCount) {
+  const reportPath = `${reserved}.review.json`;
+  const report = {
+    capturedAt: new Date().toISOString(),
+    file: path.basename(reserved),
+    observedCount,
+  };
+  try {
+    report.landstar = await readBulkErrorReport(page);
+  } catch (error) {
+    report.captureError = error.message;
+  }
+  fs.writeFileSync(reportPath, JSON.stringify(report, null, 2), { flag: 'wx' });
+  return reportPath;
+}
+
 function reviewFiles(folder) {
   if (!fs.existsSync(folder)) return [];
   return fs.readdirSync(folder)
@@ -39,11 +97,7 @@ function reviewFiles(folder) {
 }
 
 async function assertUploadReady(page, reviewFolder) {
-  if (reviewFiles(reviewFolder).length) {
-    throw new Error(`Uploads paused: check Landstar for the export in ${reviewFolder} before moving it out of review.`);
-  }
-  const count = await readBulkErrors(page);
-  if (count) throw new Error(`Uploads paused: ${count} Landstar bulk error draft(s) need review. No new file was submitted.`);
+  await readBulkErrors(page);
 }
 
 function uniqueTarget(folder, file) {
@@ -65,11 +119,26 @@ async function submitFileOnce(page, file, { reviewFolder, uploadedFolder, submit
   try {
     await submit(page, reserved);
     const count = await readBulkErrors(page);
-    if (count) throw new Error(`Landstar reports ${count} bulk error draft(s); upload acceptance is not posting success.`);
+    if (count) {
+      const draftFolder = path.join(path.dirname(reviewFolder), 'landstar-upload-errors');
+      const draftFile = uniqueTarget(draftFolder, file);
+      fs.renameSync(reserved, draftFile);
+      let reportMessage;
+      try {
+        reportMessage = `Details saved to ${await writeBulkErrorReport(page, draftFile, count)}.`;
+      } catch (error) {
+        reportMessage = `Could not save error details: ${error.message}.`;
+      }
+      return { state: 'drafts', file: draftFile, count, message: `Landstar reports ${count} bulk error draft(s); posting is not confirmed. ${reportMessage}` };
+    }
     fs.renameSync(reserved, uniqueTarget(uploadedFolder, file));
+    return { state: 'uploaded' };
   } catch (error) {
-    throw new Error(`Uploads paused: ${error.message} Check the submitted file in ${reviewFolder}; it will not be automatically resent.`, { cause: error });
+    const uncertain = new Error(`Submission outcome unknown: ${error.message} Check ${reserved} on Landstar; it will not be automatically resent.`, { cause: error });
+    uncertain.uncertainUpload = true;
+    uncertain.file = reserved;
+    throw uncertain;
   }
 }
 
-module.exports = { readBulkErrors, reviewFiles, assertUploadReady, submitFileOnce };
+module.exports = { readBulkErrors, readBulkErrorReport, reviewFiles, assertUploadReady, submitFileOnce };

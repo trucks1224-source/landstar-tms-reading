@@ -195,9 +195,13 @@ export function isBlockedProspect(prospect = {}) {
     .test(`${prospect.company || ''} ${prospect.email || ''} ${prospect.contact || ''}`);
 }
 
+export function isProspectFollowUpExcluded(prospect = {}) {
+  return String(prospect.email || '').trim().toLowerCase() === 'capacity@greatwide-tx.com';
+}
+
 // A follow-up is due a few days after the intro email when nobody answered.
 export function isFollowUpDue(prospect, now = Date.now()) {
-  if (!prospect || prospect.status !== 'emailed' || isBlockedProspect(prospect)) return false;
+  if (!prospect || prospect.status !== 'emailed' || isBlockedProspect(prospect) || isProspectFollowUpExcluded(prospect)) return false;
   const emailedAt = Date.parse(prospect.emailed_at);
   return Number.isFinite(emailedAt) && now - emailedAt > FOLLOW_UP_AFTER_DAYS * 86400000;
 }

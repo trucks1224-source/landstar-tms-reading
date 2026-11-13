@@ -64,6 +64,18 @@ test('a completed delivery stop means delivered', () => {
   assert.equal(summarizeClarityLoad({ stops: [pickup, delivery] }, {}).deliveredAt, 'done');
 });
 
+test('a pickup departure time is never treated as an arrival time', () => {
+  const pickup = {
+    stopTypeCode: 'Pickup', isComplete: true,
+    statusUpdates: [{ description: 'Departed Pickup Location', mulesoftStatusUpdate: {
+      status: { code: 'AF' }, statusDateTime: '2026-11-06T15:00:00Z'
+    } }]
+  };
+  const summary = summarizeClarityLoad({ stops: [pickup, { stopTypeCode: 'Delivery' }] });
+  assert.equal(summary.arrivedShipperAt, null);
+  assert.equal(summary.leftShipperAt, '2026-11-06T15:00:00Z');
+});
+
 test('any customer matches by truck number alone', () => {
   const list = [{ orderId: '7', tractorId: '583737', freight: { billToCustomer: 'Nolan Transportation Group' }, origin: { location: { city: 'Abilene' } } }];
   assert.equal(matchClarityLoad(list, { truck: '583737', billTo: 'any' }).orderId, '7');

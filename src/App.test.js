@@ -43,7 +43,7 @@ test('editing an order number replaces the original load and keeps selection and
 
 const { code } = await transform(`${source}
 export {
-  preservesImportedLoadStatus, getReimportedLoadStatus, getPendingDriverStatusReply, getEmailPostingCode, getRxoEmailPostingCodes, describeRateWorker, hasPickupDayStarted, getCitySuggestions, applyLocationInput,
+  preservesImportedLoadStatus, getReimportedLoadStatus, getPendingDriverStatusReply, getEmailPostingCode, getRxoEmailPostingCodes, isValidPostingCode, describeRateWorker, hasPickupDayStarted, getCitySuggestions, applyLocationInput,
   keepPreviouslyExportedLoadsOpen, markDifferentScheduleLoadsEnt,
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
@@ -84,6 +84,15 @@ const context = {
 };
 vm.runInNewContext(code, context);
 const policy = context.module.exports;
+test('posting code validation prevents Landstar exports with more than 10 characters', () => {
+  assert.equal(policy.isValidPostingCode(' ANQ '), true);
+  assert.equal(policy.isValidPostingCode('1234567890'), true);
+  assert.equal(policy.isValidPostingCode('ANQ I SHOULD HAVE NEVER'), false);
+  assert.equal(policy.isValidPostingCode('12345678901'), false);
+  assert.equal(policy.isValidPostingCode('  '), false);
+  assert.match(source, /if \(!isValidPostingCode\(postingCode\)\) rowErrors\.push/);
+  assert.match(source, /if \(!isValidPostingCode\(nextProfile\.postingCode\)\)/);
+});
 const customers = [
   'Para 1522166 - ATZ',
   'R X O 2429200 - ATZ P',

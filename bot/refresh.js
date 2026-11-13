@@ -184,7 +184,8 @@ async function processRefresh(context, { uploadedFolder, reviewFolder, openUploa
       }
       // Persist before submission: an interrupted upload is never automatically replayed.
       save({ submittedAt: Date.now(), oldIds: matches.map(load => String(load.LoadId)), error: '' });
-      await submitFileOnce(uploadPage, file, { reviewFolder, uploadedFolder, submit });
+      const submitted = await submitFileOnce(uploadPage, file, { reviewFolder, uploadedFolder, submit });
+      if (submitted.state === 'drafts') throw new Error(`Refresh needs Landstar review: ${submitted.message} Original posting kept.`);
       save({ retryAt: Date.now() + 15000 });
       return true;
     }

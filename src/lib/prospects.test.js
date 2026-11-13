@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, LANDSTAR_MC,
+  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, isProspectFollowUpExcluded, LANDSTAR_MC,
   buildDailyCheckInEmail, dailyCheckInSubject, isDailyCheckInDue, DAILY_CHECKIN_AFTER_HOURS,
   isLandstarRefusal, buildDeclineReplyEmail
 } from './prospects.js';
@@ -157,4 +157,15 @@ test('follow-up is due 1 day after the intro email, only while still "emailed"',
   assert.equal(isFollowUpDue({ ...emailed, status: 'replied' }, now), false);
   assert.equal(isFollowUpDue({ ...emailed, status: 'new' }, now), false);
   assert.equal(isFollowUpDue({ status: 'emailed' }, now), false);
+});
+
+test('only the specified contact is excluded from prospect follow-ups', () => {
+  const now = Date.parse('2026-11-09T12:00:00Z');
+  const prospect = { status: 'emailed', emailed_at: '2026-11-05T12:00:00Z', company: 'Greatwide' };
+  const excluded = { ...prospect, email: ' CAPACITY@GREATWIDE-TX.COM ' };
+  assert.equal(isProspectFollowUpExcluded(excluded), true);
+  assert.equal(isFollowUpDue(excluded, now), false);
+  assert.equal(isBlockedProspect(excluded), false);
+  assert.equal(isDailyCheckInDue({ ...excluded, active: true }, now), true);
+  assert.equal(isFollowUpDue({ ...prospect, email: 'another@greatwide-tx.com' }, now), true);
 });

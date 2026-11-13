@@ -131,6 +131,20 @@ test('prospect sends to NTG are blocked server-side before connecting to Gmail',
   }
 });
 
+test('excluded prospect follow-ups are blocked before connecting, including older clients', async t => {
+  t.mock.method(globalThis, 'fetch', () => { throw new Error('Excluded follow-up must not access the network'); });
+  for (const request of [
+    { kind: 'followUp', subject: 'Custom subject' },
+    { subject: 'RE: Truck capacity' }
+  ]) {
+    const result = await handleParamountEmail({
+      action: 'prospectSend', to: 'Capacity <CAPACITY@greatwide-tx.com>', text: 'Hello', ...request
+    });
+    assert.equal(result.status, 403);
+    assert.match(result.body.error, /follow-ups are disabled/);
+  }
+});
+
 test('prospect replies validate the actual sender even when company metadata is missing', async t => {
   const env = {
     SUPABASE_URL: 'https://tms-test.example', SUPABASE_SERVICE_ROLE_KEY: 'test-key',

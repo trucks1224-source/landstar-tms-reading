@@ -55,14 +55,14 @@ async function main() {
         const files = pendingRateFiles(sourceFolder);
         if (hazmatEnabled && Date.now() >= hazmatDueAt) {
           hazmatDueAt = Date.now() + HAZMAT_INTERVAL_MS;
-          setStatus('working', 'Checking existing hazmat board rates');
+          setStatus('working', 'Checking PARA and RXO board rates (hazmat first)');
           try {
             await checkHazmatRates(context, { apply: true });
             hazmatError = '';
           } catch (error) {
             if (closed) break;
             hazmatError = error.message;
-            console.error('Hazmat check failed; export preparation will continue:', error.message);
+            console.error('Board rate check failed; export preparation will continue:', error.message);
             report('logged-in', 'Export preparation can continue');
           }
           lastActivity = Date.now();

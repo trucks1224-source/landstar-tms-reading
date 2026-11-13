@@ -47,14 +47,16 @@ test('missing sign-in, failed requests and malformed counts fail closed', async 
   await assert.rejects(readBulkErrors(fakePage([0], { body: { count: -1, data: [] } })), /unexpected/);
 });
 
-test('existing error drafts prevent submission and leave the file untouched', async t => {
+test('existing error drafts do not prevent submission but are not reported as success', async t => {
   const paths = folders(t);
   let calls = 0;
-  await assert.rejects(submitFileOnce(fakePage([2]), paths.file, {
+  const result = await submitFileOnce(fakePage([2]), paths.file, {
     ...paths, submit: async () => { calls += 1; },
-  }), /2 Landstar bulk error/);
-  assert.equal(calls, 0);
-  assert.equal(fs.existsSync(paths.file), true);
+  });
+  assert.equal(result.state, 'drafts');
+  assert.equal(calls, 1);
+  assert.equal(fs.existsSync(result.file), true);
+  assert.equal(reviewFiles(paths.reviewFolder).length, 0);
 });
 
 test('successful submission is reserved first then archived without overwriting', async t => {
@@ -72,7 +74,7 @@ test('successful submission is reserved first then archived without overwriting'
   assert.equal(fs.readdirSync(paths.uploadedFolder).length, 2);
 });
 
-test('timeout preserves the submitted file and blocks replay after restart', async t => {
+test('timeout preserves the submitted file without blocking later files', async t => {
   const paths = folders(t);
   let calls = 0;
   await assert.rejects(submitFileOnce(fakePage([0]), paths.file, {
@@ -81,19 +83,51 @@ test('timeout preserves the submitted file and blocks replay after restart', asy
   assert.equal(calls, 1);
   assert.equal(fs.existsSync(paths.file), false);
   assert.equal(reviewFiles(paths.reviewFolder).length, 1);
-  await assert.rejects(assertUploadReady(fakePage([0]), paths.reviewFolder), /before moving it out/);
-  assert.equal(fs.existsSync(paths.uploadedFolder), false);
-});
-
-test('new error drafts stop the batch and preserve the file for review', async t => {
-  const paths = folders(t);
-  await assert.rejects(submitFileOnce(fakePage([0, 3]), paths.file, {
-    ...paths, submit: async () => {},
-  }), /3 bulk error draft/);
+  await assertUploadReady(fakePage([0]), paths.reviewFolder);
+  const next = path.join(paths.root, 'Landstar_Bulk_next.xlsx');
+  fs.writeFileSync(next, 'next export');
+  const result = await submitFileOnce(fakePage([0]), next, {
+    ...paths, submit: async () => { calls += 1; },
+  });
+  assert.equal(result.state, 'uploaded');
+  assert.equal(calls, 2);
   assert.equal(reviewFiles(paths.reviewFolder).length, 1);
-  assert.equal(fs.existsSync(paths.uploadedFolder), false);
 });
 
+test('new error drafts preserve the file separately without stopping the batch', async t => {
+  const paths = folders(t);
+  const result = await submitFileOnce(fakePage([0, 3]), paths.file, {
+    ...paths, submit: async () => {},
+  });
+  assert.equal(result.state, 'drafts');
+  assert.equal(result.count, 3);
+  assert.equal(reviewFiles(paths.reviewFolder).length, 0);
+  assert.equal(fs.existsSync(result.file), true);
+  assert.equal(fs.existsSync(paths.uploadedFolder), false);
+  const report = JSON.parse(fs.readFileSync(`${result.file}.review.json`, 'utf8'));
+  assert.equal(report.observedCount, 3);
+  assert.match(report.captureError, /.+/);
+});
+
+test('draft diagnostics save count, page and details without credentials', async t => {
+  const paths = folders(t);
+  let calls = 0;
+  const page = {
+    evaluate: async () => {
+      calls += 1;
+      if (calls === 1) return 0;
+      if (calls === 2) return 2;
+      return { count: 2, truncated: false, pageText: '2 Errors', drafts: [{ batchId: 7, draftId: 8, details: { reason: 'Invalid date' } }] };
+    },
+  };
+  const result = await submitFileOnce(page, paths.file, { ...paths, submit: async () => {} });
+  assert.match(result.message, /Details saved to/);
+  const report = JSON.parse(fs.readFileSync(`${result.file}.review.json`, 'utf8'));
+  assert.equal(report.observedCount, 2);
+  assert.equal(report.landstar.drafts[0].details.reason, 'Invalid date');
+  assert.equal(report.landstar.pageText, '2 Errors');
+  assert.equal(reviewFiles(paths.reviewFolder).length, 0);
+});
 test('failed post-submit error check is uncertain, not a successful upload', async t => {
   const paths = folders(t);
   const page = fakePage([0]);

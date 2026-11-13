@@ -2,7 +2,7 @@
 // the connected Gmail account, reply-all inside it, and list replies from other people.
 // Used by the local TMS server (vite.config.js -> /api/paramount-email).
 import { getAccessToken, getMessageText, getServiceClient } from './server.js';
-import { isBlockedProspect } from '../../src/lib/prospects.js';
+import { isBlockedProspect, isProspectFollowUpExcluded } from '../../src/lib/prospects.js';
 
 const GMAIL = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const oneLine = value => String(value || '').replace(/[\r\n]+/g, ' ').trim();
@@ -809,6 +809,11 @@ async function handleProspectEmail(request) {
   const blocked = { status: 403, body: { error: 'This recipient is on the prospect do-not-email list. Prospect email not sent.' } };
   if (['prospectSend', 'prospectThreadReply'].includes(action)
     && isBlockedProspect({ company: request.company, email: to })) return blocked;
+  // Older open tabs identify automatic follow-ups by the RE: subject, not a kind field.
+  if (action === 'prospectSend' && isProspectFollowUpExcluded({ email: emailOf(to) })
+    && (request.kind === 'followUp' || (!request.kind && /^\s*re\s*:/i.test(String(subject || ''))))) {
+    return { status: 403, body: { error: 'Prospecting follow-ups are disabled for this recipient.' } };
+  }
   const { accessToken } = await connect();
   if (action === 'prospectThreadReply') {
     // Reply inside the prospect's own thread (the automatic "sorry other agents were

@@ -252,12 +252,12 @@ folder (or run `npm run rates` and `npm run watch` in separate terminals here).
   `Landstar_Bulk_*.xlsx` landing in Downloads, the rate worker prepares it and
   the posting worker uploads it, then keeps watching.
 - It refreshes Landstar every 10 minutes while idle so you stay logged in.
-- Before each submission the bot checks Landstar's bulk error queue. Errors or
-  an unavailable check pause uploads rather than submitting more files.
+- Before each submission the bot checks Landstar's bulk error queue. An
+  unavailable check blocks submission; reported drafts are saved for review.
 - A file is moved to `Downloads\landstar-upload-review\` before it is attached.
   If submission times out, is rejected, or the bot stops midway, it stays there
-  and is never automatically resent, including after a restart. Further uploads
-  pause, but tracking and queued removals can continue.
+  and is never automatically resent, including after a restart. Later exports
+  continue after the upload page is reopened and ready.
 - Check the file's actual Landstar postings and error drafts before moving it
   out of review. Do not put an entire partially accepted file back in Downloads;
   export only the confirmed missing loads. A finished upload with no errors
@@ -273,6 +273,12 @@ Tip: right-click `Start Landstar Bot.bat` → **Send to → Desktop (create shor
 to start it from your desktop.
 
 ## Dedicated rate worker
+
+Existing-posting rate edits support Landstar's responsive **Save** and
+**Save Changes** buttons. An edit is only reported as saved after Landstar's
+update endpoint confirms it. Missing or unsuccessful confirmation leaves the
+rate check in an error state; verify the posting before manually retrying an
+uncertain update.
 
 The rate worker uses a separate persistent browser profile
 (`browser-profile-rates`). Sign in to Landstar in that window if asked.
@@ -294,11 +300,13 @@ empty helper locks) require review; only locks whose PID is confirmed dead are
 recovered automatically. All-empty exports are archived without overwriting
 earlier skipped exports; failed checks do not publish a ready marker.
 
-This moves existing **Landstar board competitor checks**, including the existing
-30-minute hazmat check, out of posting. It does not change pricing rules, intervals,
-account scope, caps or dispatch policy. DAT API rate quotes still run in the TMS;
-this is not a new DAT load-posting integration. `--no-hazmat-watch` on the rate
-worker disables its recurring hazmat checks if needed. The legacy one-time
+The recurring 30-minute board check covers PARA and RXO postings identifiable
+from saved bot-upload spreadsheets, with hazmat checked first. It raises a matching
+lane's rate to $25 above the highest competing rate when needed. Unmatched postings
+and signatures also associated with another customer's exports are skipped; this
+cannot guarantee every posting is checked when upload records are missing. DAT API
+rate quotes still run in the TMS. `--no-hazmat-watch` disables the entire recurring
+board check. The legacy one-time
 `node upload.js` path remains available, with exclusive export ownership.
 
 ## Dedicated removal bot
@@ -332,6 +340,15 @@ Restart the upload bot once after installing this change. While the removal bot
 is running, the upload bot leaves queued removals to it. When it is off, the upload
 bot continues handling removals as before. The watchdog also restarts the removal
 bot. Close the watchdog first if you intentionally want to stop a bot.
+
+When Landstar reports bulk error drafts after an upload, the bot continues with
+later exports and keeps the submitted spreadsheet in `Downloads\landstar-upload-errors`
+instead of marking it as successfully posted. A `.review.json` report records the
+observed count, current page text and draft details; the count can include older
+drafts. The report may contain load and customer information. An unsuccessful
+report capture is recorded. Unknown submission outcomes remain in
+`landstar-upload-review` and are never automatically resent; later exports
+can continue. Check those files on Landstar for missing or duplicate loads.
 
 ## Every time you export (one-time run)
 

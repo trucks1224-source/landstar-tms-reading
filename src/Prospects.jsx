@@ -14,7 +14,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/supabase';
 import {
-  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, FOLLOW_UP_AFTER_DAYS,
+  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, isProspectFollowUpExcluded, FOLLOW_UP_AFTER_DAYS,
   buildDailyCheckInEmail, dailyCheckInSubject, isDailyCheckInDue, isLandstarRefusal, buildDeclineReplyEmail
 } from './lib/prospects';
 
@@ -330,6 +330,10 @@ export default function Prospects() {
   };
 
   const sendTo = async (prospect, kind, subject, text, { auto = false } = {}) => {
+    if (kind === 'followUp' && isProspectFollowUpExcluded(prospect)) {
+      setStatus(`Prospecting follow-ups are disabled for ${prospect.email}.`);
+      return;
+    }
     if (isBlockedProspect(prospect)) {
       setStatus(`${prospect.email} is on the prospect do-not-email list (Landstar agencies, TQL and Nolan Transportation Group). Marked dead.`);
       await supabase.from('prospects').update({ status: 'dead', updated_at: new Date().toISOString() }).eq('id', prospect.id);
@@ -338,7 +342,7 @@ export default function Prospects() {
     }
     setBusyId(prospect.id);
     try {
-      await callEmailApi({ action: 'prospectSend', to: prospect.email, company: prospect.company, subject, text });
+      await callEmailApi({ action: 'prospectSend', kind, to: prospect.email, company: prospect.company, subject, text });
       const now = new Date().toISOString();
       const change = kind === 'followUp'
         ? { status: 'followed-up', followed_up_at: now, updated_at: now }
@@ -605,6 +609,7 @@ export default function Prospects() {
                       {row.company || row.email}
                       <span className={`ml-2 font-bold ${statusColors[row.status] || 'text-gray-300'}`}>{statusLabels[row.status] || row.status}</span>
                       {isFollowUpDue(row) && <span className="ml-2 text-orange-300 font-bold">Follow-up due ({FOLLOW_UP_AFTER_DAYS}+ days, no answer)</span>}
+                      {isProspectFollowUpExcluded(row) && <span className="ml-2 text-gray-400">Prospect follow-ups disabled</span>}
                     </div>
                     <div className="text-gray-300 truncate">{row.email}{row.phone ? ` · ${row.phone}` : ''}{row.lane ? ` · ${row.lane}` : ''}</div>
                     {row.emailed_at && <div className="text-[10px] text-gray-500">Emailed {new Date(row.emailed_at).toLocaleString()}{row.followed_up_at ? ` · followed up ${new Date(row.followed_up_at).toLocaleString()}` : ''}</div>}

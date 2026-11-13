@@ -1,7 +1,6 @@
-// Keeps your hazmat postings the highest-paying load on their lane.
+// Keeps eligible PARA and RXO postings competitive, checking hazmat first.
 //
-// Several times a day (see upload.js), for every hazmat posting under your own posting
-// codes (any customer), the bot searches the Landstar board for other agencies' postings
+// Every 30 minutes, the bot searches the Landstar board for other agencies' postings
 // on the same lane and pickup date with a matching trailer type, exactly like the
 // upload-time rate check. When another agency pays the same or more, the posting is
 // raised to their rate + $25 through Landstar's own Edit form (Save Changes).
@@ -19,9 +18,19 @@ const { setStatus } = require('./status-server');
 const { uploadedSignatures, postingSignature } = require('./bot-postings');
 
 const clean = value => String(value ?? '').trim().toUpperCase();
+const eligibleExport = name => /^Landstar_Bulk_(?:Para_1522166|R_X_O_2429200)(?:_|\.xlsx$)/i.test(name);
 const isHazmatPosting = load => clean(load.CommodityCode) === 'HAZMAT'
   && clean(load.SourceSystemID) === 'PORTAL'
   && OWN_POSTING_CODES.includes(clean(load.Agency));
+
+function selectRateWatchPostings(postings, eligible, other) {
+  return postings.filter(posting => {
+    const signature = postingSignature(posting);
+    return clean(posting.SourceSystemID) === 'PORTAL'
+      && OWN_POSTING_CODES.includes(clean(posting.Agency))
+      && eligible.has(signature) && !other.has(signature);
+  }).sort((a, b) => Number(isHazmatPosting(b)) - Number(isHazmatPosting(a)));
+}
 
 // Other agencies' postings that compete with `mine` (same lane, pickup date and trailer group).
 function findCompetitors(mine, boardLoads, trailerGroup, ownCodes = OWN_POSTING_CODES) {
@@ -66,10 +75,12 @@ async function raisePostingRate(context, loadId, rate, log) {
     await flat.fill(String(rate));
     await flat.blur();
     await page.waitForTimeout(500);
-    await page.getByRole('button', { name: /save changes/i }).click();
+    await page.getByRole('button', { name: /^\s*save(?:\s+changes)?\s*$/i }).click();
     for (let i = 0; i < 30 && saved === null; i += 1) await page.waitForTimeout(500);
-    if (saved !== 204) log(`  ! Landstar did not save load #${loadId} (${saved === null ? 'no answer' : `HTTP ${saved}`}).`);
-    return saved === 204;
+    if (saved !== 204) {
+      throw new Error(`Landstar did not confirm saving rate for load #${loadId} (${saved === null ? 'no answer; verify before retrying' : `HTTP ${saved}`}).`);
+    }
+    return true;
   } finally {
     await page.close().catch(() => {});
   }
@@ -77,14 +88,13 @@ async function raisePostingRate(context, loadId, rate, log) {
 
 // One full pass. Returns the raises made (or planned, without apply).
 async function checkHazmatRates(context, { apply = true, log = console.log } = {}) {
-  setStatus('logged-in', 'Checking hazmat rates on the board');
+  setStatus('logged-in', 'Checking PARA and RXO board rates (hazmat first)');
   const board = await openBoard(context, log);
-  // Nolan postings keep their posting rate (or RPP's, set at upload): never raised here.
-  const nolan = uploadedSignatures(undefined, undefined, /^Landstar_Bulk_Nolan_965974/i);
-  const mine = (await listPostings(board, OWN_POSTING_CODES, log)).filter(isHazmatPosting)
-    .filter(posting => !nolan.has(postingSignature(posting)));
+  const eligible = uploadedSignatures(undefined, undefined, { test: eligibleExport });
+  const other = uploadedSignatures(undefined, undefined, { test: name => !eligibleExport(name) });
+  const mine = selectRateWatchPostings(await listPostings(board, OWN_POSTING_CODES, log), eligible, other);
   if (!mine.length) {
-    log('  No hazmat postings to check.');
+    log('  No verified PARA or RXO postings to check; unmatched or ambiguous postings are left unchanged.');
     return [];
   }
   const trailerGroup = await getTrailerGroups(board);
@@ -102,11 +112,11 @@ async function checkHazmatRates(context, { apply = true, log = console.log } = {
     raises.push(raise);
   }
   const saved = raises.filter(r => r.saved).length;
-  log(`  Hazmat rate check: ${mine.length} posting(s), ${raises.length} outbid${apply ? `, ${saved} raised` : ' (report only)'}.`);
+  log(`  PARA/RXO rate check (hazmat first): ${mine.length} posting(s), ${raises.length} outbid${apply ? `, ${saved} raised` : ' (report only)'}.`);
   return raises;
 }
 
-module.exports = { checkHazmatRates, findCompetitors, planRaise, isHazmatPosting };
+module.exports = { checkHazmatRates, findCompetitors, planRaise, isHazmatPosting, raisePostingRate, selectRateWatchPostings, eligibleExport };
 
 if (require.main === module) {
   const { chromium } = require('playwright');

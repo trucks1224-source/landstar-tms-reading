@@ -77,7 +77,7 @@ function summarizeClarityLoad(detail, listItem = {}) {
     pickupEta: !pickupDone && pickup && nextStopId === String(pickup.id) ? eta : null,
     deliveryEta: pickupDone && delivery && nextStopId === String(delivery.id) ? eta : null,
     etaStatus: listItem.eta?.status || '',
-    arrivedShipperAt: statusTime(arrived) || (pickupDone ? (statusTime(departed) || null) : null),
+    arrivedShipperAt: statusTime(arrived) || null,
     // Done with no departure time recorded: 'done' (the TMS shows no time for it).
     leftShipperAt: pickupDone || deliveryDone ? (statusTime(departed) || 'done') : null,
     deliveredAt: deliveryDone ? (statusTime(delivered) || 'done') : null,

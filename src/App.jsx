@@ -3726,6 +3726,10 @@ const countryFlags = {
   DE: { name: 'Germany', background: horizontalFlag('#000', '#dd0000', '#ffce00') }
 };
 
+const isValidPostingCode = value => {
+  const code = String(value || '').trim();
+  return code.length > 0 && code.length <= 10;
+};
 const emptyProfile = { phone: '', postingCode: '', visibilityGroup: '', flag: 'CO', fuelSurcharge: { ...defaultFuelSurchargeRates } };
 
 function getUserProfile() {
@@ -6647,6 +6651,10 @@ export default function App({ sharing = null } = {}) {
       alert('Enter your posting code and visibility group.');
       return;
     }
+    if (!isValidPostingCode(nextProfile.postingCode)) {
+      alert('Posting code must be 10 characters or fewer.');
+      return;
+    }
     try {
       writeSyncedKey('landstar_profile', JSON.stringify(nextProfile));
     } catch (error) {
@@ -9070,6 +9078,7 @@ export default function App({ sharing = null } = {}) {
       const today = new Date();
       const todaySerial = (Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - Date.UTC(1899, 11, 30)) / 86400000;
 
+      if (!isValidPostingCode(postingCode)) rowErrors.push('posting code must be 1 to 10 characters (check this load or My Settings)');
       if (!ord.origCity && !originPlace.fromZip) rowErrors.push('origin city');
       if (!originPlace.fromZip && (!originState || !stateCodes.has(originState))) rowErrors.push('origin state/province');
       if (originCountry === 'CA' && !originZip) rowErrors.push('valid Canadian origin postal code');

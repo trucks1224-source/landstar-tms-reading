@@ -417,6 +417,12 @@ raised to their highest + $25. If you are already highest, the rate is left
 alone. The terminal lists every load with its old rate, new rate and the
 posting it beat. There is no cap.
 
+CH 593772 (including ATZ H) Gmail imports use the email's BIN column, not DAT
+or saved lane rates. Re-importing refreshes BIN, with blank BIN stored as $0.
+For pickup today, the rate worker posts exactly $10 above the highest matching
+other-agent rate, even if lower than BIN or BIN is blank. Without a competing
+posting, and for future pickups, BIN is kept (blank BIN stays $0).
+
 If the board can't be searched (for example, the login times out), nothing is
 uploaded. Options:
 

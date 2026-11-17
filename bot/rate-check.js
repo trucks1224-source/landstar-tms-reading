@@ -176,6 +176,12 @@ function isNolanFile(fileName) {
   return NOLAN_FILE.test(fileName);
 }
 
+function getChPostingRate(fileName, load, topCompetitor, now = new Date()) {
+  if (!/^Landstar_Bulk_CH_593772(?:_|\.xlsx$)/i.test(fileName)) return null;
+  const today = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}/${now.getFullYear()}`;
+  return load.pickupDate === today && topCompetitor ? Number(topCompetitor.TotalRevenue) + 10 : load.rate;
+}
+
 function matchesTopCompetitor(fileName, load) {
   return RXO_ATZ_FILE.test(fileName) && VAN_EQUIPMENT.has(load.equipment) && !load.hazmat;
 }
@@ -468,6 +474,13 @@ async function checkFiles(page, files, { apply, log = console.log }) {
       }
       const top = competitors.reduce((best, b) => (!best || Number(b.TotalRevenue) > Number(best.TotalRevenue) ? b : best), null);
 
+      const chRate = getChPostingRate(fileName, load, top);
+      if (chRate !== null) {
+        if (chRate !== load.rate) changes.push({ rowNumber: load.rowNumber, newRate: chRate });
+        log(`  row ${load.rowNumber}: ${lane}  $${load.rate} -> $${chRate}  (CH: same-day competitor + $10, otherwise BIN)`);
+        continue;
+      }
+
       if (!top) {
         log(`  row ${load.rowNumber}: ${lane}  $${load.rate}  (no other postings)`);
       } else if (Number(top.TotalRevenue) >= load.rate
@@ -502,7 +515,7 @@ async function checkFiles(page, files, { apply, log = console.log }) {
 module.exports = {
   getWorkPage, openBoard, showLoggedIn, searchBoard, boardForLoad, checkFiles, sameCity, abbreviates, OWN_POSTING_CODES,
   getTrailerGroups, boardPickupDate, OUTBID_BY, isSkipAgencyPosting, removeRowsFromSheetXml, SKIP_IF_POSTED_BY,
-  matchesTopCompetitor, isNolanFile, MATCH_AGENCY_FOR_NOLAN
+  matchesTopCompetitor, isNolanFile, MATCH_AGENCY_FOR_NOLAN, getChPostingRate
 };
 
 // ---------- standalone report ----------

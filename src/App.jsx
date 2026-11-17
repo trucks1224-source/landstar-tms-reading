@@ -1652,7 +1652,7 @@ function decodeGmailBody(data) {
   return new TextDecoder().decode(bytes);
 }
 
-function getGmailMessageText(payload) {
+function getGmailMessageText(payload, selectedBroker) {
   const plainParts = [];
   const htmlParts = [];
   const collectParts = part => {
@@ -1663,6 +1663,17 @@ function getGmailMessageText(payload) {
     (part.parts || []).forEach(collectParts);
   };
   collectParts(payload);
+  if (isCh593772Customer(selectedBroker) && htmlParts.length) {
+    const document = new DOMParser().parseFromString(
+      htmlParts.join('\n').replace(/<br\s*\/?>|<\/(?:p|div|li|h[1-6])\s*>/gi, '\n'), 'text/html'
+    );
+    const rows = [...document.querySelectorAll('tr')];
+    if (rows.some(row => [...row.cells].some(cell => /^bin\b/i.test(cell.textContent.trim())))) {
+      rows.forEach(row => row.replaceWith(document.createTextNode(`\n${[...row.cells]
+        .map(cell => cell.textContent.replace(/\s+/g, ' ').trim()).join('\t')}\n`)));
+      return document.body.textContent || '';
+    }
+  }
   if (plainParts.length) return plainParts.join('\n');
   if (!htmlParts.length) return '';
 
@@ -1947,6 +1958,7 @@ async function readChScreenshot(worker, canvas, lines, brokerName, laneRates, sc
 }
 
 function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
+  const isChCustomer = isCh593772Customer(selectedBroker);
   const lines = String(messageText || '')
     .replace(/\r/g, '\n')
     .replace(/\t/g, '\n')
@@ -1968,7 +1980,7 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
     const weight = weightText.match(/[\d,]+(?:\.\d+)?/)?.[0] || '';
     if (!pickupDate || !origin || !destination || !weight) return;
     const tailParts = trailingText.match(/[\d,]+(?:\.\d+)?/g) || [];
-    const miles = isCh593772Customer(selectedBroker)
+    const miles = isChCustomer
       ? ''
       : tailParts.length ? tailParts[0].replace(/,/g, '') : '';
     const eCode = /\bHAZMAT\b/i.test(messageText.slice(0, 500)) ? 'VZ' : 'VAN:VAN';
@@ -1995,17 +2007,31 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
       driver: '',
       truck: '',
       trailer: '',
-      rateInput: '',
+      rateInput: isChCustomer
+        ? String(Number(trailingText.trim().match(/^\$?([\d,]+(?:\.\d+)?)(?:\s|$)/)?.[1]?.replace(/,/g, '')) || 0)
+        : '',
+      ...(isChCustomer ? { rateSource: 'customer-bin' } : {}),
       brokerable: 'false',
       notes: 'Delivery date/time not included in email; please enter before export.'
     };
-    const savedLaneRate = getSavedLaneRate(laneRates, selectedBroker, order);
+    const savedLaneRate = !isChCustomer && getSavedLaneRate(laneRates, selectedBroker, order);
     if (savedLaneRate) {
       order.rateInput = savedLaneRate;
       order.rateSource = 'user-entered';
     }
     loads.push(order);
   };
+
+  const tableRows = String(messageText || '').split(/\r?\n/).map(line => line.split('\t').map(cell => cell.trim()));
+  if (isChCustomer && tableRows.some(cells => /^\d{8,10}$/.test(cells[0]) && cells.length >= 7)) {
+    for (const cells of tableRows) {
+      const dateHeading = cells[0].match(/\b(\d{1,2}\/\d{1,2}\/(?:\d{2}|\d{4}))\s*-\s*[A-Za-z]{3,9}\b/);
+      if (dateHeading) pickupDate = parseDate(dateHeading[1]);
+      if (!/^\d{8,10}$/.test(cells[0]) || cells.length < 7) continue;
+      createLoad(cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], cells[6]);
+    }
+    return autoFillLoadZipCodes(loads);
+  }
 
   for (let index = 0; index < lines.length; index += 1) {
     const dateHeading = lines[index].match(/\b(\d{1,2}\/(\d{1,2})\/(?:\d{2}|\d{4}))\s*-\s*[A-Za-z]{3,9}\b/);
@@ -2685,7 +2711,7 @@ function holdsRedScreenshotLoads(name) {
 }
 
 function isCh593772Customer(name) {
-  return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === 'CH593772ATZ';
+  return /^CH593772(?:ATZ[A-Z]?)?$/.test(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
 }
 
 // Accounts whose imports are the customer's full list: a re-import replaces the list, so
@@ -2865,7 +2891,8 @@ async function fetchDatRateForImport(order, selectedBroker, laneRates) {
 // remembers each rate in the lane list. Returns the first error, if any.
 async function applyDatRatesForImport(loads, selectedBroker, laneRates, setLaneRates, shouldFetch = () => true) {
   let rateError = '';
-  const targets = loads.filter(load => !(Number(load.rateInput) > 0) && shouldFetch(load));
+  const targets = loads.filter(load => !(isCh593772Customer(selectedBroker) && load.rateSource === 'customer-bin')
+    && !(Number(load.rateInput) > 0) && shouldFetch(load));
   for (let start = 0; start < targets.length; start += importLookupConcurrency) {
     const batch = targets.slice(start, start + importLookupConcurrency);
     // eslint-disable-next-line no-await-in-loop
@@ -3099,6 +3126,10 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
     if (fixedLaneRate && (!existing || existing.rateSource !== 'user-entered')) {
       merged.rateInput = fixedLaneRate;
       merged.rateSource = 'user-entered';
+    }
+    if (isCh593772Customer(customer) && load.rateSource === 'customer-bin') {
+      merged.rateInput = load.rateInput;
+      merged.rateSource = load.rateSource;
     }
     delete merged.landstarExportedAt;
     if (holdsRedScreenshotLoads(customer) && load.screenshotStatus === 'ON HOLD') {
@@ -6897,7 +6928,7 @@ export default function App({ sharing = null } = {}) {
           throw await getGmailApiError(messageResponse, `message read for ${messages[index].id}`);
         }
         const message = await messageResponse.json();
-        const text = getGmailMessageText(message.payload || {});
+        const text = getGmailMessageText(message.payload || {}, selectedBroker);
         parsedLoads.push(...parseGmailLoadEmail(text, selectedBroker, laneRates));
       }
 
@@ -6958,8 +6989,8 @@ export default function App({ sharing = null } = {}) {
               ? { status: 'OFFER', tag: 'OFFER' } : {}),
             ...(isNewDayForExistingLoad(existingLoad, load) ? { landstarExportedAt: undefined } : {}),
             miles: load.miles || existingLoad.miles,
-            rateInput: existingLoad.rateInput || load.rateInput,
-            rateSource: existingLoad.rateSource || load.rateSource
+            rateInput: load.rateSource === 'customer-bin' ? load.rateInput : existingLoad.rateInput || load.rateInput,
+            rateSource: load.rateSource === 'customer-bin' ? load.rateSource : existingLoad.rateSource || load.rateSource
           }
           : load);
       });
@@ -9107,7 +9138,9 @@ export default function App({ sharing = null } = {}) {
       if (weight === null || weight > 999999) {
         rowErrors.push('weight (enter whole pounds from 1 to 999,999)');
       }
-      if (!(rate > 0) || !['user-entered', 'dat-screenshot', 'dat-api'].includes(ord.rateSource)) {
+      const isChBinRate = isChCustomer && ord.rateSource === 'customer-bin'
+        && String(ord.rateInput ?? '').trim() !== '' && Number.isFinite(rate) && rate >= 0;
+      if (!isChBinRate && (!(rate > 0) || !['user-entered', 'dat-screenshot', 'dat-api'].includes(ord.rateSource))) {
         rowErrors.push('rate (enter a current DAT quote or import one via DAT API/screenshot)');
       }
 
@@ -10832,9 +10865,9 @@ export default function App({ sharing = null } = {}) {
                   </div>
                   <div className="row-span-2">
                     <div className="flex justify-between items-center mb-1">
-                      <label className="text-xs text-emerald-400 font-bold">Rate ($) - DAT quote</label>
+                      <label className="text-xs text-emerald-400 font-bold">{selectedOrder.rateSource === 'customer-bin' ? 'Rate ($) - BIN' : 'Rate ($) - DAT quote'}</label>
                       <span className="text-[10px] bg-emerald-950 text-emerald-300 px-1 py-0.2 rounded font-mono border border-emerald-600/40">
-                        {selectedOrder.rateSource === 'dat-screenshot' ? 'From screenshot' : selectedOrder.rateSource === 'dat-api' ? 'From DAT API' : 'Manual'}
+                        {selectedOrder.rateSource === 'customer-bin' ? 'From BIN' : selectedOrder.rateSource === 'dat-screenshot' ? 'From screenshot' : selectedOrder.rateSource === 'dat-api' ? 'From DAT API' : 'Manual'}
                       </span>
                     </div>
                     <div className="flex gap-1">

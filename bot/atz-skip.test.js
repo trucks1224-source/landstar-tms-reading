@@ -11,6 +11,62 @@ const board = extra => ({
   OriginCity: 'DAYTON', OriginZipCode: '45401', DestinationCity: 'TUCKER', DestinationZipCode: '30084', ...extra
 });
 
+test('CH same-day posts highest other-agent rate plus $10 even below BIN or from zero', () => {
+  const { getChPostingRate } = require('./rate-check');
+  const now = new Date(2026, 9, 1, 23, 59);
+  const today = { pickupDate: '10/01/2026', rate: 2770 };
+  const file = 'Landstar_Bulk_CH_593772___ATZ_H_1of2 (1).xlsx';
+  assert.equal(getChPostingRate(file, today, { TotalRevenue: 2000 }, now), 2010);
+  assert.equal(getChPostingRate(file, today, { TotalRevenue: '3000' }, now), 3010);
+  assert.equal(getChPostingRate(file, { ...today, rate: 0 }, { TotalRevenue: 2000 }, now), 2010);
+  assert.equal(getChPostingRate(file, today, null, now), 2770);
+  assert.equal(getChPostingRate(file, { ...today, rate: 0 }, null, now), 0);
+  for (const rate of [2770, 0]) {
+    assert.equal(getChPostingRate(file, { pickupDate: '10/02/2026', rate }, { TotalRevenue: 3000 }, now), rate);
+  }
+  assert.equal(getChPostingRate('Landstar_Bulk_Para_1522166___ATZ.xlsx', today, { TotalRevenue: 2000 }, now), null);
+  assert.equal(getChPostingRate('Landstar_Bulk_CH_5937720___ATZ_H.xlsx', today, { TotalRevenue: 2000 }, now), null);
+});
+
+test('CH rate check writes both spreadsheet amounts and keeps future BIN instead of the general +$25 rule', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const XLSX = require('xlsx');
+  delete require.cache[require.resolve('./rate-check')];
+  const { checkFiles } = require('./rate-check');
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'ch-bin-test-'));
+  try {
+    const now = new Date();
+    const day = offset => new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+    const serial = date => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), 8) / 86400000 + 25569;
+    const headers = ['Origin City', 'Origin Zipcode', 'Origin Country', 'Destination City', 'Destination Zipcode',
+      'Destination Country', 'Pickup Date (From)', 'Load Posting Code', 'Equipment 1', 'Rate', 'Carrier Amt'];
+    const row = (offset, rate) => ['Dayton', '45401', 'US', 'Tucker', '30084', 'US', serial(day(offset)), 'ANQ', 'VAN', rate, rate];
+    const file = path.join(folder, 'Landstar_Bulk_CH_593772___ATZ_H.xlsx');
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+      headers, row(0, 2770), row(0, 0), row(1, 2770), row(1, 0)
+    ]), 'Loads');
+    XLSX.writeFile(workbook, file);
+    const page = { evaluate: async (_fn, options) => {
+      if (!options) return [{ text: 'Van', items: [{ text: 'VAN' }, { text: '53VN' }] }];
+      return [
+        ['XYZ', 1900, 'VAN'], ['ABC', 2000, '53VN'], ['ANQ', 9900, 'VAN'], ['DEF', 8800, 'F']
+      ].map(([Agency, TotalRevenue, equipment], index) => board({
+        Agency, TotalRevenue, TrailerTypes: [equipment], LoadId: index,
+        PickupFromDateForDisplay: `${options.body.PickupDate.replace(/\/\d{2}(\d{2})$/, '/$1')} 08:00`
+      }));
+    } };
+    const [result] = await checkFiles(page, [file], { apply: true, log() {} });
+    assert.deepEqual(result.changes, [{ rowNumber: 2, newRate: 2010 }, { rowNumber: 3, newRate: 2010 }]);
+    const sheet = XLSX.readFile(file).Sheets.Loads;
+    assert.deepEqual(XLSX.utils.sheet_to_json(sheet, { header: 1 }).slice(1).map(row => row.slice(9)), [
+      [2010, 2010], [2010, 2010], [2770, 2770], [0, 0]
+    ]);
+  } finally { fs.rmSync(folder, { recursive: true, force: true }); }
+});
+
 test('a load ATZ already posted (same day and lane) is skipped; others are not', () => {
   assert.equal(isSkipAgencyPosting(board(), load), true);
   assert.equal(isSkipAgencyPosting(board({ Agency: 'atz ' }), load), true);

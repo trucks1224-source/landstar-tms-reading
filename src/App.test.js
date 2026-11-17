@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
+import { createRequire } from 'node:module';
 import { transform } from 'esbuild';
 import * as XLSX from 'xlsx';
 import * as screenshotTable from './lib/screenshotTable.js';
@@ -43,6 +44,7 @@ test('editing an order number replaces the original load and keeps selection and
 
 const { code } = await transform(`${source}
 export {
+  decodeGmailBody, getGmailMessageText, parseGmailLoadEmail, isCh593772Customer, normalizeCustomerName, applyDatRatesForImport,
   preservesImportedLoadStatus, getReimportedLoadStatus, getPendingDriverStatusReply, getEmailPostingCode, getRxoEmailPostingCodes, isValidPostingCode, describeRateWorker, hasPickupDayStarted, getCitySuggestions, applyLocationInput,
   keepPreviouslyExportedLoadsOpen, markDifferentScheduleLoadsEnt,
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
@@ -84,6 +86,117 @@ const context = {
 };
 vm.runInNewContext(code, context);
 const policy = context.module.exports;
+const chCustomer = 'CH 593772 - ATZ H';
+const chEmail = bin => `10/01/2026 - Thurs
+Load #\tOrigin\tOST\tDestination\tDST\tWeight\tBin\tBook\tInfo
+575362996\tLa Porte\tTX\tCordele\tGA\t38,074 lbs\t${bin}\tBook\tCOST 9999`;
+
+test('CH Gmail imports BIN, including zero, without using saved lane rates or numeric Info', async () => {
+  const parsed = policy.parseGmailLoadEmail(chEmail('2,770'), chCustomer, {});
+  assert.equal(parsed[0].rateInput, '2770');
+  assert.equal(parsed[0].rateSource, 'customer-bin');
+  assert.equal(parsed[0].miles, '');
+  const saved = policy.rememberLaneRate({}, chCustomer, parsed[0], '8800', 'user-entered');
+  for (const [bin, expected] of [['', '0'], ['WEB', '0'], ['$2,770', '2770']]) {
+    const orders = policy.parseGmailLoadEmail(chEmail(bin), chCustomer, saved);
+    assert.equal(orders[0].rateInput, expected);
+    assert.equal(await policy.applyDatRatesForImport(orders, chCustomer, saved, () => assert.fail('BIN must not fetch or save DAT')), '');
+    assert.equal(orders[0].rateInput, expected);
+  }
+  const inline = policy.parseGmailLoadEmail('10/01/2026 - Thurs\n575362996 La Porte TX Cordele GA 38,074 lbs 2770 WEB', chCustomer, {});
+  assert.equal(inline[0].rateInput, '2770');
+  assert.equal(policy.isCh593772Customer('CH 593772 - ATZ'), true);
+  assert.equal(policy.isCh593772Customer('CH 593772'), true);
+  assert.equal(policy.isCh593772Customer('CH 5937720 - ATZ H'), false);
+  assert.equal(policy.isCh593772Customer(customers[0]), false);
+});
+
+test('CH HTML preserves blank BIN cells and pickup headings, and overrides the plain MIME alternative', async () => {
+  const { chromium } = createRequire(new URL('../bot/package.json', import.meta.url))('playwright');
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const encode = text => Buffer.from(text).toString('base64url');
+    const payload = { parts: [
+      { mimeType: 'text/plain', body: { data: encode('plain alternative without BIN') } },
+      { mimeType: 'text/html', body: { data: encode(
+        '<p>10/01/2026 - Thurs</p><table><tr><th>Load #</th><th>Origin</th><th>OST</th><th>Destination</th><th>DST</th><th>Weight</th><th>Bin</th><th>Book</th><th>Info</th></tr>'
+        + '<tr><td>575362996</td><td>La Porte</td><td>TX</td><td>Cordele</td><td>GA</td><td>38,074 lbs</td><td></td><td>Book</td><td>9999</td></tr></table>'
+        + '<p>10/02/2026 - Fri</p><table><tr><td>575362997</td><td>Dallas</td><td>TX</td><td>Atlanta</td><td>GA</td><td>40,000 lbs</td><td>$2,770</td><td>Book</td><td>WEB</td></tr></table>'
+      ) } }
+    ] };
+    const helpers = ['decodeGmailBody', 'getGmailMessageText', 'isCh593772Customer', 'normalizeCustomerName']
+      .map(name => policy[name].toString()).join('\n');
+    const read = customer => page.evaluate(({ helpers, payload, customer }) =>
+      new Function('payload', 'customer', `${helpers}; return getGmailMessageText(payload, customer);`)(payload, customer),
+    { helpers, payload, customer });
+    const orders = policy.parseGmailLoadEmail(await read(chCustomer), chCustomer, {});
+    assert.deepEqual(Array.from(orders, order => [order.id, order.rateInput, order.puDate]), [
+      ['575362996', '0', 'PU: 10/01/2026'], ['575362997', '2770', 'PU: 10/02/2026']
+    ]);
+    assert.equal(await read(customers[0]), 'plain alternative without BIN');
+  } finally { await browser.close(); }
+});
+
+test('CH Gmail re-import replaces stale rates with latest BIN or zero while preserving bookings', async () => {
+  const original = {
+    ...policy.parseGmailLoadEmail(chEmail('2770'), chCustomer, {})[0],
+    rateInput: '8800', rateSource: 'user-entered', status: 'BOOKED', tag: 'BOOKED', truck: '123456'
+  };
+  const saved = policy.rememberLaneRate({}, chCustomer, original, '9900', 'user-entered');
+  let bin = '2770';
+  const app = createAppHarness(chCustomer, [original], null, saved, {
+    atob: text => Buffer.from(text, 'base64').toString('binary'), TextDecoder,
+    window: { google: { accounts: { oauth2: { initTokenClient: options => ({
+      requestAccessToken: () => options.callback({ access_token: 'test-token' })
+    }) } } } },
+    fetch: async url => {
+      if (url === '/api/road-miles') return { ok: true, json: async () => ({ miles: 800 }) };
+      if (url.includes('/messages?')) return { ok: true, json: async () => ({ messages: [{ id: 'test-message' }] }) };
+      assert.match(url, /\/messages\/test-message\?format=full$/);
+      return { ok: true, json: async () => ({
+        payload: { mimeType: 'text/plain', body: { data: Buffer.from(chEmail(bin)).toString('base64url') } }
+      }) };
+    }
+  });
+  app.find(node => node.props?.title === 'Search Gmail for loads').props.onClick();
+  app.render();
+  app.find(node => node.props?.id === 'gmail-client-id').props.onChange({ target: { value: 'test.apps.googleusercontent.com' } });
+  app.find(node => node.props?.id === 'gmail-search-query').props.onChange({ target: { value: 'from:customer@example.com' } });
+  await app.effects.find(effect => effect.toString().includes('loadGoogleIdentityScript'))();
+  await Promise.resolve();
+  app.render();
+  for (const [newBin, expected] of [['2770', '2770'], ['', '0']]) {
+    bin = newBin;
+    await app.find(node => node.type === 'button' && textOf(node) === 'Authorize Gmail & Import Matching Loads').props.onClick();
+    const imported = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[chCustomer][0];
+    assert.equal(imported.rateInput, expected, JSON.stringify(app.alerts));
+    assert.equal(imported.rateSource, 'customer-bin');
+    assert.equal(imported.status, 'BOOKED');
+    assert.equal(imported.truck, '123456');
+    app.render();
+  }
+  assert.deepEqual(app.errors, []);
+});
+
+test('zero BIN export is allowed only for CH, not missing, invalid, or unrelated rates', () => {
+  const validation = source.slice(source.indexOf('      const isChBinRate ='), source.indexOf('      if (rowErrors.length)', source.indexOf('      const isChBinRate =')));
+  const validate = (customer, rateInput, rateSource) => vm.runInNewContext(
+    `${validation}; rowErrors`, {
+      isChCustomer: policy.isCh593772Customer(customer), ord: { rateInput, rateSource },
+      rate: Number(rateInput), rowErrors: []
+    }
+  );
+  assert.equal(validate(chCustomer, '0', 'customer-bin').length, 0);
+  assert.equal(validate(chCustomer, '2770', 'customer-bin').length, 0);
+  for (const input of ['', undefined, '-1', 'Infinity', 'not a rate']) {
+    assert.equal(validate(chCustomer, input, 'customer-bin').length, 1);
+  }
+  assert.equal(validate(chCustomer, '0', 'user-entered').length, 1);
+  assert.equal(validate('Other customer', '0', 'customer-bin').length, 1);
+  assert.equal(validate('Other customer', '2770', 'user-entered').length, 0);
+});
+
 test('posting code validation prevents Landstar exports with more than 10 characters', () => {
   assert.equal(policy.isValidPostingCode(' ANQ '), true);
   assert.equal(policy.isValidPostingCode('1234567890'), true);

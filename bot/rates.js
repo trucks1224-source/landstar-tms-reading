@@ -14,7 +14,7 @@ const { readBotControl } = require('./local-bot-control');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sourceFolder = process.argv.slice(2).find(arg => !arg.startsWith('--')) || path.join(os.homedir(), 'Downloads');
 const hazmatEnabled = !process.argv.includes('--no-hazmat-watch');
-const HAZMAT_INTERVAL_MS = 30 * 60 * 1000;
+const HAZMAT_INTERVAL_MS = 15 * 60 * 1000; // PARA/RXO board-rate sweep every 15 minutes (Daniel, 2026-11-20)
 
 async function main() {
   // The profile is an exclusive browser lock as well as a separate sign-in.

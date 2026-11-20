@@ -1,6 +1,6 @@
 // Keeps eligible PARA and RXO postings competitive, checking hazmat first.
 //
-// Every 30 minutes, the bot searches the Landstar board for other agencies' postings
+// Every 15 minutes, the bot searches the Landstar board for other agencies' postings
 // on the same lane and pickup date with a matching trailer type, exactly like the
 // upload-time rate check. When another agency pays the same or more, the posting is
 // raised to their rate + $25 through Landstar's own Edit form (Save Changes).
@@ -12,7 +12,7 @@
 const path = require('path');
 const { listPostings } = require('./dedupe');
 const {
-  openBoard, searchBoard, sameCity, getTrailerGroups, boardPickupDate, OWN_POSTING_CODES, OUTBID_BY
+  openBoard, searchBoard, sameCity, getTrailerGroups, boardPickupDate, OWN_POSTING_CODES, OUTBID_BY, isSameLoadNearby
 } = require('./rate-check');
 const { setStatus } = require('./status-server');
 const { uploadedSignatures, postingSignature } = require('./bot-postings');
@@ -44,8 +44,13 @@ function findCompetitors(mine, boardLoads, trailerGroup, ownCodes = OWN_POSTING_
     && boardPickupDate(b) === boardPickupDate(mine)
     && clean(b.OriginState) === clean(mine.OriginState)
     && clean(b.DestinationState) === clean(mine.DestinationState)
-    && sameZipOrCity(b.OriginZipCode, b.OriginCity, mine.OriginZipCode, mine.OriginCity)
-    && sameZipOrCity(b.DestinationZipCode, b.DestinationCity, mine.DestinationZipCode, mine.DestinationCity)
+    && ((sameZipOrCity(b.OriginZipCode, b.OriginCity, mine.OriginZipCode, mine.OriginCity)
+      && sameZipOrCity(b.DestinationZipCode, b.DestinationCity, mine.DestinationZipCode, mine.DestinationCity))
+      // The same load re-posted from neighboring towns to hide it (rate-check.js isSameLoadNearby).
+      || isSameLoadNearby({
+        originZip: mine.OriginZipCode, originCity: mine.OriginCity, originState: mine.OriginState,
+        destZip: mine.DestinationZipCode, destCity: mine.DestinationCity, destState: mine.DestinationState, weight: mine.Weight
+      }, b))
     && (b.TrailerTypes || []).some(t => myGroups.has(trailerGroup(t)))
     && Number(b.TotalRevenue) > 0);
 }

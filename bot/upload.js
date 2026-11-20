@@ -101,11 +101,11 @@ async function dedupeSafely(context, log = console.log) {
   }
 }
 
-// Every 30 minutes, keep every hazmat posting the highest on its lane: raise it to the
+// Every 15 minutes, keep every hazmat posting the highest on its lane: raise it to the
 // top competing rate + $25 (see hazmat-watch.js). Skip with --no-hazmat-watch.
 const { checkHazmatRates } = require('./hazmat-watch');
 const runHazmatWatch = !dedicatedRates && !process.argv.includes('--no-hazmat-watch');
-const HAZMAT_CHECK_MS = 30 * 60 * 1000;
+const HAZMAT_CHECK_MS = 15 * 60 * 1000; // every 15 minutes (Daniel, 2026-11-20)
 
 async function hazmatSafely(context, log = console.log) {
   if (!runHazmatWatch) return;
@@ -197,6 +197,24 @@ async function waitForUploadToFinish(page) {
   await btn.waitFor({ state: 'visible', timeout: 30000 });
 }
 
+// Closes Landstar dialogs left open on Bulk Postings (upload results, error panels) with their
+// own Done / Close / OK button or Escape. Never clicks Delete, Upload or Submit.
+async function closeLeftoverDialogs(page) {
+  if (!(await page.$('.cdk-overlay-backdrop').catch(() => null))) return;
+  await page.evaluate(() => {
+    for (const pane of document.querySelectorAll('.cdk-overlay-pane, [role="dialog"]')) {
+      const button = Array.from(pane.querySelectorAll('button'))
+        .find(item => /^(done|close|ok|cancel|x|×)$/i.test(item.innerText.trim() || item.getAttribute('aria-label') || '') && !item.disabled);
+      if (button) button.click();
+    }
+  }).catch(() => {});
+  await page.keyboard.press('Escape').catch(() => {});
+  for (let i = 0; i < 10; i += 1) {
+    if (!(await page.$('.cdk-overlay-backdrop').catch(() => null))) return;
+    await page.waitForTimeout(500);
+  }
+}
+
 async function uploadOne(page, filePath) {
   assertPostingEnabled();
   const fileName = path.basename(filePath);
@@ -209,6 +227,14 @@ async function uploadOne(page, filePath) {
   // attached file input; only click the button if none is present.
   let fileInput = null;
   for (let attempt = 0; attempt < 5 && !fileInput; attempt++) {
+    // A window left over from the previous file (e.g. "10 of 12 Loads were successfully
+    // created", which that file was already flagged for) covers the page and blocks the
+    // Upload Spreadsheet button: close it first. Halfway through, reload Bulk Postings.
+    await closeLeftoverDialogs(page);
+    if (attempt === 2) {
+      await page.goto(BULK_POSTINGS_URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+    }
     fileInput = await page.$('input[type=file]');
     if (fileInput) break;
     // No input yet: click the Upload Spreadsheet button to open the modal.
@@ -220,7 +246,12 @@ async function uploadOne(page, filePath) {
       await page.waitForTimeout(2000);
     }
   }
-  if (!fileInput) throw new Error('No file input found (modal/dropzone did not open).');
+  if (!fileInput) {
+    // Nothing was attached, so Landstar never received this file: it can safely be tried again.
+    const error = new Error('Landstar\'s upload window did not open (no file input). The file was NOT sent.');
+    error.notSubmitted = true;
+    throw error;
+  }
 
   // Attach the file.
   await fileInput.setInputFiles(filePath);

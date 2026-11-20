@@ -164,3 +164,13 @@ test('failed post-submit error check is uncertain, not a successful upload', asy
   }), /disconnected/);
   assert.equal(reviewFiles(paths.reviewFolder).length, 1);
 });
+
+test('a file Landstar never received (upload window did not open) goes back to be tried again', async t => {
+  const paths = folders(t);
+  await assert.rejects(submitFileOnce(fakePage([[]]), paths.file, {
+    ...paths, settleMs: 0,
+    submit: async () => { const error = new Error('upload window did not open'); error.notSubmitted = true; throw error; }
+  }), error => error.notSubmitted === true && !error.uncertainUpload);
+  assert.equal(fs.existsSync(paths.file), true, 'back in Downloads');
+  assert.equal(reviewFiles(paths.reviewFolder).length, 0, 'not parked for review');
+});

@@ -9,7 +9,11 @@ export const LANDSTAR_MC = '166960';
 export const FOLLOW_UP_AFTER_DAYS = 1;
 // Daily check-ins ("any loads available today?") go out at most once every 22 hours,
 // so the 10-minute sender keeps them around the same time each morning.
-export const DAILY_CHECKIN_AFTER_HOURS = 22;
+// Daily check-ins go out once per calendar day from 8:30 AM local time (Daniel, 2026-11-20:
+// they had drifted to 1:49 AM), and never after 5 PM: a day the TMS isn't open in business
+// hours is skipped rather than emailing brokers at night.
+export const DAILY_CHECKIN_START = { hour: 8, minute: 30 };
+export const DAILY_CHECKIN_END_HOUR = 17;
 
 const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 const PHONE_PATTERN = /(?:\(\d{3}\)\s*|\b\d{3}[-. ])\d{3}[-. ]\d{4}\b(?:\s*(?:x|ext\.?)\s*\d{1,5})?/i;
@@ -173,12 +177,18 @@ As always, we have trucks ready and available whenever you need us.
 ${signature(settings)}`;
 }
 
-// A check-in is due when the broker is active and the last one went out over
-// DAILY_CHECKIN_AFTER_HOURS ago (or never).
+// A check-in is due when the broker is active, it's between 8:30 AM and 5 PM local time, and
+// none went out yet today.
 export function isDailyCheckInDue(broker, now = Date.now()) {
   if (!broker || broker.active === false || isBlockedProspect(broker)) return false;
+  const today = new Date(now);
+  const start = new Date(today);
+  start.setHours(DAILY_CHECKIN_START.hour, DAILY_CHECKIN_START.minute, 0, 0);
+  const end = new Date(today);
+  end.setHours(DAILY_CHECKIN_END_HOUR, 0, 0, 0);
+  if (now < start.getTime() || now >= end.getTime()) return false;
   const sentAt = Date.parse(broker.lastSentAt || '');
-  return !Number.isFinite(sentAt) || now - sentAt >= DAILY_CHECKIN_AFTER_HOURS * 3600000;
+  return !Number.isFinite(sentAt) || new Date(sentAt).toDateString() !== today.toDateString();
 }
 
 // The posting's lane leads the subject so the broker sees we mean their load:

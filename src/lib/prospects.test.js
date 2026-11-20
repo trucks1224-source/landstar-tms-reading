@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   contactsToSave, readPageText, extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, isProspectFollowUpExcluded, LANDSTAR_MC,
-  buildDailyCheckInEmail, dailyCheckInSubject, isDailyCheckInDue, DAILY_CHECKIN_AFTER_HOURS,
+  buildDailyCheckInEmail, dailyCheckInSubject, isDailyCheckInDue,
   isLandstarRefusal, buildDeclineReplyEmail
 } from './prospects.js';
 
@@ -110,14 +110,19 @@ test('daily check-in email is a simple friendly good-morning note', () => {
   assert.match(dailyCheckInSubject(), /good morning/i);
 });
 
-test('daily check-in is due once a day, only while active', () => {
-  const now = Date.parse('2026-11-10T12:00:00Z');
-  const sent = hoursAgo => new Date(now - hoursAgo * 3600000).toISOString();
-  assert.equal(isDailyCheckInDue({ active: true, lastSentAt: '' }, now), true);
-  assert.equal(isDailyCheckInDue({ active: true, lastSentAt: sent(DAILY_CHECKIN_AFTER_HOURS + 1) }, now), true);
-  assert.equal(isDailyCheckInDue({ active: true, lastSentAt: sent(2) }, now), false);
-  assert.equal(isDailyCheckInDue({ active: false, lastSentAt: '' }, now), false);
-  assert.equal(isDailyCheckInDue({ active: false, lastSentAt: sent(100) }, now), false);
+test('daily check-in goes out once per day from 8:30 AM, never at night, only while active', () => {
+  const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
+  const iso = time => new Date(time).toISOString();
+  const active = { active: true };
+  assert.equal(isDailyCheckInDue({ ...active, lastSentAt: iso(at(19, 8, 35)) }, at(20, 1, 49)), false, 'not at 1:49 AM');
+  assert.equal(isDailyCheckInDue({ ...active, lastSentAt: iso(at(19, 8, 35)) }, at(20, 8, 29)), false, 'not before 8:30');
+  assert.equal(isDailyCheckInDue({ ...active, lastSentAt: iso(at(19, 8, 35)) }, at(20, 8, 30)), true, '8:30 AM');
+  assert.equal(isDailyCheckInDue({ ...active, lastSentAt: iso(at(20, 1, 49)) }, at(20, 9, 0)), false, 'already sent today (even if at 1:49 AM)');
+  assert.equal(isDailyCheckInDue({ ...active, lastSentAt: iso(at(19, 1, 49)) }, at(20, 9, 0)), true, 'yesterday\'s night send does not block today');
+  assert.equal(isDailyCheckInDue({ ...active, lastSentAt: iso(at(20, 8, 31)) }, at(20, 14, 0)), false, 'once a day');
+  assert.equal(isDailyCheckInDue({ ...active, lastSentAt: '' }, at(20, 16, 59)), true, 'TMS opened late: still sends by 5 PM');
+  assert.equal(isDailyCheckInDue({ ...active, lastSentAt: '' }, at(20, 17, 0)), false, 'not after 5 PM');
+  assert.equal(isDailyCheckInDue({ active: false, lastSentAt: '' }, at(20, 9)), false);
 });
 
 test('isLandstarRefusal catches "cannot work with Landstar" replies only', () => {
@@ -160,7 +165,7 @@ test('follow-up is due 1 day after the intro email, only while still "emailed"',
 });
 
 test('only the specified contact is excluded from prospect follow-ups', () => {
-  const now = Date.parse('2026-11-09T12:00:00Z');
+  const now = new Date(2026, 10, 9, 10, 0).getTime(); // 10 AM local: inside check-in hours
   const prospect = { status: 'emailed', emailed_at: '2026-11-05T12:00:00Z', company: 'Greatwide' };
   const excluded = { ...prospect, email: ' CAPACITY@GREATWIDE-TX.COM ' };
   assert.equal(isProspectFollowUpExcluded(excluded), true);

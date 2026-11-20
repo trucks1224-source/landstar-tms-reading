@@ -44,3 +44,16 @@ test('falls back to one search per lane when the wide search does not match', as
   await boardForLoad(page, load('TX', 'FL'));
   assert.deepEqual(calls, ['TX>*', 'TX>GA', 'TX>FL']);
 });
+
+test('rate check: a nearby-town posting of the same load is matched; different loads are not', () => {
+  const { isSameLoadNearby } = require('./rate-check');
+  const ours = { originZip: '43443', originCity: 'Luckey', originState: 'OH', destZip: '71671', destCity: 'Warren', destState: 'AR', weight: 42000 };
+  const huc = { OriginZipCode: '43551', OriginCity: 'PERRYSBURG', OriginState: 'OH', DestinationZipCode: '71654', DestinationCity: 'MCGEHEE', DestinationState: 'AR', Weight: 42000 };
+  assert.equal(isSameLoadNearby(ours, huc), false, 'McGehee is ~39 mi from Warren: over the 25-mile limit');
+  assert.equal(isSameLoadNearby(ours, { ...huc, DestinationZipCode: '71655', DestinationCity: 'MONTICELLO' }), true, 'Perrysburg 9 mi, Monticello within 25 mi');
+  assert.equal(isSameLoadNearby(ours, { ...huc, DestinationZipCode: '', DestinationCity: 'MCGEHEE' }), false, 'unknown place: not guessed');
+  const near = { ...huc, DestinationZipCode: '71655', DestinationCity: 'MONTICELLO' };
+  assert.equal(isSameLoadNearby(ours, { ...near, Weight: 30000 }), false);
+  assert.equal(isSameLoadNearby({ ...ours, weight: 0 }, near), false, 'no weight: not guessed');
+  assert.equal(isSameLoadNearby(ours, { ...huc, OriginZipCode: '45202', OriginCity: 'CINCINNATI' }), false, 'origin 180 mi away');
+});

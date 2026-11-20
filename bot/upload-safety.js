@@ -160,6 +160,12 @@ async function submitFileOnce(page, file, { reviewFolder, uploadedFolder, submit
     fs.renameSync(reserved, uniqueTarget(uploadedFolder, file));
     return { state: 'uploaded' };
   } catch (error) {
+    // The submit step says nothing was attached (Landstar's upload window never opened): the file
+    // never reached Landstar, so it goes back where it was and is tried again later.
+    if (error.notSubmitted && !fs.existsSync(file)) {
+      fs.renameSync(reserved, file);
+      throw error;
+    }
     const uncertain = new Error(`Submission outcome unknown: ${error.message} Check ${reserved} on Landstar; it will not be automatically resent.`, { cause: error });
     uncertain.uncertainUpload = true;
     uncertain.file = reserved;

@@ -559,7 +559,7 @@ export default function Prospects() {
             <div className="border border-[#1c2541] rounded p-2 mb-3">
               <div className="flex items-center justify-between mb-1 flex-wrap gap-1">
                 <span className="text-xs font-bold text-white">🔁 Daily check-ins</span>
-                <span className="text-[10px] text-gray-400">"Any loads available today?" emailed once a day while the TMS is open on this computer.</span>
+                <span className="text-[10px] text-gray-400">"Any loads available today?" emailed once a day at 8:30 AM (by 5 PM at the latest) while the TMS is open on this computer.</span>
               </div>
               {checkins.map(broker => (
                 <div key={broker.id} className="flex items-center justify-between gap-2 text-xs py-0.5">

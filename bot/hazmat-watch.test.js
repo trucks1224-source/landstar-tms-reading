@@ -111,3 +111,28 @@ for (const status of [400, 403, 500, null]) {
     assert.deepEqual(calls.at(-1), ['closed']);
   });
 }
+
+test('the same load re-posted from towns within 25 miles still counts (HUC Perrysburg, 2026-11-20)', () => {
+  const ours = posting(1, {
+    CommodityCode: 'CGAPP', OriginCity: 'LUCKEY', OriginState: 'OH', OriginZipCode: '43443',
+    DestinationCity: 'WARREN', DestinationState: 'AR', DestinationZipCode: '71671',
+    PickupFromDateForDisplay: '11/22/26 08:00', Weight: 42000, TotalRevenue: 2925
+  });
+  const huc = {
+    ...ours, LoadId: 2, Agency: 'HUC', OriginCity: 'PERRYSBURG', OriginZipCode: '43551',
+    DestinationCity: 'MONTICELLO', DestinationZipCode: '71655', PickupFromDateForDisplay: '11/22/26 07:00',
+    TrailerTypes: ['53VN'], TotalRevenue: 3000
+  };
+  assert.deepEqual(findCompetitors(ours, [huc], trailerGroup).map(b => b.Agency), ['HUC']);
+  assert.equal(planRaise(ours, findCompetitors(ours, [huc], trailerGroup)).to, 3025, 'back on top at $3,025');
+
+  // HUC's real McGehee, AR delivery is ~39 miles from Warren: outside the 25-mile limit.
+  assert.deepEqual(findCompetitors(ours, [{ ...huc, DestinationCity: 'MCGEHEE', DestinationZipCode: '71654' }], trailerGroup), []);
+  const lighter = { ...huc, Weight: 20000 };
+  const farAway = { ...huc, OriginCity: 'COLUMBUS', OriginZipCode: '43215' };
+  const otherDay = { ...huc, PickupFromDateForDisplay: '11/23/26 07:00' };
+  const reefer = { ...huc, TrailerTypes: ['REFR'] };
+  for (const other of [lighter, farAway, otherDay, reefer]) {
+    assert.deepEqual(findCompetitors(ours, [other], trailerGroup), [], 'a different load is not matched');
+  }
+});

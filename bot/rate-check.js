@@ -57,6 +57,7 @@ function readLoads(filePath) {
     pickupFrom: col('pickup date (from)'), postingCode: col('load posting code'),
     equipment: col('equipment 1'), rate: col('rate'), carrierAmt: header.indexOf('carrier amt'),
     attributes: header.indexOf('load attributes'),
+    weight: header.indexOf('weight'),
   };
   const loads = [];
   for (let r = 1; r < rows.length; r += 1) {
@@ -78,6 +79,7 @@ function readLoads(filePath) {
       postingCode: String(row[c.postingCode] || '').trim().toUpperCase(),
       equipment: String(row[c.equipment] || '').trim().toUpperCase(),
       rate: Number(row[c.rate]) || 0,
+      weight: c.weight >= 0 ? Number(String(row[c.weight] ?? '').replace(/[^\d.]/g, '')) || 0 : 0,
       hazmat: c.attributes >= 0 && /hazmat/i.test(String(row[c.attributes] || '')),
     });
   }
@@ -211,6 +213,46 @@ function abbreviates(abbr, word) {
   let i = 0;
   for (const ch of word) if (ch === abbr[i]) i += 1;
   return i === abbr.length;
+}
+
+// ---------- the same load posted from neighboring towns ----------
+// Some agents re-post a load with a nearby pickup and delivery city so it doesn't line up with
+// ours on the board (2026-11-20: HUC posted our Luckey, OH -> Warren, AR load as Perrysburg, OH
+// -> McGehee, AR at $3,000). A board posting counts as the same load when both ends are within
+// NEARBY_MILES of ours and the weight is within 5% (callers also require the same pickup day,
+// states and trailer group), so a different load that merely shares the area isn't matched.
+const NEARBY_MILES = 25; // Daniel, 2026-11-20 (25, not 50)
+const WEIGHT_TOLERANCE = 0.05;
+
+function placeOf(zip, city, state) {
+  const zip5 = String(zip || '').trim().slice(0, 5);
+  const byZip = /^\d{5}$/.test(zip5) ? zipcodes.lookup(zip5) : null;
+  if (byZip?.latitude) return byZip;
+  const name = String(city || '').trim();
+  const st = String(state || '').trim().toUpperCase();
+  return name && st ? (zipcodes.lookupByName(name, st) || []).find(place => place.latitude) || null : null;
+}
+
+function milesApart(a, b) {
+  if (!a || !b) return Infinity;
+  const rad = degrees => degrees * Math.PI / 180;
+  const dLat = rad(b.latitude - a.latitude);
+  const dLon = rad(b.longitude - a.longitude);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(dLon / 2) ** 2;
+  return 3958.8 * 2 * Math.asin(Math.sqrt(h));
+}
+
+const similarWeight = (a, b) => Number(a) > 0 && Number(b) > 0
+  && Math.abs(Number(a) - Number(b)) <= WEIGHT_TOLERANCE * Math.max(Number(a), Number(b));
+
+// mine: { originZip, originCity, originState, destZip, destCity, destState, weight }; board: a board posting.
+function isSameLoadNearby(mine, board) {
+  if (!similarWeight(mine.weight, board.Weight)) return false;
+  const origin = milesApart(placeOf(mine.originZip, mine.originCity, mine.originState),
+    placeOf(board.OriginZipCode, board.OriginCity, board.OriginState));
+  if (origin > NEARBY_MILES) return false;
+  return milesApart(placeOf(mine.destZip, mine.destCity, mine.destState),
+    placeOf(board.DestinationZipCode, board.DestinationCity, board.DestinationState)) <= NEARBY_MILES;
 }
 
 function sameCity(boardName, fullName) {
@@ -466,8 +508,9 @@ async function checkFiles(page, files, { apply, log = console.log }) {
         !ownCodes.has(String(b.Agency || '').trim().toUpperCase()) &&
         boardPickupDate(b) === load.pickupDate &&
         b.OriginState === load.originState && b.DestinationState === load.destState &&
-        (sameCity(b.OriginCity, load.originCity) || (b.OriginZipCode && b.OriginZipCode === load.originZip)) &&
-        (sameCity(b.DestinationCity, load.destCity) || (b.DestinationZipCode && b.DestinationZipCode === load.destZip)) &&
+        (((sameCity(b.OriginCity, load.originCity) || (b.OriginZipCode && b.OriginZipCode === load.originZip)) &&
+          (sameCity(b.DestinationCity, load.destCity) || (b.DestinationZipCode && b.DestinationZipCode === load.destZip)))
+          || isSameLoadNearby(load, b)) &&
         (b.TrailerTypes || []).some(t => trailerGroup(t) === myGroup) &&
         Number(b.TotalRevenue) > 0
       );
@@ -523,7 +566,7 @@ async function checkFiles(page, files, { apply, log = console.log }) {
 }
 
 module.exports = {
-  getWorkPage, openBoard, showLoggedIn, searchBoard, boardForLoad, checkFiles, sameCity, abbreviates, OWN_POSTING_CODES,
+  getWorkPage, openBoard, showLoggedIn, searchBoard, boardForLoad, checkFiles, sameCity, abbreviates, OWN_POSTING_CODES, isSameLoadNearby,
   getTrailerGroups, boardPickupDate, OUTBID_BY, isSkipAgencyPosting, removeRowsFromSheetXml, SKIP_IF_POSTED_BY,
   matchesTopCompetitor, isNolanFile, MATCH_AGENCY_FOR_NOLAN, getChPostingRate
 };

@@ -838,7 +838,9 @@ async function findFuelEmail() {
 // so the TMS Prospects panel can mark leads that answered.
 // "prospectThreadReply": reply inside the thread of a given prospect message
 // (the automatic apology when a broker says they cannot work with Landstar).
-async function handleProspectEmail(request) {
+// connectGmail: the office Gmail by default (local TMS); the website passes the signed-in
+// teammate's own Gmail (api/prospect-email.js), so each person emails from their own address.
+export async function handleProspectEmail(request, { connectGmail = connect } = {}) {
   const { action, to, subject, text, addresses, since, messageId } = request;
   const blocked = { status: 403, body: { error: 'This recipient is on the prospect do-not-email list. Prospect email not sent.' } };
   if (['prospectSend', 'prospectThreadReply'].includes(action)
@@ -848,7 +850,7 @@ async function handleProspectEmail(request) {
     && (request.kind === 'followUp' || (!request.kind && /^\s*re\s*:/i.test(String(subject || ''))))) {
     return { status: 403, body: { error: 'Prospecting follow-ups are disabled for this recipient.' } };
   }
-  const { accessToken } = await connect();
+  const { accessToken } = await connectGmail();
   if (action === 'prospectThreadReply') {
     // Reply inside the prospect's own thread (the automatic "sorry other agents were
     // horrible" answer when a broker turns Landstar down).

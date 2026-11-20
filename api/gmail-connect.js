@@ -1,4 +1,5 @@
 import { connectState, getServiceClient, secretsMatch } from './_lib/server.js';
+import { readUserState, saveUserGmail } from './_lib/userGmail.js';
 
 // readonly: import rate confirmations. send: email you when a driver inquires
 // about a load (api/load-inquiry.js). Reconnect once after adding a scope.
@@ -34,7 +35,9 @@ export default async function handler(req, res) {
     return res.status(302).end();
   }
 
-  if (!secretsMatch(state, connectState(CRON_SECRET))) return res.status(401).send('Invalid state.');
+  // A teammate connecting their own Gmail from the website (Prospects -> Connect Gmail).
+  const teammateId = readUserState(state, CRON_SECRET);
+  if (!teammateId && !secretsMatch(state, connectState(CRON_SECRET))) return res.status(401).send('Invalid state.');
 
   const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
@@ -56,6 +59,17 @@ export default async function handler(req, res) {
     headers: { Authorization: `Bearer ${tokens.access_token}` }
   });
   const profile = profileResponse.ok ? await profileResponse.json() : {};
+
+  if (teammateId) {
+    try {
+      await saveUserGmail(teammateId, { email: profile.emailAddress, refreshToken: tokens.refresh_token }, supabase);
+    } catch (error) {
+      console.error('Could not save a teammate Gmail connection:', error);
+      return res.status(500).send('Could not save your Gmail connection. Try again from Prospects.');
+    }
+    res.setHeader('Location', '/?gmail=connected');
+    return res.status(302).end();
+  }
 
   const { error: saveError } = await supabase.from('gmail_connection').upsert({
     id: 1,

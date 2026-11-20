@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, isProspectFollowUpExcluded, LANDSTAR_MC,
+  contactsToSave, readPageText, extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, isProspectFollowUpExcluded, LANDSTAR_MC,
   buildDailyCheckInEmail, dailyCheckInSubject, isDailyCheckInDue, DAILY_CHECKIN_AFTER_HOURS,
   isLandstarRefusal, buildDeclineReplyEmail
 } from './prospects.js';
@@ -168,4 +168,19 @@ test('only the specified contact is excluded from prospect follow-ups', () => {
   assert.equal(isBlockedProspect(excluded), false);
   assert.equal(isDailyCheckInDue({ ...excluded, active: true }, now), true);
   assert.equal(isFollowUpDue({ ...prospect, email: 'another@greatwide-tx.com' }, now), true);
+});
+
+test('website Save to TMS: every person at a broker is a contact; DAT, blocked and own address are not', () => {
+  const page = [
+    'T Brothers Logistics', 'Dallas, TX -> Atlanta, GA', 'brettfisher@tbrothers.com',
+    'T Brothers Logistics', 'chriskerstetter@tbrothers.com',
+    'Total Quality Logistics', 'someone@tql.com',
+    'support@dat.com', 'zaden@gmail.com'
+  ].join('\n');
+  const text = readPageText(`#t=${encodeURIComponent(page)}`);
+  assert.equal(text, page);
+  const emails = contactsToSave(text, 'Zaden@gmail.com').map(item => item.email);
+  assert.deepEqual(emails, ['brettfisher@tbrothers.com', 'chriskerstetter@tbrothers.com']);
+  assert.equal(readPageText('#other'), '');
+  assert.equal(readPageText('#t=%E0%A4%A'), '', 'broken text is ignored');
 });

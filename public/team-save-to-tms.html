@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Save to TMS bookmark | Landstar TMS Reader</title>
+  <style>
+    body { margin: 0; background: #0b132b; color: #eef2ff; font: 17px/1.6 system-ui, sans-serif; }
+    main { max-width: 760px; margin: auto; padding: 32px 20px 64px; }
+    a { color: #93c5fd; }
+    a:focus-visible, .bookmark:focus-visible { outline: 3px solid #facc15; outline-offset: 4px; }
+    h1 { line-height: 1.25; margin-bottom: 4px; }
+    h2 { margin-top: 32px; font-size: 20px; }
+    .lead { color: #cbd5e1; margin-top: 0; }
+    .bookmark { display: inline-block; margin: 12px 0; padding: 10px 18px; border-radius: 8px; background: #047857;
+      color: #fff; font-weight: 700; text-decoration: none; cursor: grab; }
+    ol li { margin-bottom: 8px; }
+    .note { background: #121829; border: 1px solid #334155; border-radius: 8px; padding: 12px 16px; }
+    code { background: #1e293b; padding: 1px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <main>
+    <nav><a href="/">Open the TMS</a></nav>
+    <h1>Save to TMS bookmark</h1>
+    <p class="lead">One click on a DAT posting saves the broker contacts to <strong>your</strong> Prospects list,
+      and the TMS emails each of them from <strong>your</strong> Gmail.</p>
+
+    <h2>1. Add the bookmark (once)</h2>
+    <ol>
+      <li>Show your bookmarks bar: press <code>Ctrl</code> + <code>Shift</code> + <code>B</code>.</li>
+      <li>Drag this green button up onto the bookmarks bar:<br>
+        <a class="bookmark" id="bookmark" href="#">Save to TMS</a></li>
+    </ol>
+    <p class="note">Can't drag it? Right-click the bookmarks bar → <strong>Add page…</strong>, name it
+      <strong>Save to TMS</strong>, and paste this as the URL:<br>
+      <textarea id="code" readonly rows="4" style="width:100%;margin-top:8px;background:#1e293b;color:#eef2ff;border:1px solid #334155;border-radius:6px;font:12px monospace"></textarea></p>
+
+    <h2>2. Connect your Gmail (once)</h2>
+    <ol>
+      <li><a href="/">Open the TMS</a> and sign in.</li>
+      <li>Click <strong>📣 Prospects</strong> → <strong>Connect Gmail</strong>, pick your Gmail account and allow access.</li>
+      <li>In Prospects → <strong>⚙ Settings</strong>, fill in your name and phone. They sign your emails.</li>
+    </ol>
+
+    <h2>3. Use it</h2>
+    <ol>
+      <li>On DAT, open a posting so the broker's email shows.</li>
+      <li>Click <strong>Save to TMS</strong> in your bookmarks bar. A small window lists the contacts it found.</li>
+      <li>Click <strong>Save</strong>. Every new contact gets its own intro email (several people at the same broker each get one),
+        then one follow-up if nobody answers. Keep the TMS website open in a tab: it sends every few minutes.</li>
+    </ol>
+    <p class="note">If the small window doesn't open, allow pop-ups for DAT (the icon at the right end of the address bar).</p>
+  </main>
+  <script>
+    // The bookmark sends the DAT page text to this website's own address (in the part after #,
+    // which never leaves the browser); the TMS window asks before saving anything.
+    const site = location.origin;
+    const code = "javascript:(()=>{const t=document.body.innerText.slice(0,300000);"
+      + "const w=window.open('" + site + "/?save-prospects=1#t='+encodeURIComponent(t),'tmsSaveProspects','width=540,height=600');"
+      + "if(!w)alert('Allow pop-ups for this site to use Save to TMS.');})()";
+    document.getElementById('bookmark').href = code;
+    document.getElementById('code').value = code;
+    document.getElementById('bookmark').addEventListener('click', event => {
+      event.preventDefault();
+      alert('Drag this button onto your bookmarks bar, then click it on a DAT posting.');
+    });
+  </script>
+</body>
+</html>

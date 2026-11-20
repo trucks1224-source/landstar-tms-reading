@@ -205,3 +205,18 @@ export function isFollowUpDue(prospect, now = Date.now()) {
   const emailedAt = Date.parse(prospect.emailed_at);
   return Number.isFinite(emailedAt) && now - emailedAt > FOLLOW_UP_AFTER_DAYS * 86400000;
 }
+
+// The DAT page text the website "Save to TMS" bookmark passes after "#t=" (never sent to a server).
+export function readPageText(hash) {
+  const match = String(hash || '').match(/^#t=([\s\S]*)$/);
+  if (!match) return '';
+  try { return decodeURIComponent(match[1]); } catch { return ''; }
+}
+
+// Contacts worth saving from a DAT page: not DAT itself, not a do-not-email broker, not the
+// person's own address. Every email is its own contact, even several at the same broker.
+export function contactsToSave(text, ownEmail = '') {
+  const own = String(ownEmail || '').toLowerCase();
+  return extractProspects(text).filter(item => !isBlockedProspect(item)
+    && !/@dat\.com$/i.test(item.email) && item.email.toLowerCase() !== own);
+}

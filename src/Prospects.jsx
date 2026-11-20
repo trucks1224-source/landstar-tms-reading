@@ -34,7 +34,8 @@ const seedCheckins = [
 function readCheckins() {
   try {
     const saved = window.localStorage.getItem(checkinsKey);
-    if (saved === null) return seedCheckins;
+    // Daniel's starter brokers only on his own TMS; a teammate starts with an empty list.
+    if (saved === null) return isLocalTms() ? seedCheckins : [];
     const list = JSON.parse(saved);
     return Array.isArray(list) ? list : [];
   } catch {
@@ -42,8 +43,14 @@ function readCheckins() {
   }
 }
 
-const canSendHere = () => typeof window !== 'undefined'
+// The local TMS (Daniel's computer) sends through the office Gmail (/api/paramount-email).
+// On the website each teammate sends from their OWN Gmail once they connect it
+// (/api/prospect-email, signed-in user only).
+const isLocalTms = () => typeof window !== 'undefined'
   && ['127.0.0.1', 'localhost'].includes(window.location.hostname);
+const WEBSITE_EMAIL_URL = '/api/prospect-email';
+let websiteGmailConnected = false;
+const canSendHere = () => isLocalTms() || websiteGmailConnected;
 
 function readSettings() {
   try {
@@ -51,18 +58,24 @@ function readSettings() {
     return {
       yourName: saved.yourName || '',
       agencyName: saved.agencyName || '',
-      phone: saved.phone || '484-575-6486',
+      phone: saved.phone || (isLocalTms() ? '484-575-6486' : ''),
       email: saved.email || '',
       subject: saved.subject || defaultSubject()
     };
   } catch {
-    return { yourName: '', agencyName: '', phone: '484-575-6486', email: '', subject: defaultSubject() };
+    return { yourName: '', agencyName: '', phone: isLocalTms() ? '484-575-6486' : '', email: '', subject: defaultSubject() };
   }
 }
 
 async function callEmailApi(body) {
-  const response = await fetch(PROSPECT_EMAIL_URL, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  const headers = { 'Content-Type': 'application/json' };
+  if (!isLocalTms()) {
+    const { data } = await supabase.auth.getSession();
+    if (!data?.session?.access_token) throw new Error('Sign in to the TMS first.');
+    headers.Authorization = `Bearer ${data.session.access_token}`;
+  }
+  const response = await fetch(isLocalTms() ? PROSPECT_EMAIL_URL : WEBSITE_EMAIL_URL, {
+    method: 'POST', headers, body: JSON.stringify(body)
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(result.error || `Email request failed (HTTP ${response.status}).`);
@@ -96,6 +109,50 @@ export default function Prospects() {
   const [checkins, setCheckins] = useState(readCheckins);
   const [newCheckin, setNewCheckin] = useState({ contact: '', company: '', email: '' });
   const checkedReplies = useRef(false);
+  // Website: is this person's own Gmail connected? (The local TMS always uses the office Gmail.)
+  const [gmail, setGmail] = useState(() => ({ checked: isLocalTms(), connected: isLocalTms(), email: '' }));
+
+  useEffect(() => {
+    if (!supabase || isLocalTms()) return undefined;
+    let cancelled = false;
+    callEmailApi({ action: 'status' }).then(result => {
+      if (cancelled) return;
+      websiteGmailConnected = Boolean(result.connected);
+      setGmail({ checked: true, connected: websiteGmailConnected, email: result.email || '' });
+      // Back from Google's approval page: show the panel with the result.
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('gmail') === 'connected') {
+        setOpen(true);
+        setStatus(websiteGmailConnected ? `Gmail connected (${result.email}). New prospects are emailed from it automatically.` : 'Gmail did not connect. Try Connect Gmail again.');
+        params.delete('gmail');
+        window.history.replaceState(null, '', `${window.location.pathname}${params.toString() ? `?${params}` : ''}`);
+      }
+    }).catch(error => {
+      if (!cancelled) setGmail({ checked: true, connected: false, email: '', error: error.message });
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const connectGmail = async () => {
+    try {
+      const { url } = await callEmailApi({ action: 'connectUrl' });
+      window.location.assign(url);
+    } catch (error) {
+      setStatus(`Could not start the Gmail connection: ${error.message}`);
+    }
+  };
+
+  const disconnectGmail = async () => {
+    if (!window.confirm(`Disconnect ${gmail.email || 'your Gmail'}? Prospect emails stop until you connect again.`)) return;
+    try {
+      await callEmailApi({ action: 'disconnect' });
+      websiteGmailConnected = false;
+      setGmail({ checked: true, connected: false, email: '' });
+      setStatus('Gmail disconnected.');
+    } catch (error) {
+      setStatus(`Could not disconnect Gmail: ${error.message}`);
+    }
+  };
 
   const saveCheckins = next => {
     setCheckins(next);
@@ -226,7 +283,7 @@ export default function Prospects() {
     const timer = setInterval(run, 10 * 60 * 1000);
     return () => { clearTimeout(first); clearInterval(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [gmail.connected]);
 
   // ---------- Capture: OCR a pasted DAT screenshot ----------
   const readImage = async blob => {
@@ -340,6 +397,15 @@ export default function Prospects() {
       await loadRows();
       return;
     }
+    // Automatic sends claim the prospect first: if another open TMS tab (or computer) already
+    // touched it since this list was read, it is skipped, so nobody is emailed twice.
+    if (auto && prospect.updated_at) {
+      const { data: claimed } = await supabase.from('prospects')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', prospect.id).eq('status', prospect.status).eq('updated_at', prospect.updated_at)
+        .select('id');
+      if (!claimed?.length) return;
+    }
     setBusyId(prospect.id);
     try {
       await callEmailApi({ action: 'prospectSend', kind, to: prospect.email, company: prospect.company, subject, text });
@@ -431,7 +497,7 @@ export default function Prospects() {
   };
 
   if (!supabase) return null;
-  const sendable = canSendHere();
+  const sendable = canSendHere() && gmail.connected;
   const newCount = rows.filter(row => row.status === 'new').length;
   const selectedNewCount = rows.filter(row => row.status === 'new' && selected.has(row.id)).length;
   const sorted = [...rows].sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
@@ -465,7 +531,7 @@ export default function Prospects() {
             {showSettings && (
               <div className="border border-[#1c2541] rounded p-2 mb-3 grid grid-cols-2 gap-2">
                 <label className="text-[10px] text-gray-400">Your name (signature)
-                  <input type="text" value={settings.yourName} onChange={event => saveSettings({ ...settings, yourName: event.target.value })} className={inputClass} placeholder="Daniel …" />
+                  <input type="text" value={settings.yourName} onChange={event => saveSettings({ ...settings, yourName: event.target.value })} className={inputClass} placeholder="Your name" />
                 </label>
                 <label className="text-[10px] text-gray-400">Agency name shown (never Broski; blank to leave out)
                   <input type="text" value={settings.agencyName} onChange={event => saveSettings({ ...settings, agencyName: event.target.value })} className={inputClass} />
@@ -518,7 +584,28 @@ export default function Prospects() {
                 <button type="button" onClick={addCheckin} className="bg-emerald-700 hover:bg-emerald-600 px-2 py-1 text-[10px] font-bold rounded text-white cursor-pointer">Add</button>
               </div>
             </div>
-            {!sendable && <p className="text-[11px] text-amber-300 mb-2">Emails can only be sent from the TMS on the office computer (127.0.0.1:5173). Here you can still view and edit the list.</p>}
+            {!isLocalTms() && (
+              <div className="border border-[#1c2541] rounded p-2 mb-2 text-[11px] flex flex-wrap items-center gap-2">
+                {gmail.connected ? (
+                  <>
+                    <span className="text-emerald-300">✓ Emails go out from your Gmail: {gmail.email}</span>
+                    <button type="button" onClick={disconnectGmail} className="text-gray-400 hover:text-white underline cursor-pointer">Disconnect</button>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-amber-300">{gmail.checked ? 'Connect your Gmail so new prospects are emailed from your own address.' : 'Checking your Gmail connection…'}</span>
+                    {gmail.checked && (
+                      <button type="button" onClick={connectGmail} className="bg-emerald-700 hover:bg-emerald-600 px-2 py-1 text-[10px] font-bold rounded text-white cursor-pointer">Connect Gmail</button>
+                    )}
+                    {gmail.error && <span className="text-red-300">{gmail.error}</span>}
+                  </>
+                )}
+                <a href="/team-save-to-tms.html" target="_blank" rel="noreferrer" className="text-sky-300 hover:text-sky-200 underline">Get the Save to TMS bookmark</a>
+              </div>
+            )}
+            {gmail.connected && !settings.yourName.trim() && (
+              <p className="text-[11px] text-amber-300 mb-2">Add your name in ⚙ Settings (it signs your emails). Automatic emails wait until it is filled in.</p>
+            )}
             {status && <p className="text-xs text-gray-300 mb-2">{status}</p>}
 
             {captured.length > 0 && (

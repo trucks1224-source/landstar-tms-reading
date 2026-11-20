@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  contactsToSave, readPageText, extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, isProspectFollowUpExcluded, LANDSTAR_MC,
+  describeSaveResult, contactsToSave, readPageText, extractProspects, buildProspectEmail, buildFollowUpEmail, defaultSubject, prospectSubject, isFollowUpDue, isBlockedProspect, isProspectFollowUpExcluded, LANDSTAR_MC,
   buildDailyCheckInEmail, dailyCheckInSubject, isDailyCheckInDue,
   isLandstarRefusal, buildDeclineReplyEmail
 } from './prospects.js';
@@ -188,4 +188,15 @@ test('website Save to TMS: every person at a broker is a contact; DAT, blocked a
   assert.deepEqual(emails, ['brettfisher@tbrothers.com', 'chriskerstetter@tbrothers.com']);
   assert.equal(readPageText('#other'), '');
   assert.equal(readPageText('#t=%E0%A4%A'), '', 'broken text is ignored');
+});
+
+test('Save to TMS result names who was added and who was already saved', () => {
+  const text = describeSaveResult(
+    [{ company: 'Sunteck Transport Co LLC', email: 'morgan.stewart@suntecktts.com' }],
+    [{ company: 'Spot Freight Inc', email: 'freight@spotinc.com', status: 'replied', created_at: '2026-11-09T16:28:09Z' }]
+  );
+  assert.match(text, /^TMS: saved 1 new contact, 1 already saved\./);
+  assert.match(text, /• Sunteck Transport Co LLC \(morgan\.stewart@suntecktts\.com\)/);
+  assert.match(text, /• Spot Freight Inc \(freight@spotinc\.com\): REPLIED, since 11\/9/);
+  assert.equal(describeSaveResult([], []), 'TMS: saved 0 new contacts.');
 });

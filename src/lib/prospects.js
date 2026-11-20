@@ -230,3 +230,24 @@ export function contactsToSave(text, ownEmail = '') {
   return extractProspects(text).filter(item => !isBlockedProspect(item)
     && !/@dat\.com$/i.test(item.email) && item.email.toLowerCase() !== own);
 }
+
+// The "Save to TMS" result in words: who was added, and who was already in the list (by exact email,
+// so other people or offices at the same broker are always added). Used by both bookmarks.
+const SAVED_STATUS_WORDS = {
+  new: 'saved, not emailed yet', emailed: 'emailed', 'followed-up': 'emailed + followed up',
+  replied: 'REPLIED', customer: 'customer', dead: 'not interested'
+};
+export function describeSaveResult(saved = [], alreadySaved = [], { prefix = 'TMS' } = {}) {
+  const who = item => `${item.company || item.email.split('@')[1]} (${item.email})`;
+  const since = item => {
+    const at = Date.parse(item.created_at);
+    return Number.isFinite(at) ? `, since ${new Date(at).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}` : '';
+  };
+  const lines = [`${prefix}: saved ${saved.length} new contact${saved.length === 1 ? '' : 's'}${alreadySaved.length ? `, ${alreadySaved.length} already saved` : ''}.`];
+  if (saved.length) lines.push('', 'New (emailed automatically):', ...saved.map(item => `• ${who(item)}`));
+  if (alreadySaved.length) {
+    lines.push('', 'Already in your list (same email):',
+      ...alreadySaved.map(item => `• ${who(item)}: ${SAVED_STATUS_WORDS[item.status] || item.status || 'saved'}${since(item)}`));
+  }
+  return lines.join('\n');
+}

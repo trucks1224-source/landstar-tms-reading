@@ -8,7 +8,7 @@ import { processRoadMilesRequest } from './api/road-miles.js'
 import { processDatRateRequest, getDatConfig } from './api/dat-rate.js'
 import { handleParamountEmail } from './api/_lib/gmailThread.js'
 import { getServiceClient } from './api/_lib/server.js'
-import { extractProspects, isBlockedProspect } from './src/lib/prospects.js'
+import { describeSaveResult, extractProspects, isBlockedProspect } from './src/lib/prospects.js'
 
 // The TMS account that owns imported prospects, looked up once per server run.
 let prospectOwnerId = null
@@ -297,9 +297,19 @@ export default defineConfig(({ mode }) => {
                   email: item.email, phone: item.phone || '', lane: item.lane || ''
                 })),
                 { onConflict: 'owner_id,email', ignoreDuplicates: true }
-              ).select('id')
+              ).select('company, email')
               if (error) throw error
-              reply(200, { saved: (data || []).length, skipped: found.length - (data || []).length })
+              // Who was already in the list (same email), with where they stand, for the pop-up.
+              const added = new Set((data || []).map(row => row.email.toLowerCase()))
+              const skippedEmails = [...new Set(found.map(item => item.email.toLowerCase()).filter(email => !added.has(email)))]
+              const { data: existing } = skippedEmails.length
+                ? await supabase.from('prospects').select('company, email, status, created_at')
+                  .eq('owner_id', prospectOwnerId).in('email', skippedEmails)
+                : { data: [] }
+              reply(200, {
+                saved: (data || []).length, skipped: skippedEmails.length,
+                message: describeSaveResult(data || [], existing || [])
+              })
             } catch (error) {
               console.error('Prospects import failed:', error.message)
               reply(502, { error: error.message || 'The prospects import failed.' })

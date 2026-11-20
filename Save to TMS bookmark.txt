@@ -6,15 +6,19 @@ email / company / lane visible on the page and saves them into the TMS
 Prospects list (no screenshots needed). The TMS must be running on this
 computer (Start TMS.bat).
 
-Install once (Chrome/Edge):
+Install once (Chrome/Edge) - or update the bookmark you already have:
 1. Show the bookmarks bar (Ctrl+Shift+B).
 2. Right-click the bookmarks bar -> Add page...
+   (to update: right-click your "Save to TMS" bookmark -> Edit...)
 3. Name:  Save to TMS
 4. URL:   paste the one line below
 5. Save.
 
 Use: on DAT, open a posting so the contact email shows, then click
-"Save to TMS" in the bookmarks bar. A pop-up tells you how many brokers
-were saved. They appear in TMS -> Tools -> Prospects, ready to email.
+"Save to TMS" in the bookmarks bar. A pop-up lists the new contacts saved
+(emailed automatically) and the ones already in your list, with where each
+stands (emailed, replied...). A contact counts as already saved only when
+the same EMAIL is in your list: other people or offices at the same broker
+are always saved and emailed. They appear in TMS -> Prospects.
 
-javascript:(async()=>{try{const r=await fetch('http://127.0.0.1:5173/api/prospects-import',{method:'POST',headers:{'Content-Type':'text/plain'},body:document.body.innerText});const j=await r.json();alert(j.error?'TMS: '+j.error:'TMS: saved '+j.saved+' new broker(s)'+(j.skipped?', '+j.skipped+' already saved':''))}catch(e){alert('TMS not reachable - is the TMS running on this computer?')}})()
+javascript:(async()=>{try{const r=await fetch('http://127.0.0.1:5173/api/prospects-import',{method:'POST',headers:{'Content-Type':'text/plain'},body:document.body.innerText});const j=await r.json();alert(j.error?'TMS: '+j.error:j.message||('TMS: saved '+j.saved+' new broker(s)'+(j.skipped?', '+j.skipped+' already saved':'')))}catch(e){alert('TMS not reachable - is the TMS running on this computer?')}})()

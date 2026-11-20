@@ -5,7 +5,7 @@
 // slip addresses into someone's list. Saved contacts are emailed by the Prospects panel.
 import React, { useEffect, useState } from 'react';
 import { supabase } from './lib/supabase.js';
-import { contactsToSave, readPageText } from './lib/prospects.js';
+import { contactsToSave, describeSaveResult, readPageText } from './lib/prospects.js';
 
 const box = { maxWidth: 480, margin: '0 auto', padding: 16, font: '14px/1.5 system-ui, sans-serif', color: '#eef2ff' };
 const button = { background: '#047857', color: 'white', border: 0, borderRadius: 6, padding: '8px 14px', fontWeight: 700, cursor: 'pointer' };
@@ -40,9 +40,20 @@ export default function SaveProspects() {
     const { data, error } = await supabase.from('prospects').upsert(
       contacts.map(item => ({ company: item.company || '', contact: item.contact || '', email: item.email.toLowerCase(), phone: item.phone || '', lane: item.lane || '' })),
       { onConflict: 'owner_id,email', ignoreDuplicates: true }
-    ).select('id');
+    ).select('company, email');
+    if (error) {
+      setBusy(false);
+      setResult({ error: error.message });
+      return;
+    }
+    // The ones not added were already in this person's list (same email): show where each stands.
+    const added = new Set((data || []).map(row => row.email.toLowerCase()));
+    const skipped = contacts.map(item => item.email.toLowerCase()).filter(email => !added.has(email));
+    const { data: existing } = skipped.length
+      ? await supabase.from('prospects').select('company, email, status, created_at').in('email', skipped)
+      : { data: [] };
     setBusy(false);
-    setResult(error ? { error: error.message } : { saved: (data || []).length, skipped: contacts.length - (data || []).length });
+    setResult({ saved: (data || []).length, skipped: skipped.length, message: describeSaveResult(data || [], existing || [], { prefix: 'Done' }) });
   };
 
   return (
@@ -63,7 +74,7 @@ export default function SaveProspects() {
       {result?.error && <p style={{ color: '#fca5a5' }}>Could not save: {result.error}</p>}
       {result && !result.error && (
         <>
-          <p style={{ color: '#6ee7b7' }}>Saved {result.saved} new contact{result.saved === 1 ? '' : 's'}{result.skipped ? `; ${result.skipped} already in your list` : ''}.</p>
+          <p style={{ color: '#6ee7b7', whiteSpace: 'pre-line' }}>{result.message}</p>
           <p style={{ color: '#cbd5e1' }}>New contacts are emailed automatically from your Gmail while the TMS website is open (Prospects → Connect Gmail).</p>
           <button type="button" onClick={() => window.close()} style={button}>Close</button>
         </>

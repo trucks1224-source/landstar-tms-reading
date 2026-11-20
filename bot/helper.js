@@ -1,3 +1,4 @@
+require('./file-log')('helper'); // also writes this bot's output to bot/logs
 // The helper bot: a second Landstar bot in its own browser window (its own profile, signed in
 // once), so the main bot can keep uploading while this one handles:
 //   - Assign Capacity for loads booked in the TMS (assign.js)

@@ -1,3 +1,4 @@
+require('./file-log')('rates'); // also writes this bot's output to bot/logs
 process.env.BOT_ROLE = 'rates';
 
 const fs = require('fs');

@@ -841,6 +841,15 @@ test('2279123 verified VE overrides whole-row OCR VZ and corrects saved equipmen
   assert.equal(policy.getLandstarCommodity(saved.eCode), 'CHEM');
 });
 
+test('Para ATZ H screenshot times are hours too, not minutes (Elizabethtown 2288051)', () => {
+  const parsed = parseScreenshotTimes('2288051', [
+    '11/30/2026 08...', '12/01/2026 1500', '12/01/2026 0...', '12/01/2026 1500'
+  ], 'Para 1522166 - ATZ H');
+  assert.match(parsed.pickupTime, /^11\/30\/2026 0800 - /, 'clipped "08..." is 8:00, not 00:08');
+  const rxo = parseScreenshotTimes('24001', ['11/30/2026 0800', '11/30/2026 1500', '12/01/2026 0800', '12/01/2026 1500'], 'R X O 2429200 - ATZ P');
+  assert.match(rxo.pickupTime, /^11\/30\/2026 0800 - 11\/30\/2026 1500/, 'other accounts unchanged');
+});
+
 test('V53 screenshot equipment imports as van', () => {
   const parsed = parseScreenshotTimes('2280197', [
     '10/28/2026 07...', '10/28/2026 1500', '10/30/2026 0...', '10/30/2026 1300'

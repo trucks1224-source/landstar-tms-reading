@@ -651,7 +651,10 @@ function parseWeightPounds(value) {
 }
 
 function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
-  const isParaImport = isParaCustomer(selectedBroker);
+  // Both Paramount accounts (ATZ and ATZ H) send the same screenshot, whose clipped time cells
+  // show hours only ("08..."). ATZ H read them as minutes (0008) and Landstar rejected loads
+  // whose delivery then ended before pickup (2026-11-20).
+  const isParaImport = isParamountTrackingCustomer(selectedBroker);
   const holdsRedRows = holdsRedScreenshotLoads(selectedBroker);
   const cleanCell = value => value
     .replace(/[|[\]]/g, ' ')

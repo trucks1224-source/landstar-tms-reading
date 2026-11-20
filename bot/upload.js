@@ -1,3 +1,4 @@
+require('./file-log')('upload'); // also writes this bot's output to bot/logs
 // Landstar bulk-upload bot.
 // Uploads every exported Landstar Excel file from your Downloads folder,
 // one at a time, then moves uploaded files into a "uploaded" subfolder so

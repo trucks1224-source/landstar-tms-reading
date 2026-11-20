@@ -9,7 +9,9 @@ const { openBoard } = require('./rate-check');
 (async () => {
   const out = process.argv[2];
   fs.mkdirSync(out, { recursive: true });
-  const browser = await chromium.launchPersistentContext(path.join(__dirname, 'browser-profile'), { headless: false, viewport: null });
+  // --profile=browser-profile-helper borrows another bot's signed-in browser (that bot must be stopped).
+  const profile = (process.argv.find(arg => arg.startsWith('--profile=')) || '--profile=browser-profile').slice(10);
+  const browser = await chromium.launchPersistentContext(path.join(__dirname, profile), { headless: false, viewport: null });
   await openBoard(browser, console.log); // signs in
   const page = await browser.newPage();
   let n = 0;

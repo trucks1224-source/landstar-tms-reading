@@ -19,7 +19,9 @@ async function errorCount(page) {
   const out = process.argv[2];
   const apply = process.argv.includes('--apply');
   fs.mkdirSync(out, { recursive: true });
-  const browser = await chromium.launchPersistentContext(path.join(__dirname, 'browser-profile'), { headless: false, viewport: { width: 1600, height: 1000 } });
+  // --profile=browser-profile-helper borrows another bot's signed-in browser (that bot must be stopped).
+  const profile = (process.argv.find(arg => arg.startsWith('--profile=')) || '--profile=browser-profile').slice(10);
+  const browser = await chromium.launchPersistentContext(path.join(__dirname, profile), { headless: false, viewport: { width: 1600, height: 1000 } });
   await openBoard(browser, console.log);
   const page = await browser.newPage();
   page.on('dialog', dialog => dialog.accept().catch(() => {}));

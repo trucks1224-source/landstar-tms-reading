@@ -44,3 +44,4 @@ bot/prechecked.json
 # This computer's own Landstar posting code (each teammate has their own)
 bot/agent-config.json
 teammate-setup/out/
+bot/logs/

@@ -1,3 +1,4 @@
+require('./file-log')('watchdog'); // also writes this bot's output to bot/logs
 // Watchdog: keeps the whole local Landstar stack running.
 //
 // Every few seconds it checks the local workers and restarts any that died:

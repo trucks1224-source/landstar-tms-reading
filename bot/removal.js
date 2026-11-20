@@ -1,3 +1,4 @@
+require('./file-log')('removal'); // also writes this bot's output to bot/logs
 // Dedicated worker for the TMS-approved missing-load removal queue.
 process.env.BOT_ROLE = 'removal';
 

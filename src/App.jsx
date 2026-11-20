@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { detectScreenshotGrid, readScreenshotGrid } from './lib/screenshotTable.js';
 import { findNtgCardRegions } from './lib/ntgCards.js';
+import { parseTextLoadList } from './lib/textLoads.js';
 import { createEmailWorker, describeEmailWorker } from './lib/emailWorker.js';
 import Prospects from './Prospects.jsx';
 import automationPolicy from '../bot/automation-policy.json';
@@ -6336,6 +6337,8 @@ export default function App({ sharing = null } = {}) {
   const [screenshotImportMode, setScreenshotImportMode] = useState('');
   const [screenshotImportProgress, setScreenshotImportProgress] = useState('');
   const [isGmailImportOpen, setIsGmailImportOpen] = useState(false);
+  // Paste Text List box: null = closed, else the pasted text.
+  const [textImport, setTextImport] = useState(null);
   const [gmailClientId, setGmailClientId] = useState(() => {
     try {
       return localStorage.getItem('landstar_gmailClientId') || '';
@@ -6909,6 +6912,45 @@ export default function App({ sharing = null } = {}) {
   const showImportedList = () => {
     handleClearAllFilters();
     setView('loads');
+  };
+
+  // Paste Text List: a load list written as text (Ryan's Square 2570577 messages) into the
+  // selected customer, through the same merge as every other import (src/lib/textLoads.js).
+  const handleTextImport = () => {
+    if (!selectedBroker) {
+      alert('Pick the customer on the left first (for example Square 2570577), then import.');
+      return;
+    }
+    const { loads, problems } = parseTextLoadList(textImport || '', { source: `${selectedBroker} text list` });
+    const problemText = problems.length ? `\n\nNot imported (fix and paste again):\n• ${problems.join('\n• ')}` : '';
+    if (!loads.length) {
+      alert(`No loads found. Each load needs a "City, ST ZIP → City, ST ZIP" line, then its weight, Ref # and DEL date.${problemText}`);
+      return;
+    }
+    try {
+      const existingOrders = customerOrdersMap[selectedBroker] || [];
+      const replacement = replaceImportedCustomerLoads(selectedBroker, loads, existingOrders);
+      queueDroppedPostings(replacement, existingOrders);
+      const nextOrders = { ...customerOrdersMap, [selectedBroker]: replacement.loads };
+      const saved = persistAppData(brokers, nextOrders);
+      setCustomerOrdersMap(nextOrders);
+      setSelectedIds(getImportedLoadSelection(selectedBroker, replacement.processedLoads));
+      showImportedList();
+      setFilter('OPEN');
+      setTextImport(null);
+      alert(
+        `📋 Text list imported into ${selectedBroker}:\n`
+        + `• Loads read: ${loads.length}\n`
+        + `• Total in list: ${replacement.loads.length}\n`
+        + getImportReplacementMessage(replacement)
+        + '• Pickup days are estimated from the delivery date and miles (see each load\'s notes): confirm them before exporting.\n'
+        + '• No rates were in the list: add yours before exporting.'
+        + problemText
+        + (saved ? '' : '\n\nWarning: saving failed, check browser storage.')
+      );
+    } catch (error) {
+      alert(`Text import failed: ${error.message}`);
+    }
   };
 
   const handleDeleteSelected = () => {
@@ -10234,6 +10276,15 @@ export default function App({ sharing = null } = {}) {
                   >
                     Import Gmail
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setTextImport(current => (current === null ? '' : null))}
+                    className="tms-tool"
+                    data-accent="rose"
+                    title="Paste a load list written as text (like Ryan's Square list in Google Chat): City, ST ZIP → City, ST ZIP, then the details"
+                  >
+                    Paste Text List
+                  </button>
                 </div>
               </div>
               <div className="tms-tool-group">
@@ -10260,6 +10311,32 @@ export default function App({ sharing = null } = {}) {
             )}
           </div>
 
+          {textImport !== null && (
+            <div className="mb-3 rounded border border-rose-700/60 bg-[#0b132b] p-2.5">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-bold text-white">Paste Text List → {selectedBroker || 'pick a customer first'}</span>
+                <button type="button" onClick={() => setTextImport(null)} className="text-gray-400 hover:text-white text-xs cursor-pointer" aria-label="Close text import">✕</button>
+              </div>
+              <p className="text-[10px] text-gray-400 mb-1">
+                Copy the whole message (each load starts with "City, ST ZIP → City, ST ZIP") and paste it here. The pickup day is estimated from the delivery date and miles; it's written in each load's notes so you can confirm it.
+              </p>
+              <textarea
+                value={textImport}
+                onChange={event => setTextImport(event.target.value)}
+                rows={8}
+                placeholder={'Charlotte, NC 28273 → Cincinnati, OH 45246\nHAZMAT · UN2796 SULFURIC ACID · Van · 43,504 lbs · 491 mi · Ref 31474-08698 · PU 06:00–14:00 · DEL Tue 11/24'}
+                className="w-full bg-[#161f36] border border-[#1c2541] rounded p-1.5 text-xs text-white placeholder-gray-500 mb-2 font-mono"
+              />
+              <button
+                type="button"
+                disabled={!selectedBroker || !textImport.trim()}
+                onClick={handleTextImport}
+                className="bg-rose-700 hover:bg-rose-600 disabled:opacity-50 px-3 py-1 text-xs font-bold rounded text-white cursor-pointer"
+              >
+                Import into {selectedBroker || '…'}
+              </button>
+            </div>
+          )}
           {isGmailImportOpen && (
             <div className="mb-3 rounded border border-red-700/60 bg-[#0b132b] p-2.5">
               <div className="flex items-center justify-between mb-1">

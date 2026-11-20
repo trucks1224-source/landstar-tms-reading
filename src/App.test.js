@@ -7,6 +7,7 @@ import { transform } from 'esbuild';
 import * as XLSX from 'xlsx';
 import * as screenshotTable from './lib/screenshotTable.js';
 import * as ntgCards from './lib/ntgCards.js';
+import * as textLoads from './lib/textLoads.js';
 import * as emailWorker from './lib/emailWorker.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
@@ -79,6 +80,7 @@ const context = {
     if (name === '../bot/automation-policy.json') return automationPolicy;
     if (name === './lib/screenshotTable.js') return screenshotTable;
     if (name === './lib/ntgCards.js') return ntgCards;
+    if (name === './lib/textLoads.js') return textLoads;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
     throw new Error(`Unexpected dependency: ${name}`);
@@ -1380,6 +1382,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
     require(name) {
       if (name === './lib/screenshotTable.js') return screenshotTable;
       if (name === './lib/ntgCards.js') return ntgCards;
+      if (name === './lib/textLoads.js') return textLoads;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === 'react') return react;
@@ -1528,6 +1531,7 @@ function createSyncContext(storage) {
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === './lib/screenshotTable.js') return screenshotTable;
       if (name === './lib/ntgCards.js') return ntgCards;
+      if (name === './lib/textLoads.js') return textLoads;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
       throw new Error(`Unexpected dependency: ${name}`);

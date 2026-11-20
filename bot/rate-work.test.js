@@ -147,7 +147,7 @@ test('posting owns the prepared export through final validation and reservation,
   assert.equal(prepared.state, 'ready');
   assert.equal(isPrechecked(paths.file), true);
   let submissions = 0;
-  await withExportOwnership([paths.file], () => submitFileOnce({ evaluate: async () => 0 }, paths.file, {
+  await withExportOwnership([paths.file], () => submitFileOnce({ evaluate: async () => ({ count: 0, ids: [] }) }, paths.file, {
     reviewFolder, uploadedFolder,
     verify: file => assert.equal(isPrechecked(file), true),
     submit: async (_page, reserved) => {
@@ -167,7 +167,7 @@ test('a file changed while checking portal errors is not submitted or reserved',
   const paths = fileFor(t);
   markPrechecked(paths.file);
   let submitted = false;
-  const page = { evaluate: async () => { fs.writeFileSync(paths.file, 'new contents'); return 0; } };
+  const page = { evaluate: async () => { fs.writeFileSync(paths.file, 'new contents'); return { count: 0, ids: [] }; } };
   await assert.rejects(withExportOwnership([paths.file], () => submitFileOnce(page, paths.file, {
     reviewFolder: path.join(paths.folder, 'review'), uploadedFolder: path.join(paths.folder, 'uploaded'),
     verify: file => { if (!isPrechecked(file)) throw new Error('Export changed after its rate check'); },

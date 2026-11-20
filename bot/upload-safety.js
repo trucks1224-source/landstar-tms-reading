@@ -2,7 +2,13 @@ const fs = require('fs');
 const path = require('path');
 
 async function readBulkErrors(page) {
-  return page.evaluate(async () => {
+  return (await readBulkDrafts(page, 1)).count;
+}
+
+// Unposted error drafts: total count plus the ids on the first page. Ids let an upload
+// tell its own new drafts apart from old ones still waiting on the Bulk Postings page.
+async function readBulkDrafts(page, pageSize = 200) {
+  return page.evaluate(async size => {
     let user;
     for (const storage of [sessionStorage, localStorage]) {
       for (let i = 0; i < storage.length; i += 1) {
@@ -13,7 +19,7 @@ async function readBulkErrors(page) {
       }
     }
     if (!user) throw new Error('Cannot check bulk errors: Landstar sign-in is missing.');
-    const response = await fetch('/loadboards/v1/bulkUpload/unpostedDrafts?pageIndex=0&pageSize=1', {
+    const response = await fetch(`/loadboards/v1/bulkUpload/unpostedDrafts?pageIndex=0&pageSize=${size}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${user.access_token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -26,8 +32,19 @@ async function readBulkErrors(page) {
     if (!Number.isInteger(result.count) || result.count < 0 || !Array.isArray(result.data)) {
       throw new Error('Cannot check bulk errors: unexpected Landstar response.');
     }
-    return result.count;
-  });
+    return { count: result.count, ids: result.data.map(draft => String(draft?.draftId ?? '')) };
+  }, pageSize);
+}
+
+// Drafts that were not there before this file was submitted. When the list is too long
+// to see every id, fall back to "the total went up".
+function newDrafts(before, after) {
+  const complete = list => list.ids.length >= list.count && list.ids.every(Boolean);
+  if (complete(before) && complete(after)) {
+    const old = new Set(before.ids);
+    return after.ids.filter(id => !old.has(id)).length;
+  }
+  return Math.max(0, after.count - before.count);
 }
 
 async function readBulkErrorReport(page) {
@@ -110,15 +127,24 @@ function uniqueTarget(folder, file) {
   return target;
 }
 
-async function submitFileOnce(page, file, { reviewFolder, uploadedFolder, submit, verify }) {
-  await assertUploadReady(page, reviewFolder);
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function submitFileOnce(page, file, { reviewFolder, uploadedFolder, submit, verify, settleMs = 5000, settleChecks = 6 }) {
+  // Error drafts already on Landstar belong to earlier files; only new ones count against this file.
+  const before = await readBulkDrafts(page);
   if (verify) verify(file);
   const reserved = uniqueTarget(reviewFolder, file);
   // Reserve before attaching: a crash or timeout must not replay a possibly accepted file.
   fs.renameSync(file, reserved);
   try {
     await submit(page, reserved);
-    const count = await readBulkErrors(page);
+    // Landstar lists a file's loads as drafts for a few seconds while it posts them.
+    // Real errors stay put; drafts that clear on their own were posted.
+    let count = newDrafts(before, await readBulkDrafts(page));
+    for (let i = 0; count && i < settleChecks; i += 1) {
+      await sleep(settleMs);
+      count = newDrafts(before, await readBulkDrafts(page));
+    }
     if (count) {
       const draftFolder = path.join(path.dirname(reviewFolder), 'landstar-upload-errors');
       const draftFile = uniqueTarget(draftFolder, file);
@@ -141,4 +167,4 @@ async function submitFileOnce(page, file, { reviewFolder, uploadedFolder, submit
   }
 }
 
-module.exports = { readBulkErrors, readBulkErrorReport, reviewFiles, assertUploadReady, submitFileOnce };
+module.exports = { readBulkErrors, readBulkDrafts, newDrafts, readBulkErrorReport, reviewFiles, assertUploadReady, submitFileOnce };

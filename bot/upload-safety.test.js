@@ -13,14 +13,17 @@ function fakePage(counts = [0], { status = 200, signedIn = true, body } = {}) {
     getItem: () => session,
   };
   return {
-    evaluate: callback => vm.runInNewContext(`(${callback.toString()})()`, {
+    evaluate: (callback, arg) => vm.runInNewContext(`(${callback.toString()})(${JSON.stringify(arg)})`, {
       sessionStorage: storage, localStorage: { length: 0 },
       fetch: async (url, options) => {
-        assert.match(url, /unpostedDrafts\?pageIndex=0&pageSize=1$/);
+        assert.match(url, /unpostedDrafts\?pageIndex=0&pageSize=(1|200)$/);
         assert.equal(options.method, 'POST');
         assert.equal(JSON.parse(options.body).userId, '123');
-        const count = counts.length > 1 ? counts.shift() : counts[0];
-        return { ok: status === 200, status, json: async () => body || { count, data: [] } };
+        // Each entry is a draft count, or a list of draft ids Landstar shows.
+        const next = counts.length > 1 ? counts.shift() : counts[0];
+        const data = Array.isArray(next) ? next.map(draftId => ({ draftId })) : [];
+        const count = Array.isArray(next) ? next.length : next;
+        return { ok: status === 200, status, json: async () => body || { count, data } };
       },
     }),
   };
@@ -47,16 +50,42 @@ test('missing sign-in, failed requests and malformed counts fail closed', async 
   await assert.rejects(readBulkErrors(fakePage([0], { body: { count: -1, data: [] } })), /unexpected/);
 });
 
-test('existing error drafts do not prevent submission but are not reported as success', async t => {
+test('old error drafts left on Landstar do not count against a new upload', async t => {
   const paths = folders(t);
   let calls = 0;
-  const result = await submitFileOnce(fakePage([2]), paths.file, {
-    ...paths, submit: async () => { calls += 1; },
+  const result = await submitFileOnce(fakePage([[8382124]]), paths.file, {
+    ...paths, settleMs: 0, submit: async () => { calls += 1; },
+  });
+  assert.equal(result.state, 'uploaded');
+  assert.equal(calls, 1);
+  assert.equal(fs.readdirSync(paths.uploadedFolder).length, 1);
+});
+
+test('a new error draft is caught even while an old one is still listed', async t => {
+  const paths = folders(t);
+  const result = await submitFileOnce(fakePage([[8382124], [8382200, 8382124]]), paths.file, {
+    ...paths, settleMs: 0, submit: async () => {},
   });
   assert.equal(result.state, 'drafts');
-  assert.equal(calls, 1);
+  assert.equal(result.count, 1);
   assert.equal(fs.existsSync(result.file), true);
-  assert.equal(reviewFiles(paths.reviewFolder).length, 0);
+});
+
+test('drafts that clear while Landstar is still posting the file count as uploaded', async t => {
+  const paths = folders(t);
+  const result = await submitFileOnce(fakePage([[1], [3, 2, 1], [3, 2, 1], [1]]), paths.file, {
+    ...paths, settleMs: 0, submit: async () => {},
+  });
+  assert.equal(result.state, 'uploaded');
+});
+
+test('when Landstar lists too many drafts to compare ids, a higher total still counts', async t => {
+  const paths = folders(t);
+  const result = await submitFileOnce(fakePage([250, 251]), paths.file, {
+    ...paths, settleMs: 0, submit: async () => {},
+  });
+  assert.equal(result.state, 'drafts');
+  assert.equal(result.count, 1);
 });
 
 test('successful submission is reserved first then archived without overwriting', async t => {
@@ -97,7 +126,7 @@ test('timeout preserves the submitted file without blocking later files', async 
 test('new error drafts preserve the file separately without stopping the batch', async t => {
   const paths = folders(t);
   const result = await submitFileOnce(fakePage([0, 3]), paths.file, {
-    ...paths, submit: async () => {},
+    ...paths, settleMs: 0, submit: async () => {},
   });
   assert.equal(result.state, 'drafts');
   assert.equal(result.count, 3);
@@ -113,14 +142,13 @@ test('draft diagnostics save count, page and details without credentials', async
   const paths = folders(t);
   let calls = 0;
   const page = {
-    evaluate: async () => {
+    evaluate: async (_callback, pageSize) => {
       calls += 1;
-      if (calls === 1) return 0;
-      if (calls === 2) return 2;
+      if (pageSize) return calls === 1 ? { count: 0, ids: [] } : { count: 2, ids: ['8', '9'] };
       return { count: 2, truncated: false, pageText: '2 Errors', drafts: [{ batchId: 7, draftId: 8, details: { reason: 'Invalid date' } }] };
     },
   };
-  const result = await submitFileOnce(page, paths.file, { ...paths, submit: async () => {} });
+  const result = await submitFileOnce(page, paths.file, { ...paths, settleMs: 0, submit: async () => {} });
   assert.match(result.message, /Details saved to/);
   const report = JSON.parse(fs.readFileSync(`${result.file}.review.json`, 'utf8'));
   assert.equal(report.observedCount, 2);

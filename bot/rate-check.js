@@ -277,9 +277,17 @@ async function showLoggedIn(context, page, log = console.log) {
   await page.evaluate(drawLoggedInBadge).catch(() => {});
 }
 
-async function openBoard(context, log = console.log) {
+// When the board was fully loaded (and so signed in) this recently, reuse:true skips the reload.
+const BOARD_REUSE_MS = 5 * 60 * 1000;
+const boardLoadedAt = new WeakMap(); // page -> last full board load
+
+async function openBoard(context, log = console.log, { reuse = false } = {}) {
   const page = await getWorkPage(context);
   const onBoard = () => /www\.landstaronline\.com\/Loads/i.test(page.url());
+  if (reuse && onBoard() && Date.now() - (boardLoadedAt.get(page) || 0) < BOARD_REUSE_MS) {
+    setStatus('logged-in', 'Checking the Landstar board');
+    return page;
+  }
   const deadline = Date.now() + 300000;
   log(`${YELLOW}Signing in to Landstar...${RESET}`);
   setStatus('signing-in', 'Signing in to Landstar');
@@ -324,6 +332,7 @@ async function openBoard(context, log = console.log) {
   if (!onBoard()) throw new Error('Could not reach the Landstar load board (login timed out).');
   await page.waitForLoadState('networkidle').catch(() => {});
   await showLoggedIn(context, page, log);
+  boardLoadedAt.set(page, Date.now());
   // On the board = logged in; the TMS light should not keep saying "signing in".
   setStatus('logged-in', 'Checking the Landstar board');
   return page;

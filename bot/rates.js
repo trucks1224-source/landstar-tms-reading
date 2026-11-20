@@ -7,7 +7,7 @@ const { chromium } = require('playwright');
 const { setStatus, readRatesStatus } = require('./status-server');
 const { openBoard, checkFiles } = require('./rate-check');
 const { checkHazmatRates } = require('./hazmat-watch');
-const { pendingRateFiles, prepareRateFile, dedicatedRatesReady } = require('./rate-work');
+const { pendingRateFiles, prepareRateFile, dedicatedRatesReady, nextRateTask } = require('./rate-work');
 const { readBotControl } = require('./local-bot-control');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -53,14 +53,24 @@ async function main() {
           continue;
         }
         const files = pendingRateFiles(sourceFolder);
-        if (hazmatEnabled && Date.now() >= hazmatDueAt) {
-          hazmatDueAt = Date.now() + HAZMAT_INTERVAL_MS;
+        // New exports go first: the board-rate sweep can take 15+ minutes. It still runs if it
+        // has been put off a whole extra interval, so a stuck export cannot hold it off forever.
+        const task = nextRateTask({ files: files.length, hazmatEnabled, hazmatDueAt, intervalMs: HAZMAT_INTERVAL_MS });
+        const hazmatOverdue = task === 'sweep-overdue';
+        if (task === 'sweep' || hazmatOverdue) {
           setStatus('working', 'Checking PARA and RXO board rates (hazmat first)');
           try {
-            await checkHazmatRates(context, { apply: true });
+            const raises = await checkHazmatRates(context, {
+              apply: true,
+              shouldYield: hazmatOverdue ? undefined : () => pendingRateFiles(sourceFolder).length > 0
+            });
+            // Interrupted for new exports: it stays due (same due time, so the overdue limit still
+            // counts) and runs again as soon as they are prepared.
+            if (!raises.yielded) hazmatDueAt = Date.now() + HAZMAT_INTERVAL_MS;
             hazmatError = '';
           } catch (error) {
             if (closed) break;
+            hazmatDueAt = Date.now() + HAZMAT_INTERVAL_MS;
             hazmatError = error.message;
             console.error('Board rate check failed; export preparation will continue:', error.message);
             report('logged-in', 'Export preparation can continue');
@@ -72,7 +82,8 @@ async function main() {
           const result = await prepareRateFile(file, {
             skippedFolder: path.join(sourceFolder, 'landstar-skipped-atz'),
             check: async target => {
-              const board = await openBoard(context);
+              // The board was just loaded for the previous file: no need to reload it per file.
+              const board = await openBoard(context, undefined, { reuse: true });
               return checkFiles(board, [target], { apply: true });
             }
           });

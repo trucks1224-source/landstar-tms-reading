@@ -64,4 +64,13 @@ async function prepareRateFile(file, { check, skippedFolder }) {
   }
 }
 
-module.exports = { pendingRateFiles, prepareRateFile, withExportOwnership, dedicatedRatesReady };
+// What the rate worker does next. Waiting exports come before the board-rate sweep (which
+// can take 15+ minutes), unless the sweep has been put off a whole extra interval.
+function nextRateTask({ files, hazmatEnabled, hazmatDueAt, intervalMs, now = Date.now() }) {
+  const due = hazmatEnabled && now >= hazmatDueAt;
+  if (due && files && now >= hazmatDueAt + intervalMs) return 'sweep-overdue';
+  if (files) return 'export';
+  return due ? 'sweep' : 'idle';
+}
+
+module.exports = { pendingRateFiles, prepareRateFile, withExportOwnership, dedicatedRatesReady, nextRateTask };

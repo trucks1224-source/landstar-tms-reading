@@ -199,3 +199,13 @@ test('migration waits for dedicated posting and a dedicated or stopped helper', 
   assert.equal(dedicatedRatesReady({ ...posting, helper: { state: 'off' } }), true);
   assert.equal(dedicatedRatesReady({ ...posting, helper: { state: 'working', dedicatedRates: true } }), true);
 });
+
+test('waiting exports are prepared before the board-rate sweep, which waits its turn', () => {
+  const { nextRateTask } = require('./rate-work');
+  const base = { hazmatEnabled: true, hazmatDueAt: 1000, intervalMs: 30 * 60 * 1000 };
+  assert.equal(nextRateTask({ ...base, files: 4, now: 2000 }), 'export', 'exports go first even when the sweep is due');
+  assert.equal(nextRateTask({ ...base, files: 0, now: 2000 }), 'sweep');
+  assert.equal(nextRateTask({ ...base, files: 0, now: 500 }), 'idle');
+  assert.equal(nextRateTask({ ...base, files: 1, now: 1000 + 30 * 60 * 1000 }), 'sweep-overdue', 'a stuck export cannot hold the sweep off forever');
+  assert.equal(nextRateTask({ ...base, hazmatEnabled: false, files: 0, now: 2000 }), 'idle');
+});

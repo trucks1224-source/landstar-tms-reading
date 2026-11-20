@@ -87,7 +87,9 @@ async function raisePostingRate(context, loadId, rate, log) {
 }
 
 // One full pass. Returns the raises made (or planned, without apply).
-async function checkHazmatRates(context, { apply = true, log = console.log } = {}) {
+// shouldYield: checked before each posting; when it returns true the pass stops early and the
+// result is marked yielded (raises already saved stay saved; the next pass picks up the rest).
+async function checkHazmatRates(context, { apply = true, log = console.log, shouldYield } = {}) {
   setStatus('logged-in', 'Checking PARA and RXO board rates (hazmat first)');
   const board = await openBoard(context, log);
   const eligible = uploadedSignatures(undefined, undefined, { test: eligibleExport });
@@ -101,6 +103,11 @@ async function checkHazmatRates(context, { apply = true, log = console.log } = {
   const searches = new Map();
   const raises = [];
   for (const posting of mine) {
+    if (shouldYield && shouldYield()) {
+      log(`  PARA/RXO rate check paused for new exports after ${raises.length} raise(s); it starts again once they are prepared.`);
+      raises.yielded = true;
+      return raises;
+    }
     const date = boardPickupDate(posting);
     const key = `${posting.OriginState}|${posting.DestinationState}|${date}`;
     if (!searches.has(key)) searches.set(key, await searchBoard(board, posting.OriginState, posting.DestinationState, date));

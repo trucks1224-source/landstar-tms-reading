@@ -592,6 +592,112 @@ async function findTrackingThread(accessToken, target, orderNumber, myEmail) {
   return pickRxoPaperworkThread(threads, orderNumber, myEmail) || newRxoFallbackThread(orderNumber, myEmail);
 }
 
+// RXO's booking email: "RXO - Rate Confirmation - Load 24780780 - Linden, NJ ... - Tracking Required".
+export function isRxoRateConSubject(subject, orderNumber) {
+  const order = String(orderNumber || '').trim();
+  if (!/^\d{4,}$/.test(order)) return false;
+  const text = String(subject || '');
+  return /\bRXO\b/i.test(text) && new RegExp(`Rate\\s*Confirmation\\s*-\\s*Load\\s*#?\\s*${order}(?!\\d)`, 'i').test(text);
+}
+
+// The RXO rate-confirmation thread for this load (newest first), where its tracking emails go.
+async function findRxoRateConThread(accessToken, orderNumber) {
+  const query = `from:rxo.com subject:"Rate Confirmation" "${orderNumber}" newer_than:45d`;
+  const list = await gmailJson(accessToken, `${GMAIL}/threads?q=${encodeURIComponent(query)}&maxResults=10`);
+  for (const { id } of list.threads || []) {
+    const thread = await gmailJson(accessToken, `${GMAIL}/threads/${encodeURIComponent(id)}?format=metadata${THREAD_HEADERS}`);
+    const messages = (thread.messages || []).sort((a, b) => Number(a.internalDate) - Number(b.internalDate));
+    if (messages.length && isRxoRateConSubject(header(messages[0], 'Subject'), orderNumber)
+      && isRxoAddress(header(messages[0], 'From'))) {
+      return { threadId: thread.id, messages };
+    }
+  }
+  return null;
+}
+
+// ---------- Any customer asking for an update on a booked load ----------
+// Daniel's rule (2026-11-20): when a customer emails about a load number asking for an update,
+// the TMS answers on that thread with the Clarity update. RXO "Update Request" emails keep their
+// own flow (rxoRequests); drivers' BCO threads, Landstar addresses, no-reply senders and the
+// carrier's first rate-confirmation / tender email are not requests.
+const UPDATE_ASK = /\b(?:updates?|status|e\.?t\.?a\.?|where(?:'s|\s+is|\s+are)\s+(?:the\s+|your\s+)?(?:truck|driver|load|shipment|freight|it|we)|current\s+location|location\s+of|check\s*-?\s*calls?|any\s+news|tracking\s+(?:link|update|info))\b/i;
+
+const authoredText = message => getMessageText(message.payload || {})
+  .split(/(?:^|\n)\s*(?:On .+wrote:|From:|-{2,}\s*Original Message|_{5,}|>{1,})/i)[0];
+
+const mentionsOrder = (text, order) => new RegExp(`(?:^|\\D)${order}(?!\\d)`).test(String(text || ''));
+
+export function findCustomerUpdateRequests(threads, myEmail, postingCodes = {}) {
+  const me = String(myEmail || '').toLowerCase();
+  const orders = Object.keys(postingCodes).filter(order => /^\d{4,}$/.test(order));
+  return (threads || []).flatMap(({ id, messages }) => {
+    const list = [...(messages || [])].sort((a, b) => Number(a.internalDate) - Number(b.internalDate));
+    if (!list.length) return [];
+    const latest = list[list.length - 1];
+    const from = header(latest, 'From');
+    const firstSubject = header(list[0], 'Subject');
+    const latestSubject = header(latest, 'Subject') || firstSubject;
+    if (emailOf(from) === me || isLandstarAddress(from) || /^(?:do[._-]?not[._-]?reply|no[._-]?reply)@/i.test(emailOf(from))) return [];
+    if (/BCO Load Detail/i.test(firstSubject) || isRxoUpdateRequest(latest, firstSubject)) return [];
+    // A carrier's own first booking / tender email is not someone asking for an update.
+    if (list.length === 1 && /rate\s*con|tender|load\s*(?:offer|confirmation)|tracking\s+required/i.test(firstSubject)) return [];
+    const authored = authoredText(latest);
+    const order = orders.find(item => mentionsOrder(`${latestSubject} ${firstSubject} ${authored}`, item));
+    if (!order) return [];
+    const freshSubject = list.length === 1 ? latestSubject : '';
+    if (!UPDATE_ASK.test(authored) && !UPDATE_ASK.test(freshSubject)) return [];
+    const replyAll = withLoadIvanCopy(buildReplyAll(list, me), postingCodes[order]);
+    return [{
+      threadId: id, messageId: latest.id, orderNumber: order, subject: firstSubject, from,
+      at: new Date(Number(latest.internalDate)).toISOString(),
+      snippet: String(latest.snippet || '').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').slice(0, 300),
+      ...(/@rlglobal\.com$/i.test(emailOf(from)) ? withParamountCopies(replyAll) : replyAll)
+    }];
+  });
+}
+
+async function handleCustomerRequests({ action, threadId, messageId, orderNumber, text, postingCode, postingCodes = {} }) {
+  const { accessToken, myEmail } = await connect();
+  if (action === 'customerRequests') {
+    const orders = Object.keys(postingCodes).filter(order => /^\d{4,}$/.test(order)).slice(0, 120);
+    const found = [];
+    for (let start = 0; start < orders.length; start += 20) {
+      const numbers = orders.slice(start, start + 20).map(order => `"${order}"`).join(' ');
+      const query = `newer_than:2d -from:me {${numbers}}`;
+      const list = await gmailJson(accessToken, `${GMAIL}/threads?q=${encodeURIComponent(query)}&maxResults=25`);
+      for (const { id } of list.threads || []) {
+        // Cheap look first: only threads whose newest message is someone else's are read in full.
+        const meta = await gmailJson(accessToken, `${GMAIL}/threads/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From`);
+        const newest = [...(meta.messages || [])].sort((a, b) => Number(a.internalDate) - Number(b.internalDate)).pop();
+        if (!newest || emailOf(header(newest, 'From')) === myEmail) continue;
+        found.push(await gmailJson(accessToken, `${GMAIL}/threads/${encodeURIComponent(id)}?format=full`));
+      }
+    }
+    return { status: 200, body: { requests: findCustomerUpdateRequests(found, myEmail, postingCodes) } };
+  }
+  // customerSend: reply-all on that thread, only while the request is still its newest message.
+  const body = String(text || '').trim();
+  if (!/^[0-9a-f]{8,}$/i.test(String(threadId || ''))) return { status: 400, body: { error: 'Missing email thread.' } };
+  if (!body || body.length > 20000) return { status: 400, body: { error: 'The email text is empty or too long.' } };
+  if (!/^\d{4,}$/.test(String(orderNumber || ''))) return { status: 400, body: { error: 'The load number is missing.' } };
+  const thread = await gmailJson(accessToken, `${GMAIL}/threads/${encodeURIComponent(threadId)}?format=full`);
+  const [request] = findCustomerUpdateRequests([thread], myEmail, { [String(orderNumber)]: postingCode });
+  if (!request || request.messageId !== messageId) {
+    return { status: 409, body: { error: 'That update request was already answered (or is no longer the newest email). Not sent.' } };
+  }
+  const messages = (thread.messages || []).sort((a, b) => Number(a.internalDate) - Number(b.internalDate));
+  if (!request.to.length) return { status: 409, body: { error: 'Nobody to reply to on that email thread.' } };
+  const latest = messages[messages.length - 1];
+  const raw = buildReplyMessage({
+    to: request.to, cc: request.cc, subject: header(messages[0], 'Subject'),
+    inReplyTo: header(latest, 'Message-ID'), references: header(latest, 'References'), text: body
+  });
+  const sent = await gmailJson(accessToken, `${GMAIL}/messages/send`, {
+    method: 'POST', body: JSON.stringify({ raw: Buffer.from(raw, 'utf8').toString('base64url'), threadId: thread.id })
+  });
+  return { status: 200, body: { ok: true, id: sent.id, threadId: thread.id, to: request.to, cc: request.cc } };
+}
+
 const MAX_PAPERWORK_BYTES = 20 * 1024 * 1024; // Gmail's limit is 25 MB per email
 
 export function matchesDailyCustomerThread(thread, order, customer) {
@@ -927,6 +1033,7 @@ export async function handleParamountEmail(request = {}) {
   if (action === 'dailyCustomerSend') return handleDailyCustomerUpdate(request);
   if (action === 'prospectSend' || action === 'prospectReplies' || action === 'prospectThreadReply') return handleProspectEmail(request);
   if (action === 'rxoRequests' || action === 'rxoSend' || action === 'rxoForward') return handleRxoEmail(request);
+  if (action === 'customerRequests' || action === 'customerSend') return handleCustomerRequests(request);
   if (action === 'driverThread' || action === 'driverSend') return handleDriverEmail(request);
   if (action === 'driverPaperwork' || action === 'sendPaperwork') return handlePaperwork(request);
   if (action === 'fuelRates') return findFuelEmail();
@@ -935,10 +1042,19 @@ export async function handleParamountEmail(request = {}) {
   const order = String(orderNumber || '').trim();
   if (!/^\d{4,}$/.test(order)) return { status: 400, body: { error: 'A Paramount order number is needed.' } };
   const { accessToken, myEmail } = await connect();
-  const found = await findThread(accessToken, order) || await findParamountThreadByOrder(accessToken, order);
-  if (!found) return { status: 404, body: { error: `No "Rate Confirmation for order: ${order}" email (or Paramount email mentioning ${order}) found in Gmail.` } };
+  // RXO loads: the tracking emails go on RXO's "RXO - Rate Confirmation - Load <order>" email.
+  const rxo = request.broker === 'rxo';
+  const found = rxo
+    ? await findRxoRateConThread(accessToken, order)
+    : await findThread(accessToken, order) || await findParamountThreadByOrder(accessToken, order);
+  if (!found) {
+    return { status: 404, body: { error: rxo
+      ? `No "RXO - Rate Confirmation - Load ${order}" email found in Gmail.`
+      : `No "Rate Confirmation for order: ${order}" email (or Paramount email mentioning ${order}) found in Gmail.` } };
+  }
   const { threadId, messages } = found;
-  const recipients = withParamountCopies(withLoadIvanCopy(buildReplyAll(messages, myEmail), request.postingCode));
+  const replyAll = withLoadIvanCopy(buildReplyAll(messages, myEmail), request.postingCode);
+  const recipients = rxo ? replyAll : withParamountCopies(replyAll);
   const subject = header(messages[0], 'Subject');
   if (action === 'rateConPdf') {
     // The newest PDF attached in the thread (Paramount's "has been Accepted" email: semail.pdf).

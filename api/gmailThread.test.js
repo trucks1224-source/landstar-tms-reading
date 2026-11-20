@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildDriverRecipients, buildReplyAll, buildReplyMessage, findDriverReplies, findDriverStatus, buildDriverStatusEmail, handleParamountEmail, findNewReplies, findOpenRxoRequests, findRxoForwardRequests, parseBcoSubject, parseTruckerToolsSubject, isRateConfirmationSubject, parseRxoRequestSubject, pickRxoPaperworkThread, splitAddresses } from './_lib/gmailThread.js';
+import { findCustomerUpdateRequests, isRxoRateConSubject, buildDriverRecipients, buildReplyAll, buildReplyMessage, findDriverReplies, findDriverStatus, buildDriverStatusEmail, handleParamountEmail, findNewReplies, findOpenRxoRequests, findRxoForwardRequests, parseBcoSubject, parseTruckerToolsSubject, isRateConfirmationSubject, parseRxoRequestSubject, pickRxoPaperworkThread, splitAddresses } from './_lib/gmailThread.js';
 
 const msg = (id, internalDate, headers) => ({
   id, internalDate: String(internalDate), snippet: `text ${id}`,
@@ -737,4 +737,57 @@ test('Paramount updates always copy Litzy and afterhours, without duplicates', a
   const kept = withParamountCopies({ to: ['Litzy Torres <litzy.torres@rlglobal.com>'], cc: ['afterhours@rlglobal.com'] });
   assert.deepEqual(kept.cc, ['afterhours@rlglobal.com']);
   assert.deepEqual(kept.to, ['Litzy Torres <litzy.torres@rlglobal.com>']);
+});
+
+// A message with a plain-text body, the way Gmail returns it.
+const mail = (id, internalDate, headers, body = '') => ({
+  ...msg(id, internalDate, headers),
+  payload: {
+    mimeType: 'text/plain',
+    headers: Object.entries(headers).map(([name, value]) => ({ name, value })),
+    body: { data: Buffer.from(body, 'utf8').toString('base64url') }
+  }
+});
+
+test('RXO rate confirmation thread: exact load number only', () => {
+  const subject = 'RXO - Rate Confirmation - Load 24780780 - Linden, NJ 07036 to Carson, CA 90810 - Tracking Required for Full Load Details';
+  assert.equal(isRxoRateConSubject(subject, '24780780'), true);
+  assert.equal(isRxoRateConSubject(subject, '2478078'), false, 'not a shorter number');
+  assert.equal(isRxoRateConSubject(subject.replace('24780780', '247807801'), '24780780'), false, 'not a longer number');
+  assert.equal(isRxoRateConSubject('Paramount Transportation Logistics Svcs Rate Confirmation for order: 2287775', '2287775'), false);
+});
+
+test('any customer asking for an update on a booked load number gets found, with reply-all recipients', () => {
+  const orders = { 2287775: 'ANQ', 24780780: 'ANQ' };
+  const ask = { id: 'para', messages: [
+    mail('rc', 1, { From: 'heather.locke@rlglobal.com', To: me, Subject: 'Paramount Transportation Logistics Svcs Rate Confirmation for order: 2287775' }, 'Click here to view'),
+    mail('mine', 2, { From: me, To: 'heather.locke@rlglobal.com', Subject: 'Re: Paramount ... 2287775' }, 'Tracking link...'),
+    mail('q', 3, { From: 'Heather Locke <heather.locke@rlglobal.com>', To: me, Cc: 'afterhours@rlglobal.com', Subject: 'Re: Paramount ... 2287775' },
+      'Hi Daniel, can I get an update on this one?\n\nOn Thu, Daniel wrote:\n> old text')
+  ] };
+  const [found] = findCustomerUpdateRequests([ask], me, orders);
+  assert.equal(found.orderNumber, '2287775');
+  assert.equal(found.messageId, 'q');
+  assert.deepEqual(found.to, ['Heather Locke <heather.locke@rlglobal.com>']);
+  assert.ok(found.cc.includes('litzy.torres@rlglobal.com'), 'Paramount copies are kept');
+
+  const freshEmail = { id: 'new', messages: [mail('n', 5, { From: 'ops@somebroker.com', To: me, Subject: 'ETA for load 24780780?' }, 'Where is the truck?')] };
+  assert.equal(findCustomerUpdateRequests([freshEmail], me, orders)[0].orderNumber, '24780780');
+});
+
+test('not update requests: rate cons, thanks, drivers, Landstar, answered threads, unknown loads', () => {
+  const orders = { 24780780: 'ANQ' };
+  const rateCon = { id: 'rc', messages: [mail('a', 1, {
+    From: 'Dashawn.Cook@rxo.com', To: me,
+    Subject: 'RXO - Rate Confirmation - Load 24780780 - Linden, NJ 07036 to Carson, CA 90810 - Tracking Required for Full Load Details'
+  }, 'New rate confirmation ready for you! Status of your booking...')] };
+  const thanks = { id: 't', messages: [rateCon.messages[0], mail('b', 2, { From: 'Dashawn.Cook@rxo.com', To: me, Subject: 'Re: RXO - Rate Confirmation - Load 24780780 - Tracking Required' }, 'Thanks!')] };
+  const driver = { id: 'd', messages: [mail('c', 1, { From: 'driver@gmail.com', To: me, Subject: 'Re: BCO Load Detail for load: - 5059254 24780780' }, 'eta 3pm, any update needed?')] };
+  const landstar = { id: 'l', messages: [mail('e', 1, { From: 'agent@landstarmail.com', To: me, Subject: 'load 24780780 status' }, 'status?')] };
+  const answered = { id: 'x', messages: [mail('f', 1, { From: 'ops@somebroker.com', To: me, Subject: 'load 24780780' }, 'update please'), mail('g', 2, { From: me, To: 'ops@somebroker.com', Subject: 'Re: load 24780780' }, 'Here you go')] };
+  const otherLoad = { id: 'o', messages: [mail('h', 1, { From: 'ops@somebroker.com', To: me, Subject: 'load 99999999' }, 'update please')] };
+  const rxoRequest = { id: 'r', messages: [mail('i', 1, { From: 'chatracking2@rxo.com', To: me, Subject: 'Update Request - Order # 24780780' }, 'Please provide an update')] };
+  for (const thread of [rateCon, thanks, driver, landstar, answered, otherLoad, rxoRequest]) {
+    assert.deepEqual(findCustomerUpdateRequests([thread], me, orders), [], thread.id);
+  }
 });

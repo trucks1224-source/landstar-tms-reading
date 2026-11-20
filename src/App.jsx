@@ -4798,10 +4798,10 @@ function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
 function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip, onDismissReply }) {
   const [open, setOpen] = useState(false);
   if (!drafts.length && !replies.length) return null;
-  const kindLabel = { initial: 'Tracking link + pickup ETA', pickupEta: 'Morning pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', rxo: 'Reply to update request', rxoForward: 'Forward RXO request to Ivan', driverEta: 'Driver ETA update', driverStatus: 'Driver status update', paperwork: 'POD / paperwork (files attached)', location: 'Daily location update', dailyCustomer: 'Daily customer update', checkCall: 'Logged check call update' };
+  const kindLabel = { customerUpdate: 'Reply to customer update request', initial: 'Tracking link + pickup ETA', pickupEta: 'Morning pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', rxo: 'Reply to update request', rxoForward: 'Forward RXO request to Ivan', driverEta: 'Driver ETA update', driverStatus: 'Driver status update', paperwork: 'POD / paperwork (files attached)', location: 'Daily location update', dailyCustomer: 'Daily customer update', checkCall: 'Logged check call update' };
   const approvalsLeft = draft => Math.max(0, PARAMOUNT_AUTO_SEND_AFTER
-    - readApprovedCount(draft.kind === 'paperwork' ? paperworkApprovedKey : draft.kind === 'driver' ? driverApprovedKey : draft.kind === 'rxo' ? rxoApprovedKey : paramountApprovedKey));
-  const who = draft => (draft.kind === 'driver' ? 'Driver' : draft.kind === 'checkCall' ? draft.customer : draft.kind === 'rxoForward' ? 'Ivan' : draft.kind === 'rxo' || draft.target === 'rxo' ? 'RXO' : 'Paramount');
+    - readApprovedCount(draft.kind === 'paperwork' ? paperworkApprovedKey : draft.kind === 'driver' ? driverApprovedKey : ['rxo', 'customerUpdate'].includes(draft.kind) ? rxoApprovedKey : paramountApprovedKey));
+  const who = draft => (draft.kind === 'driver' ? 'Driver' : draft.kind === 'checkCall' ? draft.customer : draft.kind === 'rxoForward' ? 'Ivan' : draft.kind === 'customerUpdate' ? draft.customer : draft.kind === 'rxo' || draft.target === 'rxo' || isRxoAccount(draft.customer) ? 'RXO' : 'Paramount');
   // Paperwork drafts carry no addresses: the send replies on the customer's email thread.
   const recipients = draft => [...(draft.to || []), ...(draft.cc || [])];
   return (
@@ -4843,7 +4843,7 @@ function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip,
           <p className="font-bold text-amber-200">✉️ {who(draft)} email · {draft.kind === 'driver' ? driverEmailLabels[draft.driverKind] : kindLabel[draft.kind]}</p>
           {draft.request && <p className="text-amber-100 mt-0.5">They asked: “{draft.request}”</p>}
           {draft.warning && <p role="alert" className="mt-1 bg-red-600 text-white font-bold rounded px-2 py-1">⚠ {draft.warning} Send only if it is; otherwise click Don&apos;t send.</p>}
-          {draft.kind === 'rxo' && !draft.complete && <p className="text-amber-300 mt-0.5">Fill in the blanks (like the pickup ETA) before sending.</p>}
+          {['rxo', 'customerUpdate'].includes(draft.kind) && !draft.complete && <p className="text-amber-300 mt-0.5">Fill in the blanks (like the pickup ETA) before sending.</p>}
           <p className="text-gray-300">{recipients(draft).length
             ? `Reply all to: ${recipients(draft).join(', ')}`
             : `Sends with the files on the ${who(draft)} email thread`}</p>
@@ -5647,6 +5647,19 @@ function isRxoTrackingCustomer(name) {
   return rxoTrackingCustomers.has(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
 }
 
+// Every RXO account (R X O 2429200 - ATZ, ATZ H, ATZ P, ATZ V, ATZ F, ATZ R...): their booked loads
+// get the same tracking emails as Paramount, on RXO's "RXO - Rate Confirmation - Load <#>" email
+// (Daniel's rule, 2026-11-20).
+function isRxoAccount(name) {
+  return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '').startsWith('RXO2429200');
+}
+
+// Which customer tracking-email thread a booked load uses: Paramount's or RXO's rate confirmation.
+function getTrackingEmailBroker(customer) {
+  if (isParamountTrackingCustomer(customer)) return 'paramount';
+  return isRxoAccount(customer) ? 'rxo' : '';
+}
+
 // Booked RXO loads with a truck, for the bot to find in Clarity.
 function getRxoWatchList(customerOrdersMap, now = Date.now()) {
   return Object.entries(customerOrdersMap || {})
@@ -5754,6 +5767,27 @@ function readRxoHandled() {
 
 function markRxoHandled(messageId) {
   try { localStorage.setItem(rxoHandledKey, JSON.stringify([...readRxoHandled(), messageId].slice(-300))); } catch { /* asked again next time */ }
+}
+
+// Any customer's "update?" email about a booked load (answered or skipped once, by message id).
+const customerHandledKey = 'landstar_customerHandledRequests';
+function readCustomerHandled() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(customerHandledKey));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function markCustomerHandled(messageId) {
+  try { localStorage.setItem(customerHandledKey, JSON.stringify([...readCustomerHandled(), messageId].slice(-500))); } catch { /* asked again next time */ }
+}
+
+// Booked, not yet delivered loads a customer may ask about: { [load number]: posting code }.
+function getCustomerRequestOrders(customerOrdersMap, profilePostingCode = '') {
+  return Object.fromEntries(getBookedLoads(customerOrdersMap)
+    .filter(({ load }) => load.trackingStage !== 'Delivered' && /^\d{4,}$/.test(String(load.id)))
+    .map(({ load }) => [String(load.id), getEmailPostingCode(load, profilePostingCode)]));
 }
 
 function readApprovedCount(key) {
@@ -8458,7 +8492,7 @@ export default function App({ sharing = null } = {}) {
         || !getDueDriverEmails(currentLoad, currentLoad.paramountTracking || {}).includes('dispatch'))) {
         throw new Error('The load, freight bill, or initial confirmation changed. Driver email was not sent.');
       }
-      if (!['initial', 'paperwork'].includes(draft.kind) && !initialDriverConfirmation && (!currentLoad || !hasPickupDayStarted(currentLoad))) {
+      if (!['initial', 'paperwork', 'customerUpdate'].includes(draft.kind) && !initialDriverConfirmation && (!currentLoad || !hasPickupDayStarted(currentLoad))) {
         throw new Error('Tracking emails start on pickup day. This email was not sent.');
       }
       const postingCode = draft.kind === 'rxoForward'
@@ -8532,6 +8566,13 @@ export default function App({ sharing = null } = {}) {
         patchParamountLoad(draft.customer, draft.loadId, load => markDriverEmail(load, draft.driverKind));
       } else if (draft.kind === 'rxoForward') {
         throw new Error('Separate forwards to Ivan are disabled. Use reply-all on the customer request.');
+      } else if (draft.kind === 'customerUpdate') {
+        await callParamountEmail({
+          action: 'customerSend', threadId: draft.threadId, messageId: draft.messageId,
+          orderNumber: draft.loadId, text: draft.text, postingCode
+        });
+        markCustomerHandled(draft.messageId);
+        patchParamountLoad(draft.customer, draft.loadId, load => ({ ...load, notes: [load.notes, 'Customer update request answered'].filter(Boolean).join('\n') }));
       } else if (isRxo) {
         const text = auto && postingCode === 'SNB' && currentLoad
           ? buildRxoUpdateEmail(currentLoad, currentLoad.paramountTracking || {}, { phone: paramountLatest.phone, availableOnly: true }).text
@@ -8543,11 +8584,14 @@ export default function App({ sharing = null } = {}) {
         await callParamountEmail({ action: 'send', orderNumber: draft.loadId, text: draft.text, postingCode });
         patchParamountLoad(draft.customer, draft.loadId, load => ({ ...load, notes: [load.notes, 'Paramount email sent: driver ETA'].filter(Boolean).join('\n') }));
       } else {
-        await callParamountEmail({ action: 'send', orderNumber: draft.loadId, text: draft.text, postingCode });
+        await callParamountEmail({
+          action: 'send', orderNumber: draft.loadId, text: draft.text, postingCode,
+          ...(getTrackingEmailBroker(draft.customer) === 'rxo' ? { broker: 'rxo' } : {})
+        });
         patchParamountLoad(draft.customer, draft.loadId, load => markParamountEmail(load, draft.kind));
       }
       if (!auto) {
-        const key = isPaperwork ? paperworkApprovedKey : isDriver ? driverApprovedKey : isRxo ? rxoApprovedKey : paramountApprovedKey;
+        const key = isPaperwork ? paperworkApprovedKey : isDriver ? driverApprovedKey : isRxo || draft.kind === 'customerUpdate' ? rxoApprovedKey : paramountApprovedKey;
         try { localStorage.setItem(key, String(readApprovedCount(key) + 1)); } catch { /* counts again next time */ }
       }
       setParamountDrafts(current => current.filter(item => item.id !== draft.id));
@@ -8562,6 +8606,7 @@ export default function App({ sharing = null } = {}) {
 
   const skipParamountDraft = draft => {
     if (draft.kind === 'rxo') markRxoHandled(draft.messageId);
+    else if (draft.kind === 'customerUpdate') markCustomerHandled(draft.messageId);
     else if (draft.kind === 'checkCall') patchParamountLoad(draft.customer, draft.loadId, load => ({
       ...load, checkCalls: (load.checkCalls || []).map(call => call.at === draft.checkCallAt
         ? { ...call, customerEmailPending: false, customerEmailSkipped: true } : call)
@@ -8648,7 +8693,10 @@ export default function App({ sharing = null } = {}) {
       if (paramountBusy.has(id)) return;
       paramountBusy.add(id);
       try {
-        const thread = await callParamountEmail({ action: 'thread', orderNumber: String(load.id) });
+        const thread = await callParamountEmail({
+          action: 'thread', orderNumber: String(load.id),
+          ...(getTrackingEmailBroker(customer) === 'rxo' ? { broker: 'rxo', postingCode: getEmailPostingCode(load, paramountLatest.postingCode) } : {})
+        });
         if (cancelled) return;
         const text = buildParamountEmail(kind, load, info, { greetingName: greetingNameFrom(thread.to?.[0]), phone: paramountLatest.phone });
         // Loaded: automatic, except a short stop at the shipper, which Daniel confirms first.
@@ -8675,7 +8723,7 @@ export default function App({ sharing = null } = {}) {
       if (JSON.stringify(before) !== JSON.stringify(after) || updated.trackingStage !== load.trackingStage) {
         patchParamountLoad(info.customer, info.loadId, current => applyParamountTrackingInfo(current, info));
       }
-      if (!isParamountTrackingCustomer(info.customer)) return; // RXO: kept for update-request replies
+      if (!getTrackingEmailBroker(info.customer)) return; // Paramount and RXO send tracking emails
       pendingTrackingEmails.set(`${info.customer}|${info.loadId}`, info);
       if (!emailWorker?.isOwner()) return;
       // MercuryGate: once the freight bill is known (and again after pickup for the PDF).
@@ -8790,6 +8838,46 @@ export default function App({ sharing = null } = {}) {
           await sendParamountDraft(draft, { auto: true });
         } else {
           setParamountDrafts(current => (current.some(item => item.id === id) ? current : [...current, draft]));
+        }
+      }
+    };
+    // Any customer emailing about a booked load number asking for an update gets the Clarity
+    // update on that thread (Daniel's rule, 2026-11-20). Sent automatically once the RXO update
+    // replies have been approved 3 times and nothing in the update is blank; else it waits as a draft.
+    const checkCustomerRequests = async () => {
+      if (!canStartBotHere()) return;
+      const postingCodes = getCustomerRequestOrders(paramountLatest.map, paramountLatest.postingCode);
+      if (!Object.keys(postingCodes).length) return;
+      let requests = [];
+      try {
+        requests = (await callParamountEmail({ action: 'customerRequests', postingCodes })).requests || [];
+      } catch (error) {
+        emailIssue('Could not check customer update requests', error);
+        return;
+      }
+      const handled = new Set(readCustomerHandled());
+      for (const request of requests) {
+        const id = `customer|${request.messageId}`;
+        if (cancelled || handled.has(request.messageId) || paramountBusy.has(id)) continue;
+        const match = getBookedLoads(paramountLatest.map).find(({ load }) => String(load.id) === request.orderNumber);
+        if (!match) continue;
+        paramountBusy.add(id);
+        const snb = getEmailPostingCode(match.load, paramountLatest.postingCode) === 'SNB';
+        const { text, complete } = buildRxoUpdateEmail(match.load, match.load.paramountTracking || {}, {
+          phone: paramountLatest.phone, availableOnly: snb
+        });
+        const draft = {
+          id, kind: 'customerUpdate', customer: match.customer, loadId: String(match.load.id), threadId: request.threadId,
+          messageId: request.messageId, request: request.snippet, text, complete, to: request.to || [], cc: request.cc || []
+        };
+        try {
+          if (complete && hasPickupDayStarted(match.load) && readApprovedCount(rxoApprovedKey) >= PARAMOUNT_AUTO_SEND_AFTER) {
+            await sendParamountDraft(draft, { auto: true });
+          } else {
+            setParamountDrafts(current => (current.some(item => item.id === id) ? current : [...current, draft]));
+          }
+        } catch (error) {
+          emailIssue(`Could not answer the update request for load ${match.load.id}`, error);
         }
       }
     };
@@ -9109,6 +9197,7 @@ export default function App({ sharing = null } = {}) {
         tasks: [
           { id: 'driver-replies', label: 'Checking driver replies', delay: 15000, every: 120000, run: checkDriverReplies },
           { id: 'rxo-requests', label: 'Checking RXO broker requests', delay: 20000, every: 120000, run: checkRxoRequests },
+          { id: 'customer-requests', label: 'Checking customer update requests', delay: 30000, every: 180000, run: checkCustomerRequests },
           { id: 'tracking-feed', label: 'Updating tracking watch list', every: 60000, run: async () => { await pushWatchList(); queueMercuryGateJobs(); } },
           { id: 'tracking-emails', label: 'Preparing tracking updates', delay: 15000, every: 120000, run: checkTrackingEmails },
           { id: 'check-call-emails', label: 'Sending logged check calls to customers', delay: 5000, every: 15000, run: checkCallEmails },

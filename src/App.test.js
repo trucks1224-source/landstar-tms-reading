@@ -62,7 +62,7 @@ export {
   getStatusTag, bookLoad, addBookingEntry, removeBookingEntry, summarizeBookings, getBookingWeekStart, buildDriverDirectory, findKnownDriver, getPostingMaintenanceLoads, getPostingRefreshDetails,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getPaperworkSince, checkBeforePodRequest, isDailyCustomerUpdateDue, getLoadedTimeWarning, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, copyLoadDetails, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
+  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, copyLoadDetails, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, getTrackingEmailBroker, getCustomerRequestOrders, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer, getEquipmentListCategory
 };`, { loader: 'jsx', format: 'cjs' });
 // Test loads are dated October 2026, so "today" inside the TMS code is 10/1/2026:
@@ -4162,4 +4162,21 @@ test('booking log: weekly totals per customer, monthly totals, and line haul sum
   assert.equal(policy.summarizeBookings(staleReAdd).weeks[0].loads, 2, 'same bookedAt: stays removed');
   const rebooked = policy.addBookingEntry(slimmed, 'R X O 2429200 - ATZ V', { id: '3', rateInput: '3000', bookedAt: '2026-11-13T15:00:00' });
   assert.equal(policy.summarizeBookings(rebooked).weeks[0].loads, 3, 'new booking date: back in the totals');
+});
+
+test('tracking emails go on Paramount\'s or RXO\'s rate confirmation; every RXO account counts', () => {
+  assert.equal(policy.getTrackingEmailBroker('Para 1522166 - ATZ H'), 'paramount');
+  for (const account of ['R X O 2429200 - ATZ', 'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P', 'R X O 2429200 - ATZ V', 'R X O 2429200 - ATZ F', 'R X O 2429200 - ATZ R']) {
+    assert.equal(policy.getTrackingEmailBroker(account), 'rxo', account);
+  }
+  assert.equal(policy.getTrackingEmailBroker('Nolan 965974 - ATZ H'), '');
+});
+
+test('customer update requests are matched only against booked, undelivered loads', () => {
+  const booked = { ...load, status: 'BOOKED', truck: '581467' };
+  const orders = policy.getCustomerRequestOrders({
+    'R X O 2429200 - ATZ H': [{ ...booked, id: '24780780' }, { ...booked, id: '24700833', trackingStage: 'Delivered' }, { ...booked, id: '24000001', status: 'OPEN' }],
+    'Para 1522166 - ATZ': [{ ...booked, id: '2287775', postingCode: 'SNB' }]
+  }, 'ANQ');
+  assert.deepEqual({ ...orders }, { 24780780: 'ANQ', 2287775: 'SNB' });
 });

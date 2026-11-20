@@ -95,8 +95,8 @@ when it is no longer available. Removing capacity does not automatically repost 
 Booked Loads are ordered by pickup date and time, earliest first, with missing
 pickup schedules last. Completed loads remain in their separate section; search
 opens the global load list across all customers and statuses, including completed
-booked loads. Selected pickup date, pickup state and delivery state filters narrow
-search results; status, rate and mileage filters are ignored during search.
+booked loads. The pickup-date filter narrows search results; status, rate,
+mileage and state filters are ignored during search.
 Clearing search restores the existing filters. Bulk export remains
 limited to the selected customer.
 In OFFER, Select All and individual checkboxes span all visible customers.
@@ -227,7 +227,9 @@ Exports and reimports of the same load/day preserve OFFER status; use **OPEN**
 to move an offer back manually.
 
 Booking automation is **Assign Capacity only**. After booking in the TMS, the bot
-processes the assignment queue under an exclusive worker lock. Before clicking
+processes the assignment queue under an exclusive worker lock. When a team truck
+has multiple BCOs with the exact same tractor number, it selects the first match;
+Landstar qualification and warning checks still apply. Before clicking
 Assign it permanently records the posting number in `assign-queue.json.attempts/`.
 A repeated attempt for that posting or customer order is blocked, even after a
 timeout, repost, truck change, or restart.
@@ -312,8 +314,8 @@ board check. The legacy one-time
 ## Dedicated removal bot
 
 The TMS search box searches all customers and statuses, including booked and
-archived loads. While text search is active, date, state, rate and mileage filters
-are ignored; clearing the search restores the normal filters.
+archived loads. While text search is active, the pickup date filter applies; state,
+rate and mileage filters are ignored. Clearing the search restores the normal filters.
 
 Booking a load queues Landstar Assign Capacity using its saved export details.
 If those details are missing, the TMS reconstructs the export match from both ZIPs,

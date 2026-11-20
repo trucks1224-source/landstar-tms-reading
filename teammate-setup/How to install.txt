@@ -1,0 +1,29 @@
+Landstar Bot - install on your computer (Windows)
+=================================================
+
+What it does: watches your Downloads folder for loads you export from the TMS
+(Landstar_Bulk_... files), checks the rates on the Landstar board, and posts
+them to Landstar under YOUR login and YOUR posting code. It never touches
+anyone else's postings.
+
+Install (about 5 minutes, once):
+1. Right-click the zip file -> Extract All... -> Extract.
+2. Open the extracted folder and double-click Setup.
+   - If Windows says "Windows protected your PC", click More info -> Run anyway.
+   - If it asks to install Node.js, say Yes.
+3. When asked, type YOUR Landstar posting code and press Enter.
+   Use the same code as in the TMS website (My Settings), so the loads you
+   export are posted under it.
+4. Answer Y if you want the bot to start every time you log in.
+
+Use it:
+1. Double-click "Start Landstar Bot" on your desktop.
+2. A browser window opens: sign in to Landstar there (only the first time).
+3. Export loads from the TMS as usual. The bot posts them within a minute or
+   two and moves each file to Downloads\landstar-uploaded.
+
+Leave the black bot window open while you work. To turn the bot off, close
+the bot's browser window.
+
+Updating: when you get a new zip, extract it and run Setup again. Your
+posting code and Landstar sign-in are kept.

@@ -59,7 +59,7 @@ export {
   getFuelSurchargeRegion, getFuelSurchargeRate, normalizeFuelSurchargeRates, parseFuelSurchargeEmail,
   writeSyncedKey, initSyncGuardFromStorage, readDataVersions, getChangedSyncedKeys,
   isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted, classifyChangedSyncedKeys,
-  getStatusTag, bookLoad, buildDriverDirectory, findKnownDriver, getPostingMaintenanceLoads, getPostingRefreshDetails,
+  getStatusTag, bookLoad, addBookingEntry, removeBookingEntry, summarizeBookings, getBookingWeekStart, buildDriverDirectory, findKnownDriver, getPostingMaintenanceLoads, getPostingRefreshDetails,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getPaperworkSince, checkBeforePodRequest, isDailyCustomerUpdateDue, getLoadedTimeWarning, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, copyLoadDetails, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
@@ -109,6 +109,30 @@ test('CH Gmail imports BIN, including zero, without using saved lane rates or nu
   assert.equal(policy.isCh593772Customer('CH 593772'), true);
   assert.equal(policy.isCh593772Customer('CH 5937720 - ATZ H'), false);
   assert.equal(policy.isCh593772Customer(customers[0]), false);
+});
+
+test('CH Gmail reads the new Pickup Hours, Delivery Hours, and Delivery Date columns', () => {
+  const email = `11/18/2026 - Wed
+Load #\tOrigin\tOST\tDestination\tDST\tPickup Hours\tWeight\tBin\tBook\tInfo\tDelivery Hours\tDelivery Date
+574711131\tGreenfield\tIN\tSALINAS\tCA\tA 14:30 - 14:30\t35,000 lbs\t5430\tOPEN\t\tA 13:00 - 13:00\t11/23/2026
+575543798\tKenosha\tWI\tStone Mountain\tGA\tO 10:00 - 10:00\t43,000 lbs\t2950\tOPEN\t\t00:00 - 23:59\t11/20/2026`;
+  const orders = policy.parseGmailLoadEmail(email, chCustomer, {});
+  assert.equal(orders.length, 2);
+  assert.equal(orders[0].pickupTime, '11/18/2026 1430 - 1430');
+  assert.equal(orders[0].deliveryTime, '11/23/2026 1300 - 1300');
+  assert.equal(orders[0].delDate, 'DFL: 11/23/2026');
+  assert.equal(orders[0].weight, '35,000 lbs');
+  assert.equal(orders[0].rateInput, '5430');
+  assert.equal(orders[0].rateSource, 'customer-bin');
+  assert.equal(orders[0].notes, '');
+  assert.equal(orders[1].pickupTime, '11/18/2026 1000 - 1000');
+  assert.equal(orders[1].deliveryTime, '11/20/2026 0000 - 2359');
+  // The old format without the new columns still imports with default hours and the reminder note.
+  const [oldFormat] = policy.parseGmailLoadEmail(chEmail('2770'), chCustomer, {});
+  assert.equal(oldFormat.pickupTime, '10/01/2026 0800 - 1600');
+  assert.equal(oldFormat.deliveryTime, '');
+  assert.equal(oldFormat.delDate, 'DFL: Upcoming');
+  assert.match(oldFormat.notes, /Delivery date\/time not included/);
 });
 
 test('CH HTML preserves blank BIN cells and pickup headings, and overrides the plain MIME alternative', async () => {
@@ -528,7 +552,9 @@ test('schedule picker parts round-trip pickup and delivery ranges', () => {
   assert.equal(policy.formatSchedulePickerParts({ date: '2026-11-01' }, null), '11/1/2026 0800');
   const sameDay = policy.parseSchedulePickerParts('10/29/2026 0800 - 1600');
   assert.deepEqual({ ...sameDay.from }, { date: '2026-10-29', time: '08:00' });
-  assert.equal(sameDay.to, null);
+  assert.deepEqual({ ...sameDay.to }, { date: '2026-10-29', time: '16:00' });
+  const colonEnd = policy.parseSchedulePickerParts('11/18/2026 0700 - 15:00');
+  assert.deepEqual({ ...colonEnd.to }, { date: '2026-11-18', time: '15:00' });
   const empty = policy.parseSchedulePickerParts('');
   assert.equal(empty.from, null);
   assert.equal(empty.to, null);
@@ -2226,7 +2252,7 @@ test('assignment fields save with the load and survive reload and re-import', ()
   assert.equal(replaced.pickupTime, load.pickupTime);
 });
 
-test('global search includes all statuses and customers regardless of the pickup calendar', () => {
+test('global search applies the pickup calendar across all statuses and customers', () => {
   const statuses = ['OPEN', 'ON HOLD', 'OFFER', 'ENT', 'BOOKED'];
   const app = createAppHarness(customers[0], []);
   app.states[2][customers[1]] = statuses.map((status, index) => ({
@@ -2246,7 +2272,7 @@ test('global search includes all statuses and customers regardless of the pickup
     if (node.props?.className?.includes('tms-load-card')) cards.push(node);
     return false;
   });
-  assert.equal(cards.length, 5, 'a selected pickup date cannot hide global search matches');
+  assert.equal(cards.length, 0, 'a different pickup date hides search matches');
   app.find(node => node.props?.id === 'pickup-date-filter').props.onChange({ target: { value: '2026-11-20' } });
   app.render();
   const matching = [];
@@ -2255,6 +2281,14 @@ test('global search includes all statuses and customers regardless of the pickup
     return false;
   });
   assert.equal(matching.length, 5, 'includes completed booked loads, offers, holds and exported loads on the selected day');
+  app.find(node => node.props?.['aria-label'] === 'Clear pickup date filter').props.onClick();
+  app.render();
+  const cleared = [];
+  app.find(node => {
+    if (node.props?.className?.includes('tms-load-card')) cleared.push(node);
+    return false;
+  });
+  assert.equal(cleared.length, 5, 'clearing the date restores search results');
 });
 
 test('pickup and delivery state filters cannot hide global search across customers and statuses', () => {
@@ -2973,6 +3007,19 @@ test('a load reopened after removing capacity survives imports and posting clean
   assert.equal(policy.removeExpiredExportedLoads({ c: [important] }, Date.parse('2026-11-12')).c.length, 1);
   assert.deepEqual(policy.findDroppedPostings('Other', [other], [important]), []);
   assert.deepEqual(policy.findDroppedPostings('Other', [other], [{ ...important, needsCapacity: '', status: 'BOOKED' }]), []);
+  // Safety net: a load being worked (driver/truck typed, offer out, or tracking under way)
+  // is never deleted by an import and its posting stays on Landstar.
+  const working = { ...important, needsCapacity: '', status: 'OPEN', manualEntry: false };
+  for (const worked of [{ ...working, driver: 'Jamal Cooper' }, { ...working, truck: '578045' },
+    { ...working, status: 'OFFER' }, { ...working, paramountTracking: { freightBill: '5036956' } },
+    { ...working, trackingStage: 'In Transit' }]) {
+    assert.deepEqual(policy.findDroppedPostings('Other', [other], [worked]), []);
+    const result = policy.replaceImportedCustomerLoads('Para 1522166 - ATZ H', [other], [worked]);
+    assert.ok(result.loads.find(order => order.id === worked.id), 'worked load kept on import');
+    assert.deepEqual(result.droppedPostings, []);
+  }
+  const idle = { ...working, driver: '', truck: '' };
+  assert.equal(policy.findDroppedPostings('Other', [other], [idle]).length, 1, 'idle loads still drop normally');
 });
 
 test('a booked load shows Remove capacity, keeps its rate editable, and goes back to OPEN after confirming', () => {
@@ -3588,6 +3635,13 @@ test('booking sends the truck and the exported posting to the bot for Landstar A
     pickupTime: '11/06/2026 1400', deliveryTime: '11/09/2026 1000'
   });
   assert.deepEqual({ ...singleTime.item.posting }, posting, 'single-time windows match the export widening rules');
+  // Load 24780780 (Linden, NJ): the ZIP was saved as 7036, Landstar has 07036.
+  const lostZero = policy.buildAssignRequest('RXO', {
+    ...booked, landstarPosting: undefined, origZip: '7032', destZip: '32207', weight: '38,000',
+    pickupTime: '11/06/2026 1400 - 1500', deliveryTime: '11/09/2026 1000 - 1100'
+  });
+  assert.equal(lostZero.item.posting.originZip, '07032', 'leading zero restored so the board posting matches');
+  assert.deepEqual({ ...lostZero.item.posting }, posting);
   assert.deepEqual({ ...policy.applyAssignResult(booked, { ok: true, posting }).landstarPosting }, posting);
 
   const ok = policy.applyAssignResult({ ...booked, notes: 'Call before' }, { ok: true, truck: '420371', landstarLoadId: '187371843', message: 'Assigned 420371 - LDWY Rocway Xpress LLC to Landstar load #187371843', at: 1 });
@@ -3602,7 +3656,8 @@ test('Paramount tracking emails: both Para accounts, the right emails at the rig
   const booked = { ...load, id: '2283600', status: 'BOOKED', truck: '420371', driver: 'DAVID CARTER', origCity: 'KEARNY', origSt: 'NJ', destCity: 'JACKSONVILLE', destSt: 'FL', bookedAt: '2026-11-06T10:00:00Z', notes: '' };
   const watch = policy.getParamountWatchList({
     'Para 1522166 - ATZ': [booked, { ...booked, id: '1', status: 'OPEN' }, { ...booked, id: '2', truck: '' }],
-    'Para 1522166 - ATZ H': [{ ...booked, id: '3' }, { ...booked, id: '4', trackingStage: 'Delivered' }, { ...booked, id: '5', bookedAt: '2026-10-20T10:00:00Z' }],
+    'Para 1522166 - ATZ H': [{ ...booked, id: '3' }, { ...booked, id: '4', trackingStage: 'Delivered' },
+      { ...booked, id: '5', bookedAt: '2026-10-20T10:00:00Z', pickupTime: '10/21/2026 0800', deliveryTime: '10/22/2026 0800' }],
     'R X O 2429200 - ATZ': [{ ...booked, id: '6' }]
   }, now);
   assert.deepEqual([...watch.map(item => item.key)], ['Para 1522166 - ATZ|2283600', 'Para 1522166 - ATZ H|3']);
@@ -3681,6 +3736,23 @@ test('RXO update requests: reply with status, location, typed pickup ETA and tra
   assert.doesNotMatch(email.text, /Pickup ETA/);
   assert.equal(email.complete, true);
   assert.equal(policy.buildRxoUpdateEmail(booked, {}).complete, false, 'not found in Clarity yet');
+});
+
+test('booked loads stay tracked until delivered, however early they were booked', () => {
+  const now = Date.parse('2026-11-20T14:00:00Z');
+  const booked = { ...load, status: 'BOOKED', truck: '428996', bookedAt: '2026-11-11T14:00:00Z' };
+  const map = { 'R X O 2429200 - ATZ V': [
+    { ...booked, id: 'ahead', bookedAt: '2026-11-13T21:51:00Z', pickupTime: '11/21/2026 0900', deliveryTime: '11/23/2026 1100' },
+    { ...booked, id: 'rolling', pickupTime: '11/13/2026 0800 - 1600', deliveryTime: '11/16/2026 0001 - 2359',
+      paramountTracking: { freightBill: '4842901', leftShipperAt: '2026-11-13T16:13:00Z' } },
+    { ...booked, id: 'stale', bookedAt: '2026-10-20T10:00:00Z', pickupTime: '10/21/2026 0800', deliveryTime: '10/23/2026 0800' },
+    { ...booked, id: 'delivered', trackingStage: 'Delivered', pickupTime: '11/18/2026 0800', deliveryTime: '11/19/2026 0800' }
+  ] };
+  const watch = policy.getRxoWatchList(map, now);
+  assert.deepEqual([...watch.map(item => item.loadId)], ['ahead', 'rolling'], 'booked 7 days ahead and 9 days after booking still watched');
+  assert.equal(watch[1].freightBill, '4842901', 'the known freight bill goes to the bot');
+  assert.equal('freightBill' in watch[0], false);
+  assert.deepEqual([...policy.getTrackingWatchList(map, now).map(item => item.loadId)], ['ahead', 'rolling']);
 });
 
 test('RXO ATZ V booked loads participate in tracking, exact-order replies and recipient routing', () => {
@@ -3922,6 +3994,33 @@ test('rolling loads get one customer location email a day from 9 AM', () => {
   assert.match(text, /Live tracking: https:\/\/t/);
 });
 
+test('morning pickup ETA email on pickup day; a late loaded email does not block the daily update', () => {
+  const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
+  const base = { ...load, status: 'BOOKED', id: '2281075', pickupTime: '11/07/2026 1400 - 2345', pickupEta: '11/07/2026 13:30' };
+  const info = { ok: true, trackingLink: 'https://t', arrivedShipperAt: null, leftShipperAt: null };
+  const withEmails = emails => ({ ...base, paramountTracking: { emails } });
+  const due = (l, i, now) => [...policy.getDueParamountEmails(l, { ...i, checkedAt: new Date(now).toISOString() }, now)];
+  assert.deepEqual(due(withEmails({ initial: { at: 'x' } }), info, at(7, 6, 59)), [], 'before 7 AM');
+  assert.deepEqual(due(withEmails({ initial: { at: 'x' } }), info, at(7, 7)), ['pickupEta']);
+  assert.deepEqual(due(withEmails({ initial: { at: 'x' } }), { ...info, arrivedShipperAt: 'x' }, at(7, 7)), ['arrived'], 'already at the shipper: no morning ETA');
+  assert.deepEqual(due(withEmails({ initial: { at: 'x' }, pickupEta: { at: 'x' } }), info, at(7, 8)), [], 'once only');
+  assert.deepEqual(due(withEmails({ initial: { at: 'x' } }), info, at(6, 9)), [], 'not before pickup day');
+  const text = policy.buildParamountEmail('pickupEta', base, { trackingLink: 'https://t' }, { greetingName: 'Heather' });
+  assert.match(text, /Good morning! Quick update on order 2281075: .* is picking up in Chicago, IL today, with an estimated arrival at the shipper of 11\/07\/2026 13:30\./);
+  assert.match(text, /Live tracking: https:\/\/t/);
+  // The truck left on the 7th, but the loaded email only went out on the 8th (bots were
+  // off): the 8th still gets its daily location update.
+  const lateInfo = { ok: true, trackingLink: 'https://t', leftShipperAt: new Date(at(7, 13)).toISOString(), lastLocation: 'Ashland, VA', deliveryCity: 'Knightdale, NC' };
+  const lateSent = withEmails({ initial: { at: 'x' }, departed: { at: new Date(at(8, 8)).toISOString() } });
+  assert.deepEqual(due(lateSent, lateInfo, at(8, 9)), ['location']);
+  // The initial email includes the check-in and loaded times when the truck already left.
+  const lateFirst = policy.buildParamountEmail('initial', base, {
+    arrivedShipperAt: new Date(at(7, 12)).toISOString(), leftShipperAt: new Date(at(7, 13)).toISOString(),
+    pickupTimezone: 'America/Chicago', pickupCity: 'La Salle, IL', deliveryCity: 'Ontario, CA'
+  }, { greetingName: 'Heather' });
+  assert.match(lateFirst, /has already picked up in La Salle, IL \(checked in 11\/07 at \d{2}:\d{2} CST, loaded and left 11\/07 at \d{2}:\d{2} CST\) and is on the way to Ontario, CA\./);
+});
+
 test('daily customer updates require booked in-transit loads and fresh tracking, not initial email approval', () => {
   const now = new Date(2026, 10, 11, 9).getTime();
   const booked = { ...load, status: 'BOOKED', trackingStage: 'In Transit' };
@@ -4010,4 +4109,48 @@ test('Trucker Tools: the "tracking started" email marks the load, reminders unti
   assert.match(started.notes, /Trucker Tools tracking started/);
   assert.match(policy.getTruckerToolsStatus(policy.markTrackingStarted(dispatched, iso(at(7, 9)), { byHand: true }), para, at(7, 9)).text, /marked by hand/);
   assert.equal(policy.getTruckerToolsStatus(dispatched, 'R X O 2429200 - ATZ'), null);
+});
+
+test('booking log: weekly totals per customer, monthly totals, and line haul sums', () => {
+  let log = [];
+  log = policy.addBookingEntry(log, 'Para 1522166 - ATZ H', { id: '1', rateInput: '$2,500', bookedAt: '2026-11-09T10:00:00', origCity: 'Memphis', origSt: 'TN' });
+  log = policy.addBookingEntry(log, 'Para 1522166 - ATZ H', { id: '2', rateInput: '1500', bookedAt: '2026-11-11T10:00:00' });
+  log = policy.addBookingEntry(log, 'R X O 2429200 - ATZ V', { id: '3', rateInput: '3000', bookedAt: '2026-11-13T10:00:00' });
+  log = policy.addBookingEntry(log, 'R X O 2429200 - ATZ V', { id: '4', rateInput: '1000', bookedAt: '2026-10-28T10:00:00' });
+  // Re-adding the same load doesn't duplicate; a rate change refreshes the amount.
+  log = policy.addBookingEntry(log, 'Para 1522166 - ATZ H', { id: '1', rateInput: '2500', bookedAt: '2026-11-09T10:00:00' });
+  assert.equal(log.length, 4);
+  log = policy.addBookingEntry(log, 'Para 1522166 - ATZ H', { id: '1', rateInput: '2600', bookedAt: '2026-11-09T10:00:00' });
+  assert.equal(log.length, 4);
+  const { weeks, months } = policy.summarizeBookings(log);
+  assert.equal(weeks.length, 2);
+  assert.equal(weeks[0].loads, 3, 'week of 11/09');
+  assert.equal(weeks[0].lineHaul, 2600 + 1500 + 3000);
+  assert.deepEqual(Array.from(weeks[0].customers, c => [c.customer, c.loads, c.lineHaul]),
+    [['Para 1522166', 2, 4100], ['R X O 2429200', 1, 3000]]);
+  assert.equal(weeks[1].loads, 1, 'week of 10/26');
+  assert.deepEqual(Array.from(months, m => [m.month, m.loads, m.lineHaul]), [['2026-11', 3, 7100], ['2026-10', 1, 1000]]);
+  // Monday-start weeks: Sunday belongs to the week that started the Monday before.
+  assert.equal(policy.getBookingWeekStart('2026-11-15T23:00:00'), new Date(2026, 10, 9).getTime());
+  assert.equal(policy.getBookingWeekStart('2026-11-09T00:30:00'), new Date(2026, 10, 9).getTime());
+  // Potential pay: 5% of the line haul, 11% for straight trucks (D-ST / D-LG / D-RF).
+  assert.equal(policy.summarizeBookings(log).weeks[0].potential, 7100 * 0.05);
+  // Total booked = line haul + miles × the pickup region's fuel surcharge rate.
+  const withMiles = policy.addBookingEntry([], 'Para 1522166 - ATZ H', { id: '8', rateInput: '2000', miles: '1,000', origSt: 'TN', bookedAt: '2026-11-10T10:00:00' });
+  const fueled = policy.summarizeBookings(withMiles, { east: '0.86', midwest: '0.88', west: '1.03', newEngland: '0.89' });
+  assert.equal(fueled.weeks[0].total, 2000 + 1000 * 0.88);
+  assert.equal(fueled.months[0].total, 2000 + 880);
+  assert.equal(policy.summarizeBookings(withMiles).weeks[0].total, 2000, 'no fuel rates: total falls back to line haul');
+  const withStraight = policy.addBookingEntry(log, 'Expedite Co', { id: '9', rateInput: '1000', eCode: 'D-ST', bookedAt: '2026-11-12T10:00:00' });
+  const straightWeek = policy.summarizeBookings(withStraight).weeks[0];
+  assert.equal(straightWeek.potential, 7100 * 0.05 + 110);
+  assert.equal(straightWeek.customers.find(c => c.customer === 'Expedite Co').potential, 110);
+  // Removing capacity takes the booking off the report; a stale synced load list cannot
+  // put it back, but booking the load again (fresh bookedAt) does.
+  const slimmed = policy.removeBookingEntry(log, 'R X O 2429200 - ATZ V', '3');
+  assert.equal(policy.summarizeBookings(slimmed).weeks[0].loads, 2);
+  const staleReAdd = policy.addBookingEntry(slimmed, 'R X O 2429200 - ATZ V', { id: '3', rateInput: '3000', bookedAt: '2026-11-13T10:00:00' });
+  assert.equal(policy.summarizeBookings(staleReAdd).weeks[0].loads, 2, 'same bookedAt: stays removed');
+  const rebooked = policy.addBookingEntry(slimmed, 'R X O 2429200 - ATZ V', { id: '3', rateInput: '3000', bookedAt: '2026-11-13T15:00:00' });
+  assert.equal(policy.summarizeBookings(rebooked).weeks[0].loads, 3, 'new booking date: back in the totals');
 });

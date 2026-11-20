@@ -8,6 +8,7 @@ export const syncedKeys = [
   'landstar_rateHistory',
   'landstar_exportedLoads',
   'landstar_dailyCheckins',
+  'landstar_bookingLog',
   'landstar_profile',
   'landstar_dataVersion'
 ];

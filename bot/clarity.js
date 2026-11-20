@@ -157,7 +157,17 @@ async function checkTracking(context, watchList, { log = console.log, candidateB
       const match = matchClarityLoad(rows, watched);
       let freightBill = match ? String(match.orderId) : '';
       let opened = null;
-      if (!match) {
+      if (!match && watched.freightBill) {
+        // Found before but gone from the list (Clarity drops loads near or after delivery):
+        // open that freight bill directly, as long as it still carries this truck.
+        const result = await openFreightBill(watched.freightBill);
+        const info = openedBills.get(String(watched.freightBill));
+        if (result.detail && info && (!info.tractors.length || info.tractors.includes(digits(watched.truck)))) {
+          freightBill = String(watched.freightBill);
+          opened = result;
+        }
+      }
+      if (!freightBill) {
         // Not in the list: try the freight bills Daniel just dispatched (BCO Load Detail emails).
         for (const bill of candidateBills.map(String).filter(item => /^\d{5,}$/.test(item) && !listed.has(item))) {
           const known = openedBills.get(bill);

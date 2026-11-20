@@ -285,7 +285,7 @@ test('status updates validate the driver source, reply-all and do not resend a G
     limited = false;
     t.mock.method(Date, 'now', () => clock + 121000);
     assert.equal((await isolated.handleParamountEmail(lookup)).status, 404);
-    assert.equal(gmailRequests, 2, 'resume requests after cooldown');
+    assert.equal(gmailRequests, 3, 'resume requests after cooldown (rate-con lookup + order-number fallback lookup)');
   });
 });
 
@@ -728,4 +728,13 @@ test('Trucker Tools "tracking started" subject gives the Paramount load number',
   assert.equal(parseTruckerToolsSubject('Fwd: TT App - Load Track has been started - Load Number: #2283600'), '2283600');
   assert.equal(parseTruckerToolsSubject('TT App - Load Track has been stopped - Load Number: 2282980'), '');
   assert.equal(parseTruckerToolsSubject('BCO Load Detail for load: - 4574648'), '');
+});
+
+test('Paramount updates always copy Litzy and afterhours, without duplicates', async () => {
+  const { withParamountCopies } = await import('./_lib/gmailThread.js');
+  const added = withParamountCopies({ to: ['heather.locke@rlglobal.com'], cc: [] });
+  assert.deepEqual(added.cc, ['litzy.torres@rlglobal.com', 'afterhours@rlglobal.com']);
+  const kept = withParamountCopies({ to: ['Litzy Torres <litzy.torres@rlglobal.com>'], cc: ['afterhours@rlglobal.com'] });
+  assert.deepEqual(kept.cc, ['afterhours@rlglobal.com']);
+  assert.deepEqual(kept.to, ['Litzy Torres <litzy.torres@rlglobal.com>']);
 });

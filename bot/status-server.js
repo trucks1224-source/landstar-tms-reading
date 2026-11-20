@@ -226,7 +226,8 @@ function setTrackingWatch(loads) {
       key: String(item.key || `${item.customer}|${item.loadId}`), customer: String(item.customer || ''),
       loadId: String(item.loadId), truck: String(item.truck).trim(),
       pickupCity: String(item.pickupCity || ''), pickupState: String(item.pickupState || ''),
-      billTo: ['rxo', 'any'].includes(item.billTo) ? item.billTo : 'paramount'
+      billTo: ['rxo', 'any'].includes(item.billTo) ? item.billTo : 'paramount',
+      ...(/^\d{5,}$/.test(String(item.freightBill || '')) ? { freightBill: String(item.freightBill) } : {})
     }));
   fs.writeFileSync(TRACKING_WATCH_FILE, JSON.stringify(list, null, 1));
   const keys = new Set(list.map(item => item.key));

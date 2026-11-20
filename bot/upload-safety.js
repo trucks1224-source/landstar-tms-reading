@@ -129,7 +129,7 @@ function uniqueTarget(folder, file) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function submitFileOnce(page, file, { reviewFolder, uploadedFolder, submit, verify, settleMs = 5000, settleChecks = 6 }) {
+async function submitFileOnce(page, file, { reviewFolder, uploadedFolder, submit, verify, settleMs = 5000, settleChecks = 18 }) {
   // Error drafts already on Landstar belong to earlier files; only new ones count against this file.
   const before = await readBulkDrafts(page);
   if (verify) verify(file);
@@ -138,7 +138,7 @@ async function submitFileOnce(page, file, { reviewFolder, uploadedFolder, submit
   fs.renameSync(file, reserved);
   try {
     await submit(page, reserved);
-    // Landstar lists a file's loads as drafts for a few seconds while it posts them.
+    // Landstar lists a file's loads as drafts while it posts them (up to a minute or more when busy).
     // Real errors stay put; drafts that clear on their own were posted.
     let count = newDrafts(before, await readBulkDrafts(page));
     for (let i = 0; count && i < settleChecks; i += 1) {

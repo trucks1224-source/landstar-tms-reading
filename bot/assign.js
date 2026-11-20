@@ -3,7 +3,7 @@
 // When a load is booked in the TMS, its truck number and exported posting details come
 // here (status-server.js -> assign-queue.json). The bot finds the load's posting on the
 // board (same match as unpost.js: ZIPs, pickup end, delivery end, weight), opens Landstar's
-// Assign Capacity page for it, picks BCO, searches the tractor number, selects the one BCO
+// Assign Capacity page for it, picks BCO, searches the tractor number, selects a BCO
 // with exactly that tractor number and clicks Assign. It uses Landstar's own form, so all of
 // Landstar's checks still apply: if Landstar shows a warning or says the truck can't be
 // assigned, the bot stops there (nothing is confirmed) and reports it to the TMS.
@@ -75,6 +75,10 @@ function isTractorOption(optionText, truck) {
   return number.replace(/^0+/, '') === String(truck || '').trim().replace(/^0+/, '');
 }
 
+function findTractorOption(texts, truck) {
+  return texts.findIndex(text => isTractorOption(text, truck));
+}
+
 const clean = text => String(text || '').replace(/\s+/g, ' ').trim();
 
 // Fills Landstar's Assign Capacity form for one posting. Returns { ok, message, retry }.
@@ -99,12 +103,12 @@ async function assignOnLandstar(context, landstarLoadId, truck, log, loadId) {
     const options = page.locator('[role="option"]');
     await options.first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
     const texts = await options.allInnerTexts();
-    const exact = texts.map((text, index) => ({ text, index })).filter(o => isTractorOption(o.text, truck));
-    if (exact.length !== 1) {
-      return { ok: false, retry: false, message: exact.length ? `${exact.length} BCOs have tractor ${truck}; assign it by hand` : `no BCO found with tractor ${truck}` };
+    const index = findTractorOption(texts, truck);
+    if (index < 0) {
+      return { ok: false, retry: false, message: `no BCO found with tractor ${truck}` };
     }
-    const choice = clean(texts[exact[0].index]);
-    await options.nth(exact[0].index).click();
+    const choice = clean(texts[index]);
+    await options.nth(index).click();
     const assign = page.locator('button.agp-assgn-cap-assign');
     await page.waitForFunction(() => {
       const button = document.querySelector('button.agp-assgn-cap-assign');
@@ -216,7 +220,7 @@ function reconcileAssignQueue(queue, done) {
   });
 }
 
-module.exports = { processAssignQueue, assignOnLandstar, isTractorOption, pickPosting, claimAssignQueue, reserveAssignment, reconcileAssignQueue };
+module.exports = { processAssignQueue, assignOnLandstar, isTractorOption, findTractorOption, pickPosting, claimAssignQueue, reserveAssignment, reconcileAssignQueue };
 
 if (require.main === module) {
   const { chromium } = require('playwright');

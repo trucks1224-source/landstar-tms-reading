@@ -33,7 +33,8 @@ const PROFILE_DIR = path.join(__dirname, 'browser-profile');
 const OUTBID_BY = 25;
 // Your own posting codes. Board postings under any of these are never treated
 // as competition (the load's own posting code is always skipped too).
-const OWN_POSTING_CODES = ['ANQ'];
+// This computer's own posting code(s), from bot/agent-config.json (Daniel: ANQ).
+const OWN_POSTING_CODES = require('./agent-config').readPostingCodes();
 const MAX_ROWS = 500;
 
 // ---------- spreadsheet ----------

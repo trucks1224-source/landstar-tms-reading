@@ -7,7 +7,13 @@ const { spawnSync } = require('child_process');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'assign-lock-'));
 process.env.ASSIGN_QUEUE_FILE = path.join(dir, 'queue.json');
-const { claimAssignQueue, reserveAssignment, processAssignQueue, reconcileAssignQueue } = require('./assign');
+const { claimAssignQueue, reserveAssignment, processAssignQueue, reconcileAssignQueue, findTractorOption } = require('./assign');
+
+test('team trucks select the first exact tractor match, not a different tractor', () => {
+  const options = ['5818301 - LRGR\nOther truck', '581830 - LRGR\nDriver one', '581830 - LRGR\nDriver two'];
+  assert.equal(findTractorOption(options, '581830'), 1);
+  assert.equal(findTractorOption(options, '999999'), -1);
+});
 
 test('only one worker can process capacity assignments, even across processes', () => {
   const release = claimAssignQueue();

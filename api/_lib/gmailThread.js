@@ -185,6 +185,30 @@ async function findThread(accessToken, orderNumber) {
   return null;
 }
 
+// No rate-confirmation email? Paramount updates may go on any Paramount (rlglobal.com)
+// thread that mentions the load number (Daniel's rule, 2026-11-13): newest one wins.
+async function findParamountThreadByOrder(accessToken, orderNumber) {
+  const order = String(orderNumber || '').trim();
+  if (!/^\d{4,}$/.test(order)) return null;
+  const query = `"${order}" newer_than:30d`;
+  const list = await gmailJson(accessToken, `${GMAIL}/threads?q=${encodeURIComponent(query)}&maxResults=20`);
+  for (const { id } of list.threads || []) {
+    const thread = await gmailJson(accessToken, `${GMAIL}/threads/${encodeURIComponent(id)}?format=metadata`
+      + '&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Reply-To'
+      + '&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=References'
+      + '&metadataHeaders=X-TMS-Driver-Update&metadataHeaders=X-TMS-Daily-Update');
+    const messages = (thread.messages || []).sort((a, b) => Number(a.internalDate) - Number(b.internalDate));
+    if (!messages.length) continue;
+    const subject = header(messages[0], 'Subject');
+    const mentionsOrder = new RegExp(`\\b${order}\\b`).test(subject);
+    const fromParamount = messages.some(message =>
+      [header(message, 'From'), header(message, 'To'), header(message, 'Cc')]
+        .flatMap(splitAddresses).some(address => /@rlglobal\.com$/i.test(emailOf(address))));
+    if (mentionsOrder && fromParamount) return { threadId: thread.id, messages };
+  }
+  return null;
+}
+
 // RXO tracking asks for updates in emails like "Update Request - Order # 24474092 Coeymans, NY → Pittston, PA"
 // Also accepts "Order # <order#> <lane>"; those messages must ask for an update in
 // their body before they are treated as requests.
@@ -215,6 +239,14 @@ export function withLoadIvanCopy({ to = [], cc = [] }, postingCode) {
   }
   const present = new Set([...to, ...cc].map(emailOf));
   return { to, cc: present.has(IVAN_EMAIL) ? cc : [...cc, IVAN_EMAIL] };
+}
+
+// Every Paramount (PARA) customer update also goes to these two, on top of the
+// thread's own reply-all recipients (Daniel's rule, 2026-11-13).
+export const PARAMOUNT_UPDATE_COPIES = ['litzy.torres@rlglobal.com', 'afterhours@rlglobal.com'];
+export function withParamountCopies({ to = [], cc = [] }) {
+  const present = new Set([...to, ...cc].map(emailOf));
+  return { to, cc: [...cc, ...PARAMOUNT_UPDATE_COPIES.filter(email => !present.has(email))] };
 }
 
 // RXO update requests still waiting for an answer: the thread's newest message is from RXO.
@@ -547,7 +579,7 @@ export function pickRxoPaperworkThread(threads, orderNumber, myEmail) {
 // Prefer existing exact-order conversations; RXO alone has an authorized fallback.
 async function findTrackingThread(accessToken, target, orderNumber, myEmail) {
   if (target === 'paramount') {
-    const found = await findThread(accessToken, orderNumber);
+    const found = await findThread(accessToken, orderNumber) || await findParamountThreadByOrder(accessToken, orderNumber);
     return found ? { id: found.threadId, messages: found.messages } : null;
   }
   const query = `{from:rxo.com to:${RXO_FALLBACK_EMAIL}} "${orderNumber}"`;
@@ -628,7 +660,8 @@ async function handleDailyCustomerUpdate({ orderNumber, customer, day, text, pos
     if (checkCall && thread.messages.some(message => header(message, marker) === key
       && emailOf(header(message, 'From')) === myEmail)) continue;
     const replyAll = buildReplyAll(thread.messages, myEmail);
-    const recipients = withLoadIvanCopy(replyAll, postingCode);
+    const baseRecipients = withLoadIvanCopy(replyAll, postingCode);
+    const recipients = /^(para|paramount)\b/i.test(customer) ? withParamountCopies(baseRecipients) : baseRecipients;
     if (!recipients.to.length || [...recipients.to, ...recipients.cc].some(address =>
       /^(?:do[._-]?not[._-]?reply|no[._-]?reply)@/i.test(emailOf(address)))) {
       return { status: 409, body: { error: `Customer chain has no safe reply-all recipients. ${updateName} not sent.` } };
@@ -698,7 +731,8 @@ async function handlePaperwork({ action, freightBill, since, orderNumber, target
   const thread = await findTrackingThread(accessToken, target, order, myEmail);
   if (!thread) return { status: 404, body: { error: `No replyable ${target === 'rxo' ? 'RXO customer' : 'Paramount rate confirmation'} email thread for order ${order}: paperwork was not sent.` } };
   const replyAll = buildReplyAll(thread.messages, myEmail);
-  const recipients = withLoadIvanCopy(replyAll, postingCode);
+  const baseRecipients = withLoadIvanCopy(replyAll, postingCode);
+  const recipients = target === 'paramount' ? withParamountCopies(baseRecipients) : baseRecipients;
   if (!recipients.to.length) return { status: 409, body: { error: 'Nobody to reply to on the customer email thread.' } };
   let total = 0;
   const attachments = [];
@@ -899,10 +933,10 @@ export async function handleParamountEmail(request = {}) {
   const order = String(orderNumber || '').trim();
   if (!/^\d{4,}$/.test(order)) return { status: 400, body: { error: 'A Paramount order number is needed.' } };
   const { accessToken, myEmail } = await connect();
-  const found = await findThread(accessToken, order);
-  if (!found) return { status: 404, body: { error: `No "Rate Confirmation for order: ${order}" email found in Gmail.` } };
+  const found = await findThread(accessToken, order) || await findParamountThreadByOrder(accessToken, order);
+  if (!found) return { status: 404, body: { error: `No "Rate Confirmation for order: ${order}" email (or Paramount email mentioning ${order}) found in Gmail.` } };
   const { threadId, messages } = found;
-  const recipients = withLoadIvanCopy(buildReplyAll(messages, myEmail), request.postingCode);
+  const recipients = withParamountCopies(withLoadIvanCopy(buildReplyAll(messages, myEmail), request.postingCode));
   const subject = header(messages[0], 'Subject');
   if (action === 'rateConPdf') {
     // The newest PDF attached in the thread (Paramount's "has been Accepted" email: semail.pdf).

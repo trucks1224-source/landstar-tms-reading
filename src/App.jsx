@@ -278,6 +278,112 @@ function bookLoad(load, bookedAt = new Date().toISOString()) {
   return { ...rest, status: 'BOOKED', tag: 'BOOKED', bookedAt: load.bookedAt || bookedAt };
 }
 
+// ---------- Bookings report ----------
+// Every booked load is logged here (customer, line haul, when), so weekly and monthly
+// booking totals survive deliveries, imports and deletions (Daniel's rule, 2026-11-13).
+const bookingLogKey = 'landstar_bookingLog';
+function parseLineHaul(load) {
+  return Number(String(load?.rateInput || '').replace(/[$,]/g, '')) || 0;
+}
+// Adds (or refreshes) one booked load in the log, keyed by customer + load number.
+function addBookingEntry(log, customer, load) {
+  const entries = Array.isArray(log) ? log : [];
+  const key = `${customer}|${load.id}`;
+  const existing = entries.find(entry => `${entry.customer}|${entry.loadId}` === key);
+  const lineHaul = parseLineHaul(load);
+  const miles = Number(normalizeMilesValue(load.miles)) || 0;
+  const origSt = String(load.origSt || '').trim().toUpperCase();
+  // A removed booking (capacity fell off) stays removed until the load is booked again
+  // (a re-booking gets a fresh bookedAt, which no longer matches the removed entry's).
+  if (existing?.removed && (!load.bookedAt || load.bookedAt === existing.at)) return entries;
+  const refresh = !existing || existing.removed
+    || (lineHaul > 0 && existing.lineHaul !== lineHaul)
+    || (miles > 0 && !(Number(existing.miles) > 0))
+    || (origSt && !existing.origSt);
+  if (!refresh) return entries;
+  return [...entries.filter(entry => entry !== existing), {
+    customer, loadId: String(load.id),
+    at: load.bookedAt || (existing?.removed ? '' : existing?.at) || new Date().toISOString(),
+    lineHaul: lineHaul || Number(existing?.lineHaul) || 0, miles, origSt,
+    eCode: String(load.eCode || '').trim().toUpperCase(),
+    origin: [load.origCity, load.origSt].filter(Boolean).join(', '),
+    destination: [load.destCity, load.destSt].filter(Boolean).join(', ')
+  }];
+}
+// Straight trucks (D-ST / D-LG / D-RF) pay 11%; every other load pays 5%.
+function getBookingPotential(entry) {
+  const straight = /^D-(ST|LG|RF)/.test(String(entry?.eCode || '').trim().toUpperCase());
+  return (Number(entry?.lineHaul) || 0) * (straight ? 0.11 : 0.05);
+}
+// One report row per customer: the ATZ sub-accounts (R X O 2429200 - ATZ V/R/P/F...,
+// Para 1522166 - ATZ/ATZ H) roll up into one line each.
+function getBookingCustomerGroup(name) {
+  return String(name || '').replace(/\s*-\s*ATZ\b.*$/i, '').trim() || 'Unknown';
+}
+// The booking fell through (capacity removed): the entry is kept but marked removed, so a
+// stale load list on another synced computer cannot quietly put it back in the totals.
+function removeBookingEntry(log, customer, loadId) {
+  const entries = Array.isArray(log) ? log : [];
+  return entries.map(entry => (entry.customer === customer && String(entry.loadId) === String(loadId))
+    ? { ...entry, removed: true } : entry);
+}
+
+// Midnight on the Monday of that date's week.
+function getBookingWeekStart(at) {
+  const date = new Date(at);
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+  return date.getTime();
+}
+// Weekly totals (newest first, with a per-customer breakdown) and monthly totals.
+// The full booked amount per load is line haul + miles × the pickup region's fuel
+// surcharge rate (from ⚙ My Settings / the weekly fuel email).
+function summarizeBookings(log, fuelRates = null) {
+  const weeks = new Map();
+  const months = new Map();
+  for (const entry of Array.isArray(log) ? log : []) {
+    if (entry.removed) continue;
+    const at = Date.parse(entry.at);
+    if (!Number.isFinite(at)) continue;
+    const lineHaul = Number(entry.lineHaul) || 0;
+    const potential = getBookingPotential(entry);
+    const origSt = entry.origSt || String(entry.origin || '').split(',').pop();
+    const fscRate = getFuelSurchargeRate(fuelRates, origSt);
+    const total = lineHaul + (Number(entry.miles) || 0) * (fscRate || 0);
+    const weekStart = getBookingWeekStart(at);
+    const week = weeks.get(weekStart) || { start: weekStart, loads: 0, lineHaul: 0, total: 0, potential: 0, customers: new Map() };
+    week.loads += 1;
+    week.lineHaul += lineHaul;
+    week.total += total;
+    week.potential += potential;
+    const name = getBookingCustomerGroup(entry.customer);
+    const customer = week.customers.get(name) || { loads: 0, lineHaul: 0, total: 0, potential: 0 };
+    customer.loads += 1;
+    customer.lineHaul += lineHaul;
+    customer.total += total;
+    customer.potential += potential;
+    week.customers.set(name, customer);
+    weeks.set(weekStart, week);
+    const date = new Date(at);
+    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const month = months.get(monthKey) || { month: monthKey, loads: 0, lineHaul: 0, total: 0, potential: 0 };
+    month.loads += 1;
+    month.lineHaul += lineHaul;
+    month.total += total;
+    month.potential += potential;
+    months.set(monthKey, month);
+  }
+  return {
+    weeks: [...weeks.values()].sort((a, b) => b.start - a.start).map(week => ({
+      ...week,
+      customers: [...week.customers.entries()]
+        .map(([name, totals]) => ({ customer: name, ...totals }))
+        .sort((a, b) => b.loads - a.loads || b.lineHaul - a.lineHaul)
+    })),
+    months: [...months.values()].sort((a, b) => b.month.localeCompare(a.month))
+  };
+}
+
 // Takes the truck off a booked load: clears the driver, equipment, pickup ETA, previous
 // empty location and tracking, and puts the load back in OPEN so it can be re-booked or
 // exported. The rate and every other load detail are kept.
@@ -1976,7 +2082,15 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
   };
   const findState = text => /^[A-Z]{2,3}$/i.test(text);
   const skipMetadata = text => /^(?:OPEN|INIT|WEB|COST|VIEW|UNBOOKED|HAZMAT)$/i.test(text);
-  const createLoad = (id, origin, originState, destination, destinationState, weightText, trailingText = '') => {
+  // Hours cells look like "A 14:30 - 14:30", "O 08:00 - 15:00", or "00:00 - 23:59".
+  const parseHours = text => {
+    const match = String(text || '').match(/(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})/);
+    if (!match || Number(match[1]) > 23 || Number(match[3]) > 23
+      || Number(match[2]) > 59 || Number(match[4]) > 59) return '';
+    const pad = value => String(value).padStart(2, '0');
+    return `${pad(match[1])}${match[2]} - ${pad(match[3])}${match[4]}`;
+  };
+  const createLoad = (id, origin, originState, destination, destinationState, weightText, trailingText = '', schedule = {}) => {
     const weight = weightText.match(/[\d,]+(?:\.\d+)?/)?.[0] || '';
     if (!pickupDate || !origin || !destination || !weight) return;
     const tailParts = trailingText.match(/[\d,]+(?:\.\d+)?/g) || [];
@@ -1984,6 +2098,7 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
       ? ''
       : tailParts.length ? tailParts[0].replace(/,/g, '') : '';
     const eCode = /\bHAZMAT\b/i.test(messageText.slice(0, 500)) ? 'VZ' : 'VAN:VAN';
+    const deliveryDate = parseDate(schedule.deliveryDate);
     const order = {
       id,
       eCode,
@@ -1991,9 +2106,9 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
       tag: 'OPEN',
       route: `${origin.toUpperCase()}, ${originState.toUpperCase()} → ${destination.toUpperCase()}, ${destinationState.toUpperCase()}`,
       puDate: `PU: ${pickupDate}`,
-      delDate: 'DFL: Upcoming',
-      pickupTime: `${pickupDate} 0800 - 1600`,
-      deliveryTime: '',
+      delDate: deliveryDate ? `DFL: ${deliveryDate}` : 'DFL: Upcoming',
+      pickupTime: `${pickupDate} ${parseHours(schedule.pickupHours) || '0800 - 1600'}`,
+      deliveryTime: deliveryDate ? `${deliveryDate} ${parseHours(schedule.deliveryHours) || '0800 - 1600'}` : '',
       origCity: origin.toUpperCase(),
       origSt: originState.toUpperCase(),
       origZip: '',
@@ -2012,7 +2127,7 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
         : '',
       ...(isChCustomer ? { rateSource: 'customer-bin' } : {}),
       brokerable: 'false',
-      notes: 'Delivery date/time not included in email; please enter before export.'
+      notes: deliveryDate ? '' : 'Delivery date/time not included in email; please enter before export.'
     };
     const savedLaneRate = !isChCustomer && getSavedLaneRate(laneRates, selectedBroker, order);
     if (savedLaneRate) {
@@ -2024,11 +2139,28 @@ function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
 
   const tableRows = String(messageText || '').split(/\r?\n/).map(line => line.split('\t').map(cell => cell.trim()));
   if (isChCustomer && tableRows.some(cells => /^\d{8,10}$/.test(cells[0]) && cells.length >= 7)) {
+    // Column positions come from the header row: the customer added Pickup Hours (6th),
+    // Delivery Hours (11th), and Delivery Date (12th) columns, shifting Weight and Bin.
+    const headerCells = tableRows.find(cells => cells.some(cell => /^load\s*#/i.test(cell))
+      && cells.some(cell => /^bin\b/i.test(cell))) || [];
+    const findColumn = pattern => headerCells.findIndex(cell => pattern.test(cell));
+    const weightColumn = findColumn(/^weight\b/i);
+    const binColumn = findColumn(/^bin\b/i);
+    const pickupHoursColumn = findColumn(/^pickup\s*hours\b/i);
+    const deliveryHoursColumn = findColumn(/^delivery\s*hours\b/i);
+    const deliveryDateColumn = findColumn(/^delivery\s*date\b/i);
     for (const cells of tableRows) {
       const dateHeading = cells[0].match(/\b(\d{1,2}\/\d{1,2}\/(?:\d{2}|\d{4}))\s*-\s*[A-Za-z]{3,9}\b/);
       if (dateHeading) pickupDate = parseDate(dateHeading[1]);
       if (!/^\d{8,10}$/.test(cells[0]) || cells.length < 7) continue;
-      createLoad(cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], cells[6]);
+      createLoad(cells[0], cells[1], cells[2], cells[3], cells[4],
+        cells[weightColumn >= 0 ? weightColumn : 5] || '',
+        cells[binColumn >= 0 ? binColumn : 6] || '',
+        {
+          pickupHours: pickupHoursColumn >= 0 ? cells[pickupHoursColumn] : '',
+          deliveryHours: deliveryHoursColumn >= 0 ? cells[deliveryHoursColumn] : '',
+          deliveryDate: deliveryDateColumn >= 0 ? cells[deliveryDateColumn] : ''
+        });
     }
     return autoFillLoadZipCodes(loads);
   }
@@ -2099,14 +2231,32 @@ function excelSerialToBoardTime(serial) {
 // What identifies a load's posting on Landstar (Landstar postings carry no customer
 // load number): both ZIPs, pickup and delivery END times, and weight, exactly as exported.
 // End times are used because the export may move a past pickup START up to now.
+// US ZIPs that lost their leading zeros as numbers (NJ 07036 -> 7036) get them back, so they
+// match Landstar's posting. Canadian postal codes (letters) are left as they are.
+const postingZip = value => {
+  const zip = String(value || '').trim().toUpperCase();
+  return /^\d{3,4}$/.test(zip) ? zip.padStart(5, '0') : zip;
+};
+
 function buildLandstarPosting(record) {
   return {
-    originZip: String(record['Origin Zipcode(Required)'] || '').trim().toUpperCase(),
-    destZip: String(record['Destination Zipcode(Required)'] || '').trim().toUpperCase(),
+    originZip: postingZip(record['Origin Zipcode(Required)']),
+    destZip: postingZip(record['Destination Zipcode(Required)']),
     pickupThru: excelSerialToBoardTime(record['Pickup Date (Thru)(Required)']),
     deliveryThru: excelSerialToBoardTime(record['Delivery Date (Thru)(Required)']),
     weight: Number(record['Weight(Required)']) || 0
   };
+}
+
+// A load someone is actively working: a truck or driver on it, an offer out, a Landstar
+// truck assignment, or tracking under way. Imports never delete these and never take their
+// postings off Landstar, even when the customer's new list no longer shows them (safety
+// net, 2026-11-13: a load dispatched in Landstar but not yet BOOKED here must not vanish).
+function isLoadBeingWorked(load) {
+  return Boolean(String(load.truck || '').trim() || String(load.driver || '').trim()
+    || load.status === 'OFFER' || load.landstarAssignment
+    || load.paramountTracking?.freightBill
+    || ['At Pickup', 'Loaded', 'In Transit', 'At Delivery', 'Delivered'].includes(load.trackingStage));
 }
 
 // Loads that were posted to Landstar and are missing from a customer's new list. This
@@ -2119,6 +2269,7 @@ function findDroppedPostings(customer, importedLoads, existingLoads, equipmentSc
   // the uploaded categories are candidates; the other lists' postings stay up.
   return existingLoads.filter(load => load.landstarPosting && !load.manualEntry
     && !String(load.needsCapacity || '').trim() && load.status !== 'BOOKED'
+    && !isLoadBeingWorked(load)
     && (!equipmentScope || equipmentScope.has(getRxoEquipmentListCategory(load)))
     && !importedIds.has(normalizeLoadId(getBaseLoadId(load))));
 }
@@ -2232,7 +2383,16 @@ function parseSchedulePickerParts(value) {
       time: `${String(Number(match[4])).padStart(2, '0')}:${match[5]}`
     };
   };
-  return { from: parse(parts[0]), to: parse(parts[1]) };
+  const from = parse(parts[0]);
+  let to = parse(parts[1]);
+  if (!to && from) {
+    // "11/18/2026 0700 - 1500": the end has only a time, on the same day as the start.
+    const timeOnly = String(parts[1] || '').trim().match(/^(\d{1,2}):?(\d{2})$/);
+    if (timeOnly && Number(timeOnly[1]) <= 23 && Number(timeOnly[2]) <= 59) {
+      to = { date: from.date, time: `${String(Number(timeOnly[1])).padStart(2, '0')}:${timeOnly[2]}` };
+    }
+  }
+  return { from, to };
 }
 
 function formatSchedulePickerParts(from, to) {
@@ -3157,10 +3317,15 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
       && now - Date.parse(order.landstarExportedAt) < exportedLoadRetentionMs));
     mergedLoads.push(assignImportedLoadIdentity(merged, reservedLoads, mergedLoads));
   }
+  const rawImportedIds = new Set(importedLoads.map(load => normalizeLoadId(getBaseLoadId(load))).filter(Boolean));
   const retained = existingLoads.filter(load => {
     if (matchedIds.has(String(load.id))) return false;
     // Booked loads are covered; keep them even when the customer drops them from the list.
     if (load.status === 'BOOKED') return true;
+    // A load being worked (truck, driver, offer, assignment or tracking) that is genuinely
+    // missing from the new list is kept too: it may be dispatched in Landstar before anyone
+    // marks it BOOKED here. Same-lane duplicates of imported rows still consolidate.
+    if (isLoadBeingWorked(load) && !rawImportedIds.has(normalizeLoadId(getBaseLoadId(load)))) return true;
     // Loads added by hand stay until you delete them.
     if (load.manualEntry || String(load.needsCapacity || '').trim()) return true;
     // Loads from before the RXO van state rule was added are cleared out on the next import.
@@ -4630,7 +4795,7 @@ function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
 function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip, onDismissReply }) {
   const [open, setOpen] = useState(false);
   if (!drafts.length && !replies.length) return null;
-  const kindLabel = { initial: 'Tracking link + pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', rxo: 'Reply to update request', rxoForward: 'Forward RXO request to Ivan', driverEta: 'Driver ETA update', driverStatus: 'Driver status update', paperwork: 'POD / paperwork (files attached)', location: 'Daily location update', dailyCustomer: 'Daily customer update', checkCall: 'Logged check call update' };
+  const kindLabel = { initial: 'Tracking link + pickup ETA', pickupEta: 'Morning pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', rxo: 'Reply to update request', rxoForward: 'Forward RXO request to Ivan', driverEta: 'Driver ETA update', driverStatus: 'Driver status update', paperwork: 'POD / paperwork (files attached)', location: 'Daily location update', dailyCustomer: 'Daily customer update', checkCall: 'Logged check call update' };
   const approvalsLeft = draft => Math.max(0, PARAMOUNT_AUTO_SEND_AFTER
     - readApprovedCount(draft.kind === 'paperwork' ? paperworkApprovedKey : draft.kind === 'driver' ? driverApprovedKey : draft.kind === 'rxo' ? rxoApprovedKey : paramountApprovedKey));
   const who = draft => (draft.kind === 'driver' ? 'Driver' : draft.kind === 'checkCall' ? draft.customer : draft.kind === 'rxoForward' ? 'Ivan' : draft.kind === 'rxo' || draft.target === 'rxo' ? 'RXO' : 'Paramount');
@@ -4869,7 +5034,8 @@ function getLoadedTimeWarning(info = {}) {
 }
 // Daily location update to the customer while the load is rolling (rule 2026-11-07).
 const LOCATION_EMAIL_HOUR = 9;
-const PARAMOUNT_WATCH_DAYS = 5;
+// Morning-of-pickup email confirming the driver's ETA to the shipper (rule 2026-11-13).
+const PICKUP_ETA_EMAIL_HOUR = 7;
 const paramountEmailKinds = ['initial', 'arrived', 'departed'];
 const paramountSignatureName = 'Daniel Gomez';
 // The App's latest loads/profile for the email timers, and drafts already being handled.
@@ -4946,18 +5112,32 @@ function isParamountTrackingCustomer(name) {
   return paramountTrackingCustomers.has(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
 }
 
-// Booked Paramount loads with a truck, not delivered, booked in the last few days.
+// A booked load is tracked in Clarity until it is delivered. Loads booked days ahead of pickup and
+// loads still rolling days after booking stay on the list; only a load whose latest date (booked,
+// pickup or delivery) is over TRACKING_WATCH_DAYS old drops off, so a load never marked delivered
+// doesn't stay forever.
+function isTrackedBookedLoad(load, now = Date.now()) {
+  if (load.status !== 'BOOKED' || !String(load.truck || '').trim() || load.trackingStage === 'Delivered') return false;
+  const latest = Math.max(...[Date.parse(load.bookedAt), parseScheduleStart(load.pickupTime), parseScheduleStart(load.deliveryTime)]
+    .filter(Number.isFinite));
+  return !Number.isFinite(latest) || now - latest < TRACKING_WATCH_DAYS * 86400000;
+}
+
+// One Clarity watch entry; the freight bill already found lets the bot open it directly when the
+// truck no longer shows in Clarity's freight list.
+const trackingWatchEntry = (customer, load, billTo) => ({
+  key: `${customer}|${load.id}`, customer, loadId: String(load.id), truck: String(load.truck).trim(),
+  pickupCity: load.origCity || '', pickupState: load.origSt || '', billTo,
+  ...(load.paramountTracking?.freightBill ? { freightBill: String(load.paramountTracking.freightBill) } : {})
+});
+
+// Booked Paramount loads with a truck, not delivered yet.
 function getParamountWatchList(customerOrdersMap, now = Date.now()) {
   return Object.entries(customerOrdersMap || {})
     .filter(([customer]) => isParamountTrackingCustomer(customer))
     .flatMap(([customer, loads]) => (loads || [])
-      .filter(load => load.status === 'BOOKED' && String(load.truck || '').trim()
-        && load.trackingStage !== 'Delivered'
-        && (!Date.parse(load.bookedAt) || now - Date.parse(load.bookedAt) < PARAMOUNT_WATCH_DAYS * 86400000))
-      .map(load => ({
-        key: `${customer}|${load.id}`, customer, loadId: String(load.id), truck: String(load.truck).trim(),
-        pickupCity: load.origCity || '', pickupState: load.origSt || '', billTo: 'paramount'
-      })));
+      .filter(load => isTrackedBookedLoad(load, now))
+      .map(load => trackingWatchEntry(customer, load, 'paramount')));
 }
 
 // "11/06 at 08:00 CST" in the stop's own time zone.
@@ -4995,13 +5175,22 @@ function buildParamountEmail(kind, load, info = {}, { greetingName = '', phone =
   const link = info.trackingLink ? `\n\nHere is the live tracking link for this load, so you can follow the truck at any time:\n${info.trackingLink}` : '';
   const sign = `\n\n${paramountSignature(phone)}`;
   if (kind === 'initial') {
+    const pickupTimes = info.leftShipperAt
+      ? ` (${info.arrivedShipperAt ? `checked in ${formatParamountTime(info.arrivedShipperAt, info.pickupTimezone)}, ` : ''}loaded and left ${formatParamountTime(info.leftShipperAt, info.pickupTimezone)})`
+      : '';
     const status = info.leftShipperAt
-      ? `Our driver, ${driver}, has already picked up in ${pickupPlace} and is on the way to ${deliveryPlace}${deliveryEta ? `, with an estimated arrival of ${deliveryEta}` : ''}.`
+      ? `Our driver, ${driver}, has already picked up in ${pickupPlace}${pickupTimes} and is on the way to ${deliveryPlace}${deliveryEta ? `, with an estimated arrival of ${deliveryEta}` : ''}.`
       : `Our driver, ${driver}, is scheduled to pick up in ${pickupPlace}${pickupEta ? `, with an estimated arrival of ${pickupEta}` : ''}.`;
     return `${hello}\n\nThank you so much for trusting us with order ${order}! We truly appreciate the business.${link}\n\n${status}\n\n`
       + 'We will keep you updated right here on this thread when the driver arrives at the shipper and once the truck is loaded and rolling. '
       + 'If you need anything at all, please don\'t hesitate to reach out. We\'re always happy to help.\n\nThank you again, and have a wonderful day!'
       + sign;
+  }
+  if (kind === 'pickupEta') {
+    return `${hello}\n\nGood morning! Quick update on order ${order}: ${driver} is picking up in ${pickupPlace} today`
+      + `${pickupEta ? `, with an estimated arrival at the shipper of ${pickupEta}` : ''}. `
+      + 'We\'ll confirm as soon as the driver checks in at the shipper.'
+      + `${info.trackingLink ? `\n\nLive tracking: ${info.trackingLink}` : ''}\n\nThank you!${sign}`;
   }
   if (kind === 'arrived') {
     return `${hello}\n\nQuick update on order ${order}: ${driver} has arrived at the shipper in ${pickupPlace}`
@@ -5036,6 +5225,11 @@ function getDueParamountEmails(load, info, now = Date.now()) {
   if (!hasPickupDayStarted(load, now)) return [];
   if (info.leftShipperAt && !sent.departed) return ['departed'];
   if (isDailyCustomerUpdateDue(load, info, now)) return ['location'];
+  // Morning of pickup: confirm the driver's ETA to the shipper before the truck is there.
+  if (!sent.pickupEta && !info.arrivedShipperAt && !info.leftShipperAt) {
+    const pickupAt = parseScheduleStart(load.pickupTime);
+    if (Number.isFinite(pickupAt) && sameLocalDay(pickupAt, now) && now >= atHourOf(now, PICKUP_ETA_EMAIL_HOUR)) due.push('pickupEta');
+  }
   if (info.arrivedShipperAt && !sent.arrived && !info.leftShipperAt) due.push('arrived');
   return due;
 }
@@ -5048,8 +5242,14 @@ function isDailyCustomerUpdateDue(load, tracking, now = Date.now()) {
   const checkedAt = Date.parse(tracking.checkedAt);
   if (!Number.isFinite(checkedAt) || now < checkedAt || now - checkedAt > 30 * 60 * 1000) return false;
   const sent = load.paramountTracking?.emails || {};
+  // A "left the shipper" email counts as today's update only when the truck actually left
+  // today; a late one (bots were off that day) doesn't block today's location email.
+  const departedAt = Date.parse(sent.departed?.at);
+  const departedCoversToday = Number.isFinite(departedAt) && sameLocalDay(departedAt, now)
+    && (!tracking.leftShipperAt || sameLocalDay(Date.parse(tracking.leftShipperAt), departedAt));
   return now >= atHourOf(now, LOCATION_EMAIL_HOUR)
-    && ![sent.location?.at, sent.departed?.at].some(at => at && sameLocalDay(Date.parse(at), now));
+    && !(sent.location?.at && sameLocalDay(Date.parse(sent.location.at), now))
+    && !departedCoversToday;
 }
 
 // Records a sent (or skipped) email on the load, with a line in its notes.
@@ -5062,7 +5262,7 @@ function markParamountEmail(load, kind, { at = new Date().toISOString(), skipped
     emails.arrived = emails.arrived || { at, skipped: true };
     emails.departed = emails.departed || { at, skipped: true };
   }
-  const label = { initial: 'tracking link + pickup ETA', arrived: 'arrived at shipper', departed: 'left shipper + delivery ETA', location: 'daily location update' }[kind];
+  const label = { initial: 'tracking link + pickup ETA', pickupEta: 'morning pickup ETA', arrived: 'arrived at shipper', departed: 'left shipper + delivery ETA', location: 'daily location update' }[kind];
   const line = `Paramount email ${skipped ? 'skipped' : 'sent'}: ${label}`;
   return { ...load, paramountTracking: { ...tracking, emails }, notes: load.notes ? `${load.notes}\n${line}` : line };
 }
@@ -5158,13 +5358,8 @@ function getTrackingWatchList(customerOrdersMap, now = Date.now()) {
   const entries = Object.entries(customerOrdersMap || {})
     .filter(([customer]) => !isParamountTrackingCustomer(customer) && !isRxoTrackingCustomer(customer))
     .flatMap(([customer, loads]) => (loads || [])
-      .filter(load => load.status === 'BOOKED' && String(load.truck || '').trim()
-        && load.trackingStage !== 'Delivered'
-        && (!Date.parse(load.bookedAt) || now - Date.parse(load.bookedAt) < TRACKING_WATCH_DAYS * 86400000))
-      .map(load => ({
-        key: `${customer}|${load.id}`, customer, loadId: String(load.id), truck: String(load.truck).trim(),
-        pickupCity: load.origCity || '', pickupState: load.origSt || '', billTo: 'any'
-      })));
+      .filter(load => isTrackedBookedLoad(load, now))
+      .map(load => trackingWatchEntry(customer, load, 'any')));
   return [...getParamountWatchList(customerOrdersMap, now), ...getRxoWatchList(customerOrdersMap, now), ...entries].slice(0, 50);
 }
 
@@ -5454,13 +5649,8 @@ function getRxoWatchList(customerOrdersMap, now = Date.now()) {
   return Object.entries(customerOrdersMap || {})
     .filter(([customer]) => isRxoTrackingCustomer(customer))
     .flatMap(([customer, loads]) => (loads || [])
-      .filter(load => load.status === 'BOOKED' && String(load.truck || '').trim()
-        && load.trackingStage !== 'Delivered'
-        && (!Date.parse(load.bookedAt) || now - Date.parse(load.bookedAt) < PARAMOUNT_WATCH_DAYS * 86400000))
-      .map(load => ({
-        key: `${customer}|${load.id}`, customer, loadId: String(load.id), truck: String(load.truck).trim(),
-        pickupCity: load.origCity || '', pickupState: load.origSt || '', billTo: 'rxo'
-      })));
+      .filter(load => isTrackedBookedLoad(load, now))
+      .map(load => trackingWatchEntry(customer, load, 'rxo')));
 }
 
 // The booked RXO load an update request is about (same order number), or null.
@@ -5658,6 +5848,103 @@ function LocalBotsSwitch() {
   );
 }
 
+// Weekly and monthly booking totals from the booking log: how many loads were booked,
+// for which customers, and the total line haul.
+function BookingsReportPage({ onBack, fuelRates = null }) {
+  const [log, setLog] = useState([]);
+  useEffect(() => {
+    const read = () => {
+      try {
+        setLog(JSON.parse(localStorage.getItem(bookingLogKey) || '[]'));
+      } catch {
+        setLog([]);
+      }
+    };
+    read();
+    // Stays current while open: removals, new bookings and cloud sync all re-read the log.
+    window.addEventListener('landstar-data-changed', read);
+    const timer = setInterval(read, 5000);
+    return () => {
+      window.removeEventListener('landstar-data-changed', read);
+      clearInterval(timer);
+    };
+  }, []);
+  const { weeks, months } = summarizeBookings(log, fuelRates);
+  const money = value => `$${(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const dayLabel = time => {
+    const date = new Date(time);
+    return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
+  };
+  const weekLabel = start => `${dayLabel(start)} - ${dayLabel(start + 6 * 86400000)}/${String(new Date(start + 6 * 86400000).getFullYear()).slice(2)}`;
+  const monthLabel = key => {
+    const [year, month] = key.split('-').map(Number);
+    return new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  };
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-bold tracking-wide">📊 Bookings Report</h2>
+        <button type="button" onClick={onBack} className="bg-slate-700 hover:bg-slate-600 text-white px-3 py-1 rounded text-xs font-semibold cursor-pointer">Back to loads</button>
+      </div>
+      {!weeks.length && <p className="text-gray-400 text-sm">No bookings recorded yet. Book a load and it shows up here.</p>}
+      <div className="space-y-4">
+        {weeks.map(week => (
+          <div key={week.start} className="bg-[#161f36]/40 border border-[#1c2541] rounded-xl p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <h3 className="font-bold text-sky-300">Week {weekLabel(week.start)}</h3>
+              <span className="text-sm text-gray-100 font-semibold">{week.loads} load{week.loads === 1 ? '' : 's'} booked · Line haul {money(week.lineHaul)} · Total booked {money(week.total)} · Potential {money(week.potential)}</span>
+            </div>
+            <table className="w-full text-xs text-left">
+              <thead>
+                <tr className="text-gray-400"><th className="py-1 font-semibold">Customer</th><th className="py-1 font-semibold text-right">Loads</th><th className="py-1 font-semibold text-right">Line haul</th><th className="py-1 font-semibold text-right" title="Line haul + miles × the pickup region's fuel surcharge rate">Total booked</th><th className="py-1 font-semibold text-right" title="5% of the line haul; straight trucks (D-ST, D-LG, D-RF) pay 11%">Potential</th></tr>
+              </thead>
+              <tbody>
+                {week.customers.map(entry => (
+                  <tr key={entry.customer} className="border-t border-[#1c2541]">
+                    <td className="py-1">{entry.customer}</td>
+                    <td className="py-1 text-right">{entry.loads}</td>
+                    <td className="py-1 text-right">{money(entry.lineHaul)}</td>
+                    <td className="py-1 text-right">{money(entry.total)}</td>
+                    <td className="py-1 text-right">{money(entry.potential)}</td>
+                  </tr>
+                ))}
+                <tr className="border-t border-[#1c2541] font-bold text-gray-100">
+                  <td className="py-1">Week total</td>
+                  <td className="py-1 text-right">{week.loads}</td>
+                  <td className="py-1 text-right">{money(week.lineHaul)}</td>
+                  <td className="py-1 text-right">{money(week.total)}</td>
+                  <td className="py-1 text-right">{money(week.potential)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        ))}
+      </div>
+      {months.length > 0 && (
+        <div className="bg-[#161f36]/40 border border-[#1c2541] rounded-xl p-4 mt-6">
+          <h3 className="font-bold text-emerald-300 mb-2">Monthly totals</h3>
+          <table className="w-full text-xs text-left">
+            <thead>
+              <tr className="text-gray-400"><th className="py-1 font-semibold">Month</th><th className="py-1 font-semibold text-right">Loads booked</th><th className="py-1 font-semibold text-right">Line haul</th><th className="py-1 font-semibold text-right" title="Line haul + miles × the pickup region's fuel surcharge rate">Total booked</th><th className="py-1 font-semibold text-right" title="5% of the line haul; straight trucks (D-ST, D-LG, D-RF) pay 11%">Potential</th></tr>
+            </thead>
+            <tbody>
+              {months.map(month => (
+                <tr key={month.month} className="border-t border-[#1c2541]">
+                  <td className="py-1">{monthLabel(month.month)}</td>
+                  <td className="py-1 text-right">{month.loads}</td>
+                  <td className="py-1 text-right">{money(month.lineHaul)}</td>
+                  <td className="py-1 text-right">{money(month.total)}</td>
+                  <td className="py-1 text-right">{money(month.potential)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function BotStatusLight() {
   const [status, setStatus] = useState({ state: 'off', message: 'Upload bot is not running' });
   const startRequestedAt = useRef(0);
@@ -5665,7 +5952,9 @@ export function BotStatusLight() {
     ? { state: 'starting', message: 'Opening the bot window…' }
     : { state: 'off', message: 'Upload bot is not running' });
   useEffect(() => {
-    if (!canStartBotHere()) return undefined;
+    // On the shared website the light shows the bot running on THIS person's computer (the bot
+    // answers 127.0.0.1 with CORS); it only reads its status there, never hands it any work.
+    const showOnly = !canStartBotHere();
     let cancelled = false;
     const check = async () => {
       const controller = new AbortController();
@@ -5674,6 +5963,7 @@ export function BotStatusLight() {
         const response = await fetch(BOT_STATUS_URL, { cache: 'no-store', signal: controller.signal });
         const next = await response.json();
         if (!cancelled) setStatus(botStatusStyles[next.state] ? next : offStatus());
+        if (showOnly) return;
         // Assign Capacity results for booked loads: the TMS adds them to the load's notes.
         takeNewAssignResults(next.assignResults).forEach(result => {
           window.dispatchEvent(new CustomEvent('landstar-assign-result', { detail: result }));
@@ -5724,18 +6014,34 @@ export function BotStatusLight() {
       alert(`${error.message || 'The bot could not be started.'}\n\nYou can also double-click "Start Landstar Bot.bat" in the bot folder.`);
     }
   };
+  const style = botStatusStyles[status.state] || botStatusStyles.off;
   if (!canStartBotHere()) {
-    return (
-      <span className="inline-flex flex-wrap items-center gap-1.5 text-xs normal-case tracking-normal" role="status">
-        <span className="rounded border border-amber-600 bg-slate-800 px-2.5 py-1 text-amber-200"
-          title="The shared website cannot start or monitor Landstar bots on another computer. Each worker needs the local Windows TMS and a Landstar sign-in.">
-          Landstar bots: local computer required
+    // Website: this computer's own bot, read-only. Off = not installed or not started here.
+    if (status.state === 'off') {
+      return (
+        <span className="inline-flex flex-wrap items-center gap-1.5 text-xs normal-case tracking-normal" role="status">
+          <span className="rounded border border-amber-600 bg-slate-800 px-2.5 py-1 text-amber-200"
+            title="No Landstar bot is answering on this computer. Install it with the team setup file, then double-click Start Landstar Bot on the desktop.">
+            Bot off on this computer
+          </span>
+          <span className="text-slate-300">Double-click "Start Landstar Bot" on your desktop.</span>
         </span>
-        <span className="text-slate-300">Posting / Helper / Rates / Removals are not hosted on this website.</span>
+      );
+    }
+    const detail = describeBotProgress(status);
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 bg-slate-800 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal max-w-full"
+        title={[style.label, detail, 'Your Landstar bot on this computer'].filter(Boolean).join(' · ')}
+        role="status"
+        aria-live="polite"
+      >
+        <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: '50%', background: style.dot, boxShadow: style.glow, display: 'inline-block' }} />
+        {style.label}
+        {detail && <span className="text-slate-300 font-normal truncate max-w-[22rem]">· {detail}</span>}
       </span>
     );
   }
-  const style = botStatusStyles[status.state] || botStatusStyles.off;
   const clickable = status.state === 'off' && canStartBotHere();
   const dot = (
     <span
@@ -6333,7 +6639,18 @@ export default function App({ sharing = null } = {}) {
 
   const handleRemoveCapacity = () => {
     if (!selectedOrder || !confirmRemoveCapacity(selectedOrder)) return;
+    dropBookingLogEntry(selectedBroker, selectedOrder.id);
     saveLoad(removeCapacity(selectedOrder));
+  };
+
+  // The booking fell through: it comes off the 📊 Bookings report too.
+  const dropBookingLogEntry = (customer, loadId) => {
+    try {
+      const log = JSON.parse(localStorage.getItem(bookingLogKey) || '[]');
+      localStorage.setItem(bookingLogKey, JSON.stringify(removeBookingEntry(log, customer, loadId)));
+    } catch (error) {
+      console.error('Could not update the booking log:', error);
+    }
   };
 
   // ⭐ Needs capacity: flags a pre-booked load that still needs a truck. The star shows on
@@ -6462,12 +6779,61 @@ export default function App({ sharing = null } = {}) {
     setSelectedOrder(load);
   };
 
+  // Every load with a booking date lands in the booking log (and stays there even after
+  // the load delivers, drops off a list or is deleted), feeding the 📊 Bookings report.
+  useEffect(() => {
+    try {
+      let log = JSON.parse(localStorage.getItem(bookingLogKey) || '[]');
+      let changed = false;
+      for (const [customer, loads] of Object.entries(customerOrdersMap || {})) {
+        for (const order of loads || []) {
+          if (order.bookedAt) {
+            const next = addBookingEntry(log, customer, order);
+            if (next !== log) {
+              log = next;
+              changed = true;
+            }
+          } else if (log.some(entry => !entry.removed && entry.customer === customer && String(entry.loadId) === String(order.id))) {
+            // The booking fell through (capacity removed): its report entry goes too.
+            log = removeBookingEntry(log, customer, order.id);
+            changed = true;
+          }
+        }
+      }
+      if (changed) localStorage.setItem(bookingLogKey, JSON.stringify(log));
+    } catch (error) {
+      console.error('Could not update the booking log:', error);
+    }
+  }, [customerOrdersMap]);
+
   const handleDelete = () => {
     if (!selectedOrder) return;
     const remaining = orders.filter(o => o.id !== selectedOrder.id);
     setCustomerOrdersMap(prev => ({ ...prev, [selectedBroker]: remaining }));
     if (remaining.length > 0) setSelectedOrder(remaining[0]);
     else setSelectedOrder(null);
+  };
+
+  // 🚫 Covered: the customer gave this load away (a driver called, you checked, it's gone).
+  // One click queues its Landstar posting for removal by the local bot (same path as loads
+  // that drop off an imported list) and deletes the load from the TMS so nothing re-posts it.
+  const handleCoveredRemove = () => {
+    if (!selectedOrder || !selectedBroker) return;
+    const posting = selectedOrder.landstarPosting;
+    if (!posting) {
+      alert('This load has no saved Landstar posting, so there is nothing to take off the board. If it was posted by hand, remove it on LandstarOnline.');
+      return;
+    }
+    const route = `${selectedOrder.origCity}, ${selectedOrder.origSt} → ${selectedOrder.destCity}, ${selectedOrder.destSt}`;
+    const ok = window.confirm(
+      `COVERED — load #${selectedOrder.id} (${route})\n\n`
+      + 'Its posting comes off the Landstar board (the local bot removes it, usually within a minute) '
+      + 'and the load is deleted from this TMS so it is not posted again.\n\nRemove it?'
+    );
+    if (!ok) return;
+    addToUnpostQueue([{ customer: selectedBroker, loadId: String(selectedOrder.id), posting }]);
+    void sendUnpostQueueToBot();
+    handleDelete();
   };
 
   const selectionKey = (customer, id) => filter === 'OFFER' ? JSON.stringify([customer, String(id)]) : id;
@@ -9568,10 +9934,10 @@ export default function App({ sharing = null } = {}) {
   const hasMinMiles = loadFilters.minMiles !== '' && Number.isFinite(minMilesFilter);
   const hasMaxMiles = loadFilters.maxMiles !== '' && Number.isFinite(maxMilesFilter);
   const visibleOrderEntries = statusOrderEntries.filter(({ order: ord }) => {
+    if (loadFilters.pickupDate && getPickupDay(ord) !== loadFilters.pickupDate) return false;
     if (isGlobalSearch) return true;
     if (loadFilters.pickupState && String(ord.origSt || '').trim().toUpperCase() !== loadFilters.pickupState) return false;
     if (loadFilters.deliveryState && String(ord.destSt || '').trim().toUpperCase() !== loadFilters.deliveryState) return false;
-    if (loadFilters.pickupDate && getPickupDay(ord) !== loadFilters.pickupDate) return false;
     if (loadFilters.rate === 'with' && !hasLoadRate(ord)) return false;
     if (loadFilters.rate === 'without' && hasLoadRate(ord)) return false;
     if (hasMinMiles || hasMaxMiles) {
@@ -9981,7 +10347,7 @@ export default function App({ sharing = null } = {}) {
           </div>
           {isGlobalSearch && (
             <p className="mb-2 text-[10px] text-gray-400">
-              All customers · All folders and load statuses · All filters are ignored while searching. Click a result to open its customer.
+              All customers · All folders and load statuses · Pickup date applies while searching; other filters are ignored. Click a result to open its customer.
               Bulk selection and export apply to the selected customer only.
             </p>
           )}
@@ -10013,6 +10379,14 @@ export default function App({ sharing = null } = {}) {
                   {tab === 'BOOKED' ? `BOOKED (${allBookedCount})` : tab === 'OFFER' ? `OFFER (${offerCount})` : tab}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => setView('report')}
+                title="Weekly and monthly booking totals: loads booked, per customer, and total line haul"
+                className="px-2 py-1 text-[11px] rounded font-semibold bg-sky-700 hover:bg-sky-600 text-white cursor-pointer"
+              >
+                📊 BOOKINGS
+              </button>
             </div>
             {selectedIds.length > 0 && (
               <div className="flex flex-wrap items-center gap-1 w-full">
@@ -10636,7 +11010,9 @@ export default function App({ sharing = null } = {}) {
             </div>
           );
         })()}
-        {view === 'booked' ? (
+        {view === 'report' ? (
+          <BookingsReportPage onBack={() => setView('loads')} fuelRates={profile.fuelSurcharge} />
+        ) : view === 'booked' ? (
           <BookedLoadsPage
             entries={getBookedLoads(customerOrdersMap)}
             now={clock}
@@ -10655,7 +11031,10 @@ export default function App({ sharing = null } = {}) {
             }}
             onRemoveCapacity={(customer, id) => {
               const load = (customerOrdersMap[customer] || []).find(o => String(o.id) === String(id));
-              if (load && confirmRemoveCapacity(load)) updateCustomerLoad(customer, id, removeCapacity(load));
+              if (load && confirmRemoveCapacity(load)) {
+                dropBookingLogEntry(customer, id);
+                updateCustomerLoad(customer, id, removeCapacity(load));
+              }
             }}
           />
         ) : selectedOrder ? (
@@ -10694,6 +11073,16 @@ export default function App({ sharing = null } = {}) {
                 >
                   📄 Copy Load
                 </button>
+                {selectedOrder.landstarPosting && (
+                  <button
+                    type="button"
+                    onClick={handleCoveredRemove}
+                    title="The customer covered this load. The local bot takes its posting off the Landstar board and the load is deleted from the TMS so it is not posted again."
+                    className="bg-orange-600 hover:bg-orange-500 text-white px-3 py-1 rounded text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    🚫 Covered — Remove from Landstar
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleDelete}

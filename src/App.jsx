@@ -6,7 +6,8 @@ import { findNtgCardRegions } from './lib/ntgCards.js';
 import { parseTextLoadList } from './lib/textLoads.js';
 import { createEmailWorker, describeEmailWorker } from './lib/emailWorker.js';
 import {
-  splitScheduleRange, rxoCustomerName, rxoPayerCustomerName, ntgCustomerName, normalizeCustomerName, formatPhone, trackingStages, parseScheduleStart, hasPickupDayStarted, getBookedLoads, formatCheckTime, paramountTrackingCustomers, PARAMOUNT_AUTO_SEND_AFTER, paramountAlwaysAskKinds, MIN_LOADING_MINUTES, getLoadedTimeWarning, NEAR_STOP_HOLD_MILES, checkInOutStops, milesBetween, getNearStopWarning, getTrackingEmailWarning, LOCATION_EMAIL_HOUR, PICKUP_ETA_EMAIL_HOUR, paramountEmailKinds, paramountSignatureName, isParamountTrackingCustomer, isTrackedBookedLoad, trackingWatchEntry, getParamountWatchList, formatParamountTime, titleCase, paramountSignature, buildParamountEmail, getDueParamountEmails, isDailyCustomerUpdateDue, markParamountEmail, applyParamountTrackingInfo, DRIVER_EMAIL_HOUR, TRACKING_WATCH_DAYS, driverEmailLabels, PAPERWORK_DUE_HOURS, PAPERWORK_REMINDER_DAYS, getDeliveredAt, getPaperworkTarget, getPaperworkSince, getTrackingWatchList, atHourOf, sameLocalDay, getDueDriverEmails, getTrackingAppName, trackingAppNotice, buildDriverEmail, buildPaperworkEmail, markDriverEmail, TRACKING_REMINDER_FIRST_MINUTES, TRACKING_REMINDER_EVERY_MINUTES, TRACKING_REMINDER_START_HOUR, TRACKING_REMINDER_END_HOUR, TRACKING_REMINDER_MAX, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getPendingDriverStatusReply, findDriverEta, buildParamountEtaEmail, rxoTrackingCustomers, RXO_ETA_BLANK, isRxoTrackingCustomer, isRxoAccount, getTrackingEmailBroker, getRxoWatchList, getEmailPostingCode, getRxoEmailPostingCodes, findRxoLoadForRequest, buildRxoUpdateEmail, getCustomerRequestOrders, greetingNameFrom
+  splitScheduleRange, rxoCustomerName, rxoPayerCustomerName, ntgCustomerName, normalizeCustomerName, formatPhone, trackingStages, parseScheduleStart, hasPickupDayStarted, getBookedLoads, formatCheckTime, paramountTrackingCustomers, PARAMOUNT_AUTO_SEND_AFTER, paramountAlwaysAskKinds, MIN_LOADING_MINUTES, getLoadedTimeWarning, NEAR_STOP_HOLD_MILES, checkInOutStops, milesBetween, getNearStopWarning, getTrackingEmailWarning, LOCATION_EMAIL_HOUR, PICKUP_ETA_EMAIL_HOUR, paramountEmailKinds, paramountSignatureName, isParamountTrackingCustomer, isTrackedBookedLoad, trackingWatchEntry, getParamountWatchList, formatParamountTime, titleCase, paramountSignature, buildParamountEmail, getDueParamountEmails, isDailyCustomerUpdateDue, markParamountEmail, applyParamountTrackingInfo, DRIVER_EMAIL_HOUR, TRACKING_WATCH_DAYS, driverEmailLabels, PAPERWORK_DUE_HOURS, PAPERWORK_REMINDER_DAYS, getDeliveredAt, getPaperworkTarget, getPaperworkSince, getTrackingWatchList, atHourOf, sameLocalDay, getDueDriverEmails, getTrackingAppName, trackingAppNotice, buildDriverEmail, buildPaperworkEmail, markDriverEmail, TRACKING_REMINDER_FIRST_MINUTES, TRACKING_REMINDER_EVERY_MINUTES, TRACKING_REMINDER_START_HOUR, TRACKING_REMINDER_END_HOUR, TRACKING_REMINDER_MAX, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getPendingDriverStatusReply, findDriverEta, buildParamountEtaEmail, rxoTrackingCustomers, RXO_ETA_BLANK, isRxoTrackingCustomer, isRxoAccount, getTrackingEmailBroker, getRxoWatchList, getEmailPostingCode, getRxoEmailPostingCodes, findRxoLoadForRequest, buildRxoUpdateEmail, getCustomerRequestOrders, greetingNameFrom,
+  trackingEmailId, driverEmailId, dailyCustomerEmailId
 } from './lib/trackingEmails.js';
 import Prospects from './Prospects.jsx';
 import automationPolicy from '../bot/automation-policy.json';
@@ -8267,7 +8268,7 @@ export default function App({ sharing = null } = {}) {
     };
     const prepare = async (customer, load, kind, info) => {
       // The daily location email has one id per day, so tomorrow's isn't blocked by today's.
-      const id = `${customer}|${load.id}|${kind}${kind === 'location' ? `|${new Date().toDateString()}` : ''}`;
+      const id = trackingEmailId(customer, load.id, kind);
       if (paramountBusy.has(id)) return;
       paramountBusy.add(id);
       try {
@@ -8495,8 +8496,8 @@ export default function App({ sharing = null } = {}) {
           dueKinds = ['trackingReminder'];
         }
         for (const driverKind of dueKinds) {
-          const reminderNumber = driverKind === 'trackingReminder' ? `|${(load.driverEmails?.trackingReminder?.count || 0) + 1}` : '';
-          const id = `driver|${customer}|${load.id}|${driverKind}${reminderNumber}`;
+          // One id per real email: tracking reminders are numbered, POD reminders dated.
+          const id = driverEmailId(customer, load, driverKind, now);
           if (cancelled || paramountBusy.has(id)) continue;
           paramountBusy.add(id);
           try {
@@ -8714,7 +8715,7 @@ export default function App({ sharing = null } = {}) {
         if (cancelled) return;
         const tracking = load.paramountTracking || {};
         if (!isDailyCustomerUpdateDue(load, tracking, now)) continue;
-        const id = `dailyCustomer|${customer}|${load.id}|${day}`;
+        const id = dailyCustomerEmailId(customer, load.id, now);
         if (paramountBusy.has(id)) continue;
         paramountBusy.add(id);
         try {

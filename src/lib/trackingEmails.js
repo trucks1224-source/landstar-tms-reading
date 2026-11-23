@@ -748,3 +748,27 @@ export function greetingNameFrom(address) {
   const first = name.includes(',') ? name.split(',')[1]?.trim().split(/\s+/)[0] : name.split(/\s+/)[0];
   return /^[A-Za-z][A-Za-z'-]+$/.test(first || '') && !/@/.test(name) ? titleCase(first) : '';
 }
+
+// ---------- Email ids (the email record key) ----------
+// One id per real email, built the same way by the TMS and the email bot, so the email record
+// (bot/email-record.js) recognizes an email whoever sends it. An email that repeats carries what
+// makes each one different: the day (daily location, daily customer update, POD reminder) or
+// the reminder number (Trucker Tools reminders).
+const localDay = now => {
+  const date = new Date(now);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
+
+export function trackingEmailId(customer, loadId, kind, now = Date.now()) {
+  return `${customer}|${loadId}|${kind}${kind === 'location' ? `|${new Date(now).toDateString()}` : ''}`;
+}
+
+export function driverEmailId(customer, load, driverKind, now = Date.now()) {
+  const repeat = driverKind === 'trackingReminder' ? `|${(load.driverEmails?.trackingReminder?.count || 0) + 1}`
+    : driverKind === 'podReminder' ? `|${localDay(now)}` : '';
+  return `driver|${customer}|${load.id}|${driverKind}${repeat}`;
+}
+
+export function dailyCustomerEmailId(customer, loadId, now = Date.now()) {
+  return `dailyCustomer|${customer}|${loadId}|${localDay(now)}`;
+}

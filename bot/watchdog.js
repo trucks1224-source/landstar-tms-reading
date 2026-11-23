@@ -25,6 +25,7 @@ const BOT_DIR = __dirname;
 const HELPER_STATUS_FILE = path.join(BOT_DIR, 'helper-status.json');
 const { removalActive, readRatesStatus } = require('./status-server');
 const { readBotControl } = require('./local-bot-control');
+const { writeWatchdogHeartbeat } = require('./health');
 
 const TMS_URL = 'http://127.0.0.1:5173';
 const BOT_STATUS_URL = 'http://127.0.0.1:47615/status';
@@ -90,6 +91,8 @@ function maybeRestart(key, isUp, start, label) {
 }
 
 async function check() {
+  // Heartbeat for the TMS system check (bot/health.js).
+  try { writeWatchdogHeartbeat(); } catch (error) { log(`Could not write the watchdog heartbeat: ${error.message}`); }
   const [tmsUp, botUp] = await Promise.all([answers(TMS_URL), answers(BOT_STATUS_URL)]);
   maybeRestart('tms', tmsUp, launchTms, 'The TMS dev server');
   if (!readBotControl()) return;

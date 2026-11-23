@@ -20,6 +20,8 @@ bot/helper-status.json
 bot/removal-status.json
 bot/rates-status.json
 bot/rates-status.json.*.tmp
+bot/watchdog-status.json
+bot/watchdog-status.json.*.tmp
 bot/unpost-queue.json.lock
 bot/assign-queue.json.lock
 bot/assign-queue.json.attempts/

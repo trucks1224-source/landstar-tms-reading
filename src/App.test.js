@@ -61,7 +61,7 @@ export {
   writeSyncedKey, initSyncGuardFromStorage, readDataVersions, getChangedSyncedKeys,
   isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted, classifyChangedSyncedKeys,
   getStatusTag, bookLoad, addBookingEntry, removeBookingEntry, summarizeBookings, getBookingWeekStart, buildDriverDirectory, findKnownDriver, getPostingMaintenanceLoads, getPostingRefreshDetails,
-  getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getPaperworkSince, checkBeforePodRequest, isDailyCustomerUpdateDue, getLoadedTimeWarning, getNearStopWarning, getTrackingEmailWarning, milesBetween,toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
+  getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getPaperworkSince, checkBeforePodRequest, isDailyCustomerUpdateDue, getLoadedTimeWarning, getNearStopWarning, getTrackingEmailWarning, milesBetween, createStatusStore, emailCheckRow, mergeSystemCheck, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, copyLoadDetails, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, getTrackingEmailBroker, getCustomerRequestOrders, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer, getEquipmentListCategory
@@ -1363,7 +1363,9 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
         states[index] = typeof value === 'function' ? value(states[index]) : value;
       }];
     },
-    useEffect(effect) { effects.push(effect); }
+    useEffect(effect) { effects.push(effect); },
+    useMemo: compute => compute(),
+    useRef: initial => react.useState({ current: initial })[0]
   };
   const appContext = {
     Date: TestDate,
@@ -1493,7 +1495,7 @@ test('tracking events enqueue broker emails in the owning worker instead of send
       return { ok: true, json: async () => ({ to: ['broker@example.com'], cc: [] }) };
     }
   });
-  const cleanup = app.effects.at(-1)();
+  const cleanup = app.effects.findLast(effect => String(effect).includes('landstar-tracking-result'))();
   try {
     const info = {
       customer: customers[0], loadId: booked.id, ok: true, freightBill: '4431900',
@@ -1511,8 +1513,9 @@ test('tracking events enqueue broker emails in the owning worker instead of send
     owner = false;
     listeners.get('landstar-tracking-result')({ detail: info });
     assert.equal(requested.length, 1, 'standby tabs cannot enqueue automatic emails');
-    const status = app.find(node => node.type === 'details' && node.props['aria-label'] === 'Driver-to-broker worker');
+    const status = app.find(node => typeof node.type === 'function' && node.type.name === 'EmailWorkerStatus');
     assert.ok(status, 'the worker status is rendered');
+    assert.ok(status.props.store.get().state, 'the chip reads the worker status store');
   } finally { cleanup(); }
   assert.equal(stopped, true);
   assert.equal(listeners.size, 0);
@@ -1635,6 +1638,54 @@ test('load cards show their rates and zero for loads without a rate', () => {
   app.render();
   const updated = app.find(node => node.props?.['aria-label'] === 'Rate for load 0');
   assert.equal(updated.props.children.join('').trim(), 'Rate: $1,800');
+});
+
+test('system check adds this tab\'s email checks and shows a dead TMS server', () => {
+  const report = { at: 1, worst: 'ok', rows: [{ id: 'tms', label: 'TMS server', level: 'ok', detail: 'Running' }] };
+  const fine = policy.mergeSystemCheck(report, { state: 'idle', message: 'Waiting for next check', issues: [] });
+  assert.equal(fine.worst, 'ok');
+  assert.deepEqual([...fine.rows.map(row => row.id)], ['tms', 'email']);
+  const blocked = policy.mergeSystemCheck(report, { state: 'blocked', message: 'Some checks need attention', issues: [{ task: 'Checking driver replies', message: 'Gmail token expired' }] });
+  assert.equal(blocked.worst, 'warn');
+  assert.match(blocked.rows[1].fix, /Checking driver replies: Gmail token expired/);
+  assert.equal(policy.emailCheckRow({ state: 'standby' }).level, 'info');
+  const down = policy.mergeSystemCheck(null, {});
+  assert.equal(down.worst, 'bad');
+  assert.match(down.rows[0].fix, /Start TMS/);
+});
+
+test('a status store notifies only when the status really changes', () => {
+  const store = policy.createStatusStore({ state: 'idle', message: 'Waiting for next check', issues: [] });
+  const seen = [];
+  const unsubscribe = store.subscribe(value => seen.push(value.state));
+  store.set({ state: 'idle', message: 'Waiting for next check', issues: [] });
+  assert.deepEqual(seen, [], 'same status again: nothing redraws');
+  store.set({ state: 'working', message: 'Checking driver replies', issues: [] });
+  assert.deepEqual(seen, ['working']);
+  assert.equal(store.get().message, 'Checking driver replies');
+  unsubscribe();
+  store.set({ state: 'idle', message: 'Waiting for next check', issues: [] });
+  assert.deepEqual(seen, ['working'], 'no updates after unsubscribing');
+});
+
+test('the load list draws 100 cards at a time and shows more on request', () => {
+  const loads = Array.from({ length: 250 }, (_, index) => ({ ...load, id: String(100000 + index), status: 'OPEN' }));
+  const app = createAppHarness(customers[0], loads);
+  const cards = () => {
+    const ids = [];
+    app.find(node => { if (/^load-card-/.test(String(node.props?.id || ''))) ids.push(node.props.id); return false; });
+    return ids;
+  };
+  const moreButton = () => app.find(node => node.type === 'button' && /show more/.test([node.props.children].flat(Infinity).join('')));
+  assert.equal(cards().length, 100);
+  assert.match([moreButton().props.children].flat(Infinity).join(''), /Showing 100 of 250 loads/);
+  moreButton().props.onClick();
+  app.render();
+  assert.equal(cards().length, 200);
+  moreButton().props.onClick();
+  app.render();
+  assert.equal(cards().length, 250);
+  assert.equal(moreButton(), null, 'everything shown: no button');
 });
 
 test('Copy Selected button counts checked loads', () => {

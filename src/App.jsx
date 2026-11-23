@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { detectScreenshotGrid, readScreenshotGrid } from './lib/screenshotTable.js';
@@ -5884,7 +5884,7 @@ const botStatusStyles = {
 const BOT_START_URL = '/api/bot/start';
 const BOT_START_GRACE_MS = 45_000;
 const canStartBotHere = () => typeof window !== 'undefined'
-  && ['127.0.0.1', 'localhost'].includes(window.location.hostname);
+  && ['127.0.0.1', 'localhost'].includes(window.location?.hostname);
 
 function LocalBotsSwitch() {
   const [enabled, setEnabled] = useState(null);
@@ -6294,6 +6294,149 @@ function describeBotProgress(status) {
   if (/^(Rate-checking|Uploading|Removing|Checking|Waiting for the rate worker|Uploads paused)/i.test(message)) parts.push(message);
   return parts.join(' · ');
 }
+
+// A value that changes often, kept outside a component's state. Only components that
+// subscribe redraw, and an unchanged value notifies no one.
+function createStatusStore(initial) {
+  let value = initial;
+  const listeners = new Set();
+  return {
+    get: () => value,
+    set: next => {
+      if (JSON.stringify(next) === JSON.stringify(value)) return;
+      value = next;
+      listeners.forEach(listener => listener(value));
+    },
+    subscribe: listener => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    }
+  };
+}
+
+// The email worker chip in the header: redraws on its own when the worker reports.
+function EmailWorkerStatus({ store, drafts }) {
+  const [status, setStatus] = useState(store.get);
+  useEffect(() => {
+    setStatus(store.get());
+    return store.subscribe(setStatus);
+  }, [store]);
+  return (
+    <details className="relative normal-case tracking-normal text-left text-xs" aria-label="Driver-to-broker worker">
+      <summary className="bg-slate-800 border border-slate-600 rounded px-2.5 py-1 cursor-pointer">
+        <span role="status" aria-live="polite">{describeEmailWorker(status, drafts)}</span>
+      </summary>
+      <div className="absolute left-0 top-full mt-2 z-50 w-80 max-w-[90vw] max-h-[60vh] overflow-y-auto bg-slate-900 border border-slate-600 rounded p-3 shadow-xl space-y-2">
+        <p>{status.message}</p>
+        {status.lastCheckedAt && <p>Last completed check: {new Date(status.lastCheckedAt).toLocaleTimeString()}</p>}
+        <p>Runs while the local TMS is open. Posting runs separately. Only one local tab runs automatic email checks.</p>
+        {status.issues.map(issue => <p key={issue.task} className="text-amber-300">{issue.task}: {issue.message}</p>)}
+        {drafts.some(draft => draft.error) && <p className="text-amber-300">Email send failures are shown in Booked Loads.</p>}
+        {drafts.some(draft => !draft.error && !draft.sending) && <p>Emails awaiting approval are in Booked Loads.</p>}
+      </div>
+    </details>
+  );
+}
+
+// Morning system check (header): TMS, watchdog, every bot, the bot switch, a recent PC
+// restart (from /api/health, bot/health.js) and this tab's email checks. Opens by itself
+// once a day when something needs attention. Polls on its own, so it never redraws the App.
+const SYSTEM_CHECK_URL = '/api/health';
+const systemCheckShownKey = 'landstar_systemCheckShownOn';
+const systemCheckColors = { ok: 'bg-emerald-400', info: 'bg-sky-400', warn: 'bg-amber-400', bad: 'bg-red-500' };
+const systemCheckRank = { ok: 0, info: 1, warn: 2, bad: 3 };
+
+function emailCheckRow(status = {}) {
+  if (status.state === 'blocked') {
+    return { id: 'email', label: 'Email checks', level: 'warn', detail: status.message || 'Some checks need attention',
+      fix: (status.issues || []).map(issue => `${issue.task}: ${issue.message}`).join(' · ') || 'Open the email worker chip for details.' };
+  }
+  if (status.state === 'standby') return { id: 'email', label: 'Email checks', level: 'info', detail: 'Another TMS tab runs the email checks' };
+  if (status.state === 'view-only') return { id: 'email', label: 'Email checks', level: 'info', detail: 'Email checks run only on the local TMS' };
+  return { id: 'email', label: 'Email checks', level: 'ok', detail: status.message || 'Running' };
+}
+
+function mergeSystemCheck(report, emailStatus) {
+  if (!report) {
+    return { worst: 'bad', rows: [{ id: 'tms', label: 'TMS server', level: 'bad', detail: 'Not answering', fix: 'The watchdog restarts it within a minute. If it does not, double-click "Start TMS".' }] };
+  }
+  const rows = [...(report.rows || []), emailCheckRow(emailStatus)];
+  const worst = rows.reduce((level, row) => (systemCheckRank[row.level] > systemCheckRank[level] ? row.level : level), 'ok');
+  return { ...report, rows, worst };
+}
+
+function SystemCheck({ emailStore }) {
+  const [report, setReport] = useState(undefined);
+  const [emailStatus, setEmailStatus] = useState(emailStore.get);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    setEmailStatus(emailStore.get());
+    return emailStore.subscribe(setEmailStatus);
+  }, [emailStore]);
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const response = await fetch(SYSTEM_CHECK_URL, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const next = await response.json();
+        if (!cancelled) setReport(current => (JSON.stringify(current) === JSON.stringify({ ...next, at: current?.at }) ? current : next));
+      } catch {
+        if (!cancelled) setReport(null);
+      }
+    };
+    void check();
+    const timer = setInterval(check, 30000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+  const merged = report === undefined ? null : mergeSystemCheck(report, emailStatus);
+  // First look of the day with something to fix: open the panel by itself.
+  useEffect(() => {
+    if (!merged || systemCheckRank[merged.worst] < systemCheckRank.warn) return;
+    const today = new Date().toDateString();
+    try {
+      if (localStorage.getItem(systemCheckShownKey) === today) return;
+      localStorage.setItem(systemCheckShownKey, today);
+    } catch { /* storage blocked: still open once for this page */ }
+    setOpen(true);
+  }, [merged?.worst]);
+  const worst = merged?.worst || 'info';
+  const problems = merged ? merged.rows.filter(row => systemCheckRank[row.level] >= systemCheckRank.warn).length : 0;
+  return (
+    <div className="relative normal-case tracking-normal text-left text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen(value => !value)}
+        aria-expanded={open}
+        className="bg-slate-800 border border-slate-600 rounded px-2.5 py-1 cursor-pointer flex items-center gap-1.5"
+      >
+        <span className={`inline-block w-2.5 h-2.5 rounded-full ${systemCheckColors[worst]}`} aria-hidden="true" />
+        <span role="status">{!merged ? 'System check…' : problems ? `System check: ${problems} to fix` : 'System check: all good'}</span>
+      </button>
+      {open && merged && (
+        <div role="dialog" aria-label="System check" className="absolute right-0 top-full mt-2 z-50 w-96 max-w-[92vw] max-h-[70vh] overflow-y-auto bg-slate-900 border border-slate-600 rounded p-3 shadow-xl space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="font-bold text-white">System check</p>
+            <button type="button" onClick={() => setOpen(false)} className="text-gray-400 hover:text-white cursor-pointer" aria-label="Close system check">✕</button>
+          </div>
+          {merged.rows.map(row => (
+            <div key={row.id} className="flex items-start gap-2">
+              <span className={`mt-1 inline-block w-2.5 h-2.5 shrink-0 rounded-full ${systemCheckColors[row.level]}`} aria-hidden="true" />
+              <div>
+                <p className="text-white"><span className="font-semibold">{row.label}:</span> {row.detail}</p>
+                {row.fix && <p className={row.level === 'bad' ? 'text-red-300' : 'text-amber-300'}>{row.fix}</p>}
+              </div>
+            </div>
+          ))}
+          {merged.at && <p className="text-gray-500">Checked {new Date(merged.at).toLocaleTimeString()} · refreshes every 30 seconds</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Load cards drawn at a time in the load list (more appear as you scroll).
+const LOAD_LIST_PAGE = 100;
 
 export default function App({ sharing = null } = {}) {
   const [brokers, setBrokers] = useState(() => {
@@ -8442,7 +8585,8 @@ export default function App({ sharing = null } = {}) {
         if (!/does not exist|schema cache/i.test(error.message || '')) console.error('Could not load driver inquiries:', error);
         return;
       }
-      if (!cancelled) setInquiries(data || []);
+      // Unchanged list (the usual case): keep the old one so the TMS isn't redrawn every minute.
+      if (!cancelled) setInquiries(current => (JSON.stringify(current) === JSON.stringify(data || []) ? current : data || []));
     };
     loadInquiries();
     const timer = setInterval(loadInquiries, 60 * 1000);
@@ -8490,7 +8634,9 @@ export default function App({ sharing = null } = {}) {
   // ---------- Paramount tracking emails ----------
   const [paramountDrafts, setParamountDrafts] = useState([]);
   const [paramountReplies, setParamountReplies] = useState([]);
-  const [emailWorkerStatus, setEmailWorkerStatus] = useState({ state: 'starting', message: 'Starting scheduled checks', issues: [] });
+  // The email worker reports its status several times a minute. It is kept outside the App's
+  // state so those reports redraw only the small status chip, not the whole TMS.
+  const [emailWorkerStatusStore] = useState(() => createStatusStore({ state: 'starting', message: 'Starting scheduled checks', issues: [] }));
   // Background warnings (bot results, fuel updates): banners instead of alert() pop-ups,
   // because an open alert freezes the whole tab and stops the email timers.
   const [notices, setNotices] = useState([]);
@@ -9283,7 +9429,7 @@ export default function App({ sharing = null } = {}) {
     if (canStartBotHere()) {
       emailWorker = createEmailWorker({
         locks: navigator.locks,
-        onStatus: setEmailWorkerStatus,
+        onStatus: emailWorkerStatusStore.set,
         tasks: [
           { id: 'driver-replies', label: 'Checking driver replies', delay: 15000, every: 120000, run: checkDriverReplies },
           { id: 'rxo-requests', label: 'Checking RXO broker requests', delay: 20000, every: 120000, run: checkRxoRequests },
@@ -9302,7 +9448,7 @@ export default function App({ sharing = null } = {}) {
       });
       emailWorker.start();
     } else {
-      setEmailWorkerStatus({ state: 'view-only', message: 'Email worker: local TMS only', issues: [] });
+      emailWorkerStatusStore.set({ state: 'view-only', message: 'Email worker: local TMS only', issues: [] });
     }
     window.addEventListener('landstar-tracking-result', onTrackingResult);
     const onMercuryGateResult = event => {
@@ -10106,6 +10252,9 @@ export default function App({ sharing = null } = {}) {
     setSearchQuery(value);
     if (value.trim()) setView('loads');
   };
+  // The load list is filtered and sorted only when the loads or the filters change, not on
+  // every screen update (bot status, timers, typing in other boxes).
+  const { rateCountOrders, withRateCount, noRateCount, visibleOrderEntries } = useMemo(() => {
   const statusOrderEntries = getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery, filter === 'OFFER')
     .filter(({ order: ord }) => isGlobalSearch || filter === 'ALL' || ord.status === filter);
   const rateCountOrders = statusOrderEntries.filter(({ customer }) => filter === 'OFFER' || customer === selectedBroker).map(({ order }) => order);
@@ -10156,6 +10305,27 @@ export default function App({ sharing = null } = {}) {
     );
     return (descending ? -comparison : comparison) || String(left.id).localeCompare(String(right.id));
   });
+  return { rateCountOrders, withRateCount, noRateCount, visibleOrderEntries };
+  }, [customerOrdersMap, selectedBroker, searchQuery, filter, loadFilters, laneSort, isGlobalSearch]);
+  // Load cards are drawn a page at a time; more appear as you scroll to the bottom.
+  const [listLimit, setListLimit] = useState(LOAD_LIST_PAGE);
+  const listEndRef = useRef(null);
+  useEffect(() => { setListLimit(LOAD_LIST_PAGE); }, [selectedBroker, searchQuery, filter, loadFilters, laneSort]);
+  const selectedCardIndex = selectedOrder
+    ? visibleOrderEntries.findIndex(({ customer, order }) => customer === selectedBroker && order.id === selectedOrder.id)
+    : -1;
+  // The selected load is always drawn, even if it is further down the list.
+  const shownOrderEntries = visibleOrderEntries.slice(0, Math.max(listLimit, selectedCardIndex + 1));
+  const hiddenLoadCount = visibleOrderEntries.length - shownOrderEntries.length;
+  useEffect(() => {
+    const end = listEndRef.current;
+    if (!end || hiddenLoadCount <= 0 || typeof IntersectionObserver === 'undefined') return undefined;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) setListLimit(limit => limit + LOAD_LIST_PAGE);
+    }, { rootMargin: '600px' });
+    observer.observe(end);
+    return () => observer.disconnect();
+  }, [hiddenLoadCount, shownOrderEntries.length]);
   const filteredOrders = visibleOrderEntries
     .filter(({ customer }) => customer === selectedBroker)
     .map(({ order }) => order);
@@ -10817,7 +10987,7 @@ export default function App({ sharing = null } = {}) {
           {visibleOrderEntries.length === 0 ? (
             <div className="text-center text-gray-500 text-xs py-10">{isAllCustomersView ? 'No matching loads across all customers with the current filters.' : `No loads found for ${selectedBroker}. Click "📂 Import Excel" above!`}</div>
           ) : (
-            visibleOrderEntries.map(({ customer, order: ord }) => (
+            shownOrderEntries.map(({ customer, order: ord }) => (
               <div
                 key={JSON.stringify([customer, ord.id])}
                 id={`load-card-${ord.id}`}
@@ -10885,6 +11055,17 @@ export default function App({ sharing = null } = {}) {
                 </div>
               </div>
             ))
+          )}
+          {hiddenLoadCount > 0 && (
+            <div ref={listEndRef} className="text-center py-3">
+              <button
+                type="button"
+                onClick={() => setListLimit(limit => limit + LOAD_LIST_PAGE)}
+                className="text-xs text-blue-300 hover:text-blue-200 underline cursor-pointer"
+              >
+                Showing {shownOrderEntries.length} of {visibleOrderEntries.length} loads · show more
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -11028,19 +11209,9 @@ export default function App({ sharing = null } = {}) {
             {/* Signed in, the bot light and My Settings sit next to Sign out (bottom right);
                 local mode keeps them here. */}
             {!sharing && <BotStatusLight />}
-            <details className="relative normal-case tracking-normal text-left text-xs" aria-label="Driver-to-broker worker">
-                <summary className="bg-slate-800 border border-slate-600 rounded px-2.5 py-1 cursor-pointer">
-                  <span role="status" aria-live="polite">{describeEmailWorker(emailWorkerStatus, paramountDrafts)}</span>
-                </summary>
-                <div className="absolute left-0 top-full mt-2 z-50 w-80 max-w-[90vw] max-h-[60vh] overflow-y-auto bg-slate-900 border border-slate-600 rounded p-3 shadow-xl space-y-2">
-                  <p>{emailWorkerStatus.message}</p>
-                  {emailWorkerStatus.lastCheckedAt && <p>Last completed check: {new Date(emailWorkerStatus.lastCheckedAt).toLocaleTimeString()}</p>}
-                  <p>Runs while the local TMS is open. Posting runs separately. Only one local tab runs automatic email checks.</p>
-                  {emailWorkerStatus.issues.map(issue => <p key={issue.task} className="text-amber-300">{issue.task}: {issue.message}</p>)}
-                  {paramountDrafts.some(draft => draft.error) && <p className="text-amber-300">Email send failures are shown in Booked Loads.</p>}
-                  {paramountDrafts.some(draft => !draft.error && !draft.sending) && <p>Emails awaiting approval are in Booked Loads.</p>}
-                </div>
-              </details>
+            <EmailWorkerStatus store={emailWorkerStatusStore} drafts={paramountDrafts} />
+            {/* Signed in or not: only the TMS on this PC has bots to check. */}
+            {canStartBotHere() && <SystemCheck emailStore={emailWorkerStatusStore} />}
             {!sharing && (
             <button
               type="button"

@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+import os from 'node:os'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { processRoadMilesRequest } from './api/road-miles.js'
@@ -12,7 +13,8 @@ import { describeSaveResult, extractProspects, isBlockedProspect } from './src/l
 
 // The TMS account that owns imported prospects, looked up once per server run.
 let prospectOwnerId = null
-const { readRatesStatus } = createRequire(import.meta.url)('./bot/status-server.js')
+const { readRatesStatus, readHelperStatus, readRemovalStatus } = createRequire(import.meta.url)('./bot/status-server.js')
+const { buildHealthReport, readWatchdogStatus } = createRequire(import.meta.url)('./bot/health.js')
 const { readBotControl, writeBotControl } = createRequire(import.meta.url)('./bot/local-bot-control.js')
 
 export default defineConfig(({ mode }) => {
@@ -101,6 +103,47 @@ export default defineConfig(({ mode }) => {
               return res.end(JSON.stringify({ error: 'Use GET.' }))
             }
             res.end(JSON.stringify(readRatesStatus()))
+          })
+          // Morning system check (header "System check"): every local piece in one answer.
+          const signingInSince = {}
+          server.middlewares.use('/api/health', async (req, res) => {
+            res.setHeader('Content-Type', 'application/json')
+            res.setHeader('Cache-Control', 'no-store')
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              res.statusCode = 403
+              return res.end(JSON.stringify({ error: 'Only the local TMS can read the system check.' }))
+            }
+            if (req.method !== 'GET') {
+              res.statusCode = 405
+              return res.end(JSON.stringify({ error: 'Use GET.' }))
+            }
+            const now = Date.now()
+            let upload = null
+            try {
+              const response = await fetch('http://127.0.0.1:47615/status', { signal: AbortSignal.timeout(2500) })
+              if (response.ok) upload = await response.json()
+            } catch { /* not running */ }
+            let postingEnabled = true
+            try {
+              postingEnabled = JSON.parse(readFileSync(path.join(process.cwd(), 'bot', 'automation-policy.json'), 'utf8')).automaticPostingEnabled !== false
+            } catch { /* default on */ }
+            let botsEnabled = true
+            try { botsEnabled = readBotControl() } catch { /* default on */ }
+            // How long each bot has been signing in (a long wait means it needs Daniel's sign-in).
+            const withSignIn = (key, status) => {
+              if (status && ['signing-in', 'starting'].includes(status.state)) signingInSince[key] = signingInSince[key] || now
+              else delete signingInSince[key]
+              return status ? { ...status, signingInSince: signingInSince[key] } : null
+            }
+            res.end(JSON.stringify(buildHealthReport({
+              now, bootedAt: now - os.uptime() * 1000, botsEnabled, postingEnabled,
+              watchdog: readWatchdogStatus(now),
+              upload: withSignIn('upload', upload && { state: upload.state, message: upload.message }),
+              helper: withSignIn('helper', readHelperStatus()),
+              removal: withSignIn('removal', readRemovalStatus()),
+              rates: withSignIn('rates', readRatesStatus())
+            })))
           })
           server.middlewares.use('/api/rates/start', async (req, res) => {
             const reply = (status, body) => {

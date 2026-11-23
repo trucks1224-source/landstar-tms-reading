@@ -5028,8 +5028,27 @@ function readParamountApprovedCount() {
 async function callParamountEmail(body) {
   const response = await fetch(PARAMOUNT_EMAIL_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || `Email request failed (HTTP ${response.status}).`);
+  if (!response.ok) {
+    const error = new Error(result.error || `Email request failed (HTTP ${response.status}).`);
+    // Refused by the email record (bot/email-record.js): 'sent', 'skipped', 'sending' or 'unknown'.
+    if (result.emailRecord) error.emailRecord = result.emailRecord;
+    throw error;
+  }
   return result;
+}
+
+// Tells the email record that Daniel chose "Don't send", so no sender sends it later.
+function recordSkippedEmail(draft) {
+  if (!canStartBotHere()) return;
+  void fetch('/api/email-record', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'skip', key: draft.id, meta: emailRecordMeta(draft) })
+  }).catch(() => { /* the load itself still records the skip */ });
+}
+
+// What the email record keeps about a draft, for the system check.
+function emailRecordMeta(draft) {
+  return { customer: draft.customer, loadId: draft.loadId, kind: draft.kind === 'driver' ? `driver ${draft.driverKind}` : draft.kind };
 }
 
 // ---------- Driver emails ----------
@@ -5654,10 +5673,24 @@ function SystemCheck({ emailStore }) {
   const [report, setReport] = useState(undefined);
   const [emailStatus, setEmailStatus] = useState(emailStore.get);
   const [open, setOpen] = useState(false);
+  const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     setEmailStatus(emailStore.get());
     return emailStore.subscribe(setEmailStatus);
   }, [emailStore]);
+  // Daniel checked Gmail for a send that never finished: it went out, or it may be sent again.
+  const settleEmail = async (key, wentOut) => {
+    try {
+      const response = await fetch('/api/email-record', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'settle', key, wentOut })
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
+    } catch (error) {
+      alert(`Could not update the email record: ${error.message}`);
+    }
+    setRefresh(value => value + 1);
+  };
   useEffect(() => {
     let cancelled = false;
     const check = async () => {
@@ -5673,7 +5706,7 @@ function SystemCheck({ emailStore }) {
     void check();
     const timer = setInterval(check, 30000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, []);
+  }, [refresh]);
   const merged = report === undefined ? null : mergeSystemCheck(report, emailStatus);
   // First look of the day with something to fix: open the panel by itself.
   useEffect(() => {
@@ -5710,6 +5743,15 @@ function SystemCheck({ emailStore }) {
               <div>
                 <p className="text-white"><span className="font-semibold">{row.label}:</span> {row.detail}</p>
                 {row.fix && <p className={row.level === 'bad' ? 'text-red-300' : 'text-amber-300'}>{row.fix}</p>}
+                {(row.emails || []).map(email => (
+                  <div key={email.key} className="mt-1 bg-slate-800 rounded p-1.5">
+                    <p className="text-white">{email.label}{email.at ? ` · started ${new Date(email.at).toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}</p>
+                    <div className="flex gap-2 mt-1">
+                      <button type="button" onClick={() => settleEmail(email.key, true)} className="bg-emerald-700 hover:bg-emerald-600 text-white px-2 py-0.5 rounded cursor-pointer">It went out</button>
+                      <button type="button" onClick={() => settleEmail(email.key, false)} className="bg-slate-600 hover:bg-slate-500 text-white px-2 py-0.5 rounded cursor-pointer">Not sent, allow again</button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           ))}
@@ -8001,6 +8043,9 @@ export default function App({ sharing = null } = {}) {
   // Sends one draft (reply-all on the rate confirmation thread) and records it on the load.
   const sendParamountDraft = async (draft, { auto = false } = {}) => {
     setParamountDrafts(current => current.map(item => (item.id === draft.id ? { ...item, sending: true, error: '' } : item)));
+    // Every send carries its draft id: the email record (bot/email-record.js) refuses an
+    // email that was already sent, skipped, or is being sent by another sender.
+    const sendEmail = body => callParamountEmail({ ...body, emailKey: draft.id, emailMeta: emailRecordMeta(draft) });
     const isRxo = draft.kind === 'rxo';
     const isDriver = draft.kind === 'driver';
     const isPaperwork = draft.kind === 'paperwork';
@@ -8022,7 +8067,7 @@ export default function App({ sharing = null } = {}) {
         throw new Error('This load is not confirmed as SNB. Nothing forwarded to Ivan.');
       }
       if (isPaperwork) {
-        const sent = await callParamountEmail({
+        const sent = await sendEmail({
           action: 'sendPaperwork', freightBill: draft.freightBill, since: draft.since,
           orderNumber: draft.loadId, target: draft.target, text: draft.text, postingCode
         });
@@ -8038,7 +8083,7 @@ export default function App({ sharing = null } = {}) {
         if (Date.parse(draft.reportedAt) < Date.parse(load.customerStatusReportedAt)) {
           throw new Error('A newer driver status has already been sent. This older update was not sent.');
         }
-        await callParamountEmail({
+        await sendEmail({
           action: 'driverStatusSend', customer: draft.customer, orderNumber: draft.loadId,
           freightBill: draft.freightBill, messageId: draft.messageId, since: draft.since, postingCode
         });
@@ -8054,13 +8099,13 @@ export default function App({ sharing = null } = {}) {
           setParamountDrafts(current => current.filter(item => item.id !== draft.id));
           return;
         }
-        await callParamountEmail({
+        await sendEmail({
           action: 'dailyCustomerSend', customer: draft.customer, orderNumber: draft.loadId,
           day: draft.day, text: draft.text, postingCode
         });
         patchParamountLoad(draft.customer, draft.loadId, load => markParamountEmail(load, 'location'));
       } else if (draft.kind === 'checkCall') {
-        await callParamountEmail({
+        await sendEmail({
           action: 'checkCallSend', customer: draft.customer, orderNumber: draft.loadId,
           checkCallAt: draft.checkCallAt, text: draft.text, postingCode
         });
@@ -8082,12 +8127,12 @@ export default function App({ sharing = null } = {}) {
           .replace(/(\*\*\* IMPORTANT: PLEASE TURN ON [^\r\n]*?) NOW \*\*\*/g, '$1 ON THE DAY OF PICKUP ***')
           .replace('Please open the Trucker Tools app and start tracking for this load now.',
             'Please open the Trucker Tools app and start tracking for this load on the day of pickup.');
-        await callParamountEmail({ action: 'driverSend', freightBill: draft.freightBill, text, postingCode });
+        await sendEmail({ action: 'driverSend', freightBill: draft.freightBill, text, postingCode });
         patchParamountLoad(draft.customer, draft.loadId, load => markDriverEmail(load, draft.driverKind));
       } else if (draft.kind === 'rxoForward') {
         throw new Error('Separate forwards to Ivan are disabled. Use reply-all on the customer request.');
       } else if (draft.kind === 'customerUpdate') {
-        await callParamountEmail({
+        await sendEmail({
           action: 'customerSend', threadId: draft.threadId, messageId: draft.messageId,
           orderNumber: draft.loadId, text: draft.text, postingCode
         });
@@ -8097,14 +8142,14 @@ export default function App({ sharing = null } = {}) {
         const text = auto && postingCode === 'SNB' && currentLoad
           ? buildRxoUpdateEmail(currentLoad, currentLoad.paramountTracking || {}, { phone: paramountLatest.phone, availableOnly: true }).text
           : draft.text;
-        await callParamountEmail({ action: 'rxoSend', threadId: draft.threadId, text, postingCode });
+        await sendEmail({ action: 'rxoSend', threadId: draft.threadId, text, postingCode });
         markRxoHandled(draft.messageId);
         patchParamountLoad(draft.customer, draft.loadId, load => ({ ...load, notes: [load.notes, 'RXO update request answered'].filter(Boolean).join('\n') }));
       } else if (draft.kind === 'driverEta') {
-        await callParamountEmail({ action: 'send', orderNumber: draft.loadId, text: draft.text, postingCode });
+        await sendEmail({ action: 'send', orderNumber: draft.loadId, text: draft.text, postingCode });
         patchParamountLoad(draft.customer, draft.loadId, load => ({ ...load, notes: [load.notes, 'Paramount email sent: driver ETA'].filter(Boolean).join('\n') }));
       } else {
-        await callParamountEmail({
+        await sendEmail({
           action: 'send', orderNumber: draft.loadId, text: draft.text, postingCode,
           ...(getTrackingEmailBroker(draft.customer) === 'rxo' ? { broker: 'rxo' } : {})
         });
@@ -8116,6 +8161,13 @@ export default function App({ sharing = null } = {}) {
       }
       setParamountDrafts(current => current.filter(item => item.id !== draft.id));
     } catch (error) {
+      // The email record says this email already went out (or Daniel chose "Don't send"):
+      // settle the draft on the load so it isn't drafted again, and say why in the notes.
+      if (error.emailRecord === 'sent' || error.emailRecord === 'skipped') {
+        settleDraftOnLoad(draft);
+        patchParamountLoad(draft.customer, draft.loadId, load => ({ ...load, notes: [load.notes, error.message].filter(Boolean).join('\n') }));
+        return;
+      }
       // Shown in the panel so nothing goes missing silently.
       setParamountDrafts(current => (current.some(item => item.id === draft.id)
         ? current.map(item => (item.id === draft.id ? { ...item, sending: false, error: error.message } : item))
@@ -8125,6 +8177,12 @@ export default function App({ sharing = null } = {}) {
   };
 
   const skipParamountDraft = draft => {
+    recordSkippedEmail(draft);
+    settleDraftOnLoad(draft);
+  };
+
+  // Marks a draft as handled on its load (not sent) and removes it from the list.
+  const settleDraftOnLoad = draft => {
     if (draft.kind === 'rxo') markRxoHandled(draft.messageId);
     else if (draft.kind === 'customerUpdate') markCustomerHandled(draft.messageId);
     else if (draft.kind === 'checkCall') patchParamountLoad(draft.customer, draft.loadId, load => ({

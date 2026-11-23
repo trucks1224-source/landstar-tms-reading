@@ -1531,6 +1531,64 @@ test('tracking events enqueue broker emails in the owning worker instead of send
   assert.equal(listeners.size, 0);
 });
 
+test('every send carries its email record key; an email the record says was sent is settled, not retried', async () => {
+  const listeners = new Map();
+  const calls = [];
+  let tasks;
+  const booked = { ...load, id: '2283600', status: 'BOOKED', truck: '583737', pickupTime: '10/01/2026 0800' };
+  const app = createAppHarness(customers[0], [booked], null, {}, {
+    setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {}, AbortSignal,
+    window: {
+      location: { hostname: '127.0.0.1' },
+      addEventListener: (name, callback) => listeners.set(name, callback),
+      removeEventListener: name => listeners.delete(name)
+    },
+    navigator: { locks: {} },
+    emailWorkerModule: {
+      ...emailWorker,
+      createEmailWorker(options) {
+        tasks = options.tasks;
+        return { start() {}, stop() {}, isOwner: () => true, request() {}, reportIssue() {} };
+      }
+    },
+    fetch: async (url, options) => {
+      if (url === 'http://127.0.0.1:47615/posting-maintenance') return { ok: true };
+      const body = JSON.parse(options.body);
+      calls.push({ url, ...body });
+      if (body.action === 'send') {
+        return { ok: false, status: 409, json: async () => ({ error: 'Already sent 10/1, 9:00 AM (email record). Not sent again.', emailRecord: 'sent' }) };
+      }
+      return { ok: true, json: async () => ({ to: ['broker@example.com'], cc: [] }) };
+    }
+  });
+  const cleanup = app.effects.findLast(effect => String(effect).includes('landstar-tracking-result'))();
+  try {
+    listeners.get('landstar-tracking-result')({ detail: {
+      customer: customers[0], loadId: booked.id, ok: true, freightBill: '4431900',
+      trackingLink: 'https://clarity.example.com/tracking', at: new Date(TEST_NOW).toISOString()
+    } });
+    app.render();
+    await tasks.find(task => task.id === 'tracking-emails').run();
+    app.render();
+    app.find(node => node.type === 'button' && /1 email to send/.test(String(node.props.children))).props.onClick();
+    app.render();
+    const emails = () => app.find(node => node.props?.emails?.onSend).props.emails;
+    const [draft] = emails().drafts;
+    assert.equal(draft.id, `${customers[0]}|2283600|initial`);
+    emails().onSend(draft);
+    for (let i = 0; i < 5; i += 1) await new Promise(resolve => setImmediate(resolve));
+    const send = calls.find(call => call.action === 'send');
+    assert.equal(send.emailKey, draft.id, 'the draft id is the email record key');
+    assert.deepEqual({ ...send.emailMeta }, { customer: customers[0], loadId: '2283600', kind: 'initial' });
+    app.render();
+    assert.equal(emails().drafts.length, 0, 'already sent: the draft is settled, not left to retry');
+    const ordersMap = app.states.find(state => state && typeof state === 'object' && !Array.isArray(state) && Array.isArray(state[customers[0]]));
+    const saved = ordersMap[customers[0]].find(item => item.id === '2283600');
+    assert.match(saved.notes, /Already sent .* Not sent again/);
+    assert.ok(saved.paramountTracking.emails.initial, 'the load records the email so it is not drafted again');
+  } finally { cleanup(); }
+});
+
 // Runs the module in a fresh context sharing one storage map, simulating two tabs.
 function createSyncContext(storage) {
   const ctx = {

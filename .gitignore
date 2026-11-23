@@ -47,3 +47,6 @@ bot/prechecked.json
 bot/agent-config.json
 teammate-setup/out/
 bot/logs/
+bot/email-record.json
+bot/email-record.json.lock
+bot/email-record.json.*.tmp

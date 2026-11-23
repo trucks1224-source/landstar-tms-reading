@@ -48,3 +48,13 @@ test('an overnight PC restart is shown', () => {
   assert.match(row(report, 'restart').detail, /This PC restarted at/);
   assert.equal(row(buildHealthReport(allUp), 'restart'), undefined, 'an old restart is not shown');
 });
+
+test('sends that never finished are red, listed with what they were', () => {
+  const report = buildHealthReport({ ...allUp, unknownEmails: [{ key: 'Para|2283600|arrived', customer: 'Para 1522166 - ATZ', loadId: '2283600', kind: 'arrived', at: now - 3600000 }] });
+  const item = row(report, 'email-record');
+  assert.equal(item.level, 'bad');
+  assert.equal(report.worst, 'bad');
+  assert.match(item.detail, /1 email may or may not have gone out/);
+  assert.deepEqual(item.emails.map(email => email.label), ['Para 1522166 - ATZ · #2283600 · arrived']);
+  assert.equal(row(buildHealthReport(allUp), 'email-record'), undefined);
+});

@@ -15,6 +15,7 @@ import { describeSaveResult, extractProspects, isBlockedProspect } from './src/l
 let prospectOwnerId = null
 const { readRatesStatus, readHelperStatus, readRemovalStatus } = createRequire(import.meta.url)('./bot/status-server.js')
 const { buildHealthReport, readWatchdogStatus } = createRequire(import.meta.url)('./bot/health.js')
+const { sendOnce, SEND_ACTIONS, markEmailSkipped, settleUnknownEmail, listUnknownEmails } = createRequire(import.meta.url)('./bot/email-record.js')
 const { readBotControl, writeBotControl } = createRequire(import.meta.url)('./bot/local-bot-control.js')
 
 export default defineConfig(({ mode }) => {
@@ -142,7 +143,8 @@ export default defineConfig(({ mode }) => {
               upload: withSignIn('upload', upload && { state: upload.state, message: upload.message }),
               helper: withSignIn('helper', readHelperStatus()),
               removal: withSignIn('removal', readRemovalStatus()),
-              rates: withSignIn('rates', readRatesStatus())
+              rates: withSignIn('rates', readRatesStatus()),
+              unknownEmails: (() => { try { return listUnknownEmails() } catch { return [] } })()
             })))
           })
           server.middlewares.use('/api/rates/start', async (req, res) => {
@@ -286,11 +288,48 @@ export default defineConfig(({ mode }) => {
               if (body.length > 65_536) return reply(413, { error: 'The email is too large.' })
             }
             try {
-              const result = await handleParamountEmail(JSON.parse(body || '{}'))
+              const request = JSON.parse(body || '{}')
+              const { emailKey, emailMeta, ...rest } = request
+              // Sends with a record key go through the email record (bot/email-record.js):
+              // the same email is never sent twice, whichever process sends it.
+              const result = emailKey && SEND_ACTIONS.has(rest.action)
+                ? await sendOnce(String(emailKey), emailMeta || {}, () => handleParamountEmail(rest))
+                : await handleParamountEmail(rest)
               reply(result.status, result.body)
             } catch (error) {
               console.error('Paramount email request failed:', error.message)
               reply(502, { error: error.message || 'The Gmail request failed.' })
+            }
+          })
+
+          // Email record: "Don't send" clicks, and settling sends that never finished.
+          server.middlewares.use('/api/email-record', async (req, res) => {
+            const reply = (status, body) => {
+              res.statusCode = status
+              res.setHeader('Content-Type', 'application/json')
+              res.setHeader('Cache-Control', 'no-store')
+              res.end(JSON.stringify(body))
+            }
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              return reply(403, { error: 'Only the TMS on this computer can change the email record.' })
+            }
+            try {
+              if (req.method === 'GET') return reply(200, { unknown: listUnknownEmails() })
+              if (req.method !== 'POST') return reply(405, { error: 'Use GET or POST.' })
+              let body = ''
+              for await (const chunk of req) {
+                body += chunk
+                if (body.length > 4096) return reply(413, { error: 'Too large.' })
+              }
+              const { action, key, meta, wentOut } = JSON.parse(body || '{}')
+              if (!key) return reply(400, { error: 'An email key is required.' })
+              if (action === 'skip') markEmailSkipped(String(key), meta || {})
+              else if (action === 'settle') settleUnknownEmail(String(key), Boolean(wentOut))
+              else return reply(400, { error: 'Unknown action.' })
+              reply(200, { ok: true })
+            } catch (error) {
+              reply(500, { error: error.message })
             }
           })
 

@@ -62,6 +62,20 @@ function buildHealthReport(inputs) {
     botRow('removal', 'Removal bot', removal, { botsEnabled, now, offFix: watchdog.state === 'running' ? restartHint : 'Start the watchdog, or double-click "Start Removal Bot" in the bot folder.' }),
     botRow('rates', 'Rate worker', rates, { botsEnabled, now, offFix: watchdog.state === 'running' ? restartHint : 'Start the watchdog, or double-click "Start Rate Worker" in the bot folder.' })
   ];
+  // Sends that started but never finished (bot/email-record.js): Daniel checks Gmail and settles them.
+  const unknownEmails = Array.isArray(inputs.unknownEmails) ? inputs.unknownEmails : [];
+  if (unknownEmails.length) {
+    rows.push({
+      id: 'email-record', label: 'Email record', level: 'bad',
+      detail: `${unknownEmails.length} email${unknownEmails.length === 1 ? '' : 's'} may or may not have gone out (a send never finished).`,
+      fix: 'Check Gmail\'s Sent folder for each one, then tell the TMS what happened. Until then it is never re-sent.',
+      emails: unknownEmails.map(item => ({
+        key: item.key,
+        label: [item.customer, item.loadId && `#${item.loadId}`, item.kind].filter(Boolean).join(' · ') || item.key,
+        at: item.at
+      }))
+    });
+  }
   if (!botsEnabled) {
     rows.splice(1, 0, { id: 'switch', label: 'Bot switch', level: 'warn', detail: 'Off: the bots are paused', fix: 'Turn on the bot switch in the header to start posting and tracking.' });
   }

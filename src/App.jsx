@@ -288,8 +288,11 @@ function bookLoad(load, bookedAt = new Date().toISOString()) {
 // Every booked load is logged here (customer, line haul, when), so weekly and monthly
 // booking totals survive deliveries, imports and deletions (Daniel's rule, 2026-11-13).
 const bookingLogKey = 'landstar_bookingLog';
+// The amount at the start of the rate box; words typed after it ("5500 killing it today")
+// don't zero the line haul.
 function parseLineHaul(load) {
-  return Number(String(load?.rateInput || '').replace(/[$,]/g, '')) || 0;
+  const match = String(load?.rateInput || '').replace(/[$,]/g, '').match(/^\s*(\d+(?:\.\d+)?)/);
+  return match ? Number(match[1]) : 0;
 }
 // Adds (or refreshes) one booked load in the log, keyed by customer + load number.
 function addBookingEntry(log, customer, load) {
@@ -301,7 +304,12 @@ function addBookingEntry(log, customer, load) {
   const origSt = String(load.origSt || '').trim().toUpperCase();
   // A removed booking (capacity fell off) stays removed until the load is booked again
   // (a re-booking gets a fresh bookedAt, which no longer matches the removed entry's).
-  if (existing?.removed && (!load.bookedAt || load.bookedAt === existing.at)) return entries;
+  // Only removals you made (Remove capacity / status change) carry removedAt. An older TMS
+  // marked bookings removed by itself when its load list was out of date: those come back
+  // while the load is still booked with the same booking date.
+  const autoRemoved = existing?.removed && !existing.removedAt && load.bookedAt && load.bookedAt === existing.at
+    && String(load.status || '').toUpperCase() === 'BOOKED';
+  if (existing?.removed && !autoRemoved && (!load.bookedAt || load.bookedAt === existing.at)) return entries;
   const refresh = !existing || existing.removed
     || (lineHaul > 0 && existing.lineHaul !== lineHaul)
     || (miles > 0 && !(Number(existing.miles) > 0))
@@ -309,7 +317,7 @@ function addBookingEntry(log, customer, load) {
   if (!refresh) return entries;
   return [...entries.filter(entry => entry !== existing), {
     customer, loadId: String(load.id),
-    at: load.bookedAt || (existing?.removed ? '' : existing?.at) || new Date().toISOString(),
+    at: load.bookedAt || (existing?.removed && !autoRemoved ? '' : existing?.at) || new Date().toISOString(),
     lineHaul: lineHaul || Number(existing?.lineHaul) || 0, miles, origSt,
     eCode: String(load.eCode || '').trim().toUpperCase(),
     origin: [load.origCity, load.origSt].filter(Boolean).join(', '),
@@ -331,7 +339,7 @@ function getBookingCustomerGroup(name) {
 function removeBookingEntry(log, customer, loadId) {
   const entries = Array.isArray(log) ? log : [];
   return entries.map(entry => (entry.customer === customer && String(entry.loadId) === String(loadId))
-    ? { ...entry, removed: true } : entry);
+    ? { ...entry, removed: true, removedAt: new Date().toISOString() } : entry);
 }
 
 // Midnight on the Monday of that date's week.
@@ -6501,6 +6509,9 @@ export default function App({ sharing = null, userId = null } = {}) {
 
   // Every load with a booking date lands in the booking log (and stays there even after
   // the load delivers, drops off a list or is deleted), feeding the 📊 Bookings report.
+  // A booking comes off only when you remove capacity or move the load out of BOOKED
+  // (dropBookingLogEntry), never because a load here has no booking date: the log syncs
+  // across browsers, and one with an older load list would take fresh bookings off.
   useEffect(() => {
     try {
       let log = JSON.parse(localStorage.getItem(bookingLogKey) || '[]');
@@ -6513,10 +6524,6 @@ export default function App({ sharing = null, userId = null } = {}) {
               log = next;
               changed = true;
             }
-          } else if (log.some(entry => !entry.removed && entry.customer === customer && String(entry.loadId) === String(order.id))) {
-            // The booking fell through (capacity removed): its report entry goes too.
-            log = removeBookingEntry(log, customer, order.id);
-            changed = true;
           }
         }
       }
@@ -6654,7 +6661,10 @@ export default function App({ sharing = null, userId = null } = {}) {
       status: newStatus,
       tag: getStatusTag(newStatus)
     };
-    if (newStatus !== 'BOOKED') delete updatedOrder.bookedAt;
+    if (newStatus !== 'BOOKED') {
+      if (selectedOrder.bookedAt) dropBookingLogEntry(selectedBroker, selectedOrder.id);
+      delete updatedOrder.bookedAt;
+    }
     setSelectedOrder(updatedOrder);
     setCustomerOrdersMap(prev => ({
       ...prev,
@@ -8139,13 +8149,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         const raise = current && raises.find(item => loadMatchesRateRaise(current, item));
         return raise ? applyRateRaise(current, raise) : current;
       });
-      const lines = raises.map(raise => {
-        const match = found.find(item => item.raise === raise);
-        return `${raise.hazmat ? '☢ ' : ''}${match ? `#${match.load.id}` : `Landstar #${raise.landstarLoadId}`} ${raise.lane}: `
-          + `${formatRaiseMoney(raise.from)} → ${formatRaiseMoney(raise.to)}${raise.competitor ? ` (${raise.competitor} was paying ${formatRaiseMoney(raise.competitorRate)})` : ''}`;
-      });
-      pushNotice(`⬆ The bot raised ${raises.length} rate${raises.length === 1 ? '' : 's'} on Landstar to stay the highest: `
-        + `${lines.slice(0, 5).join(' · ')}${lines.length > 5 ? ` · …and ${lines.length - 5} more (look for ⬆ RAISED on the loads)` : ''}`);
+      // No pop-up (Daniel, 2026-11-23): the ⬆ RAISED badge and the note by the rate box show it.
     };
     window.addEventListener('landstar-rate-raises', onRateRaises);
     // Landstar rejected these postings; the bot deleted the error drafts from Bulk Postings.

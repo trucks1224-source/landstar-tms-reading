@@ -4329,6 +4329,18 @@ test('booking log: weekly totals per customer, monthly totals, and line haul sum
   assert.equal(policy.summarizeBookings(staleReAdd).weeks[0].loads, 2, 'same bookedAt: stays removed');
   const rebooked = policy.addBookingEntry(slimmed, 'R X O 2429200 - ATZ V', { id: '3', rateInput: '3000', bookedAt: '2026-11-13T15:00:00' });
   assert.equal(policy.summarizeBookings(rebooked).weeks[0].loads, 3, 'new booking date: back in the totals');
+  // An older TMS's automatic "removed" (no removedAt) is undone while the load is still booked.
+  const autoRemoved = slimmed.map(entry => (entry.loadId === '3' ? { ...entry, removedAt: undefined } : entry));
+  const healed = policy.addBookingEntry(autoRemoved, 'R X O 2429200 - ATZ V', { id: '3', status: 'BOOKED', rateInput: '3000', bookedAt: '2026-11-13T10:00:00' });
+  assert.equal(policy.summarizeBookings(healed).weeks[0].loads, 3, 'auto-removed booking comes back');
+  assert.equal(policy.addBookingEntry(slimmed, 'R X O 2429200 - ATZ V', { id: '3', status: 'BOOKED', rateInput: '3000', bookedAt: '2026-11-13T10:00:00' }), slimmed,
+    'a removal you made stays removed');
+  // Words typed after the rate don't zero the line haul.
+  const chatty = policy.addBookingEntry([], 'Para 1522166 - ATZ H', { id: '10', rateInput: '5500 killing it today', bookedAt: '2026-11-11T10:00:00' });
+  assert.equal(chatty[0].lineHaul, 5500);
+  const fixed = policy.addBookingEntry([{ ...chatty[0], lineHaul: 0 }], 'Para 1522166 - ATZ H', { id: '10', rateInput: '$5,500 killing it', bookedAt: '2026-11-11T10:00:00' });
+  assert.equal(fixed[0].lineHaul, 5500, 'an entry saved as $0 is corrected');
+  assert.equal(policy.addBookingEntry([], 'X', { id: '11', rateInput: 'call me', bookedAt: '2026-11-11T10:00:00' })[0].lineHaul, 0);
 });
 
 test('tracking emails go on Paramount\'s or RXO\'s rate confirmation; every RXO account counts', () => {

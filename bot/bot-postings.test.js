@@ -12,3 +12,13 @@ test('only postings that match a spreadsheet the bot uploaded count as the bot\'
   assert.equal(isBotPosting({ ...board, Weight: 30000 }, uploaded), false, 'a Quick Post load is not in any upload');
   assert.equal(isBotPosting({ ...board, PickupThruDateForDisplay: '11/10/26 15:00' }, uploaded), false);
 });
+
+test('the ledger remembers uploads after their spreadsheet is cleaned up, for 45 days', () => {
+  const os = require('os'); const path = require('path'); const fs = require('fs');
+  const { mergeLedger } = require('./bot-postings');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-')), 'ledger.json');
+  const day = 86400000;
+  assert.deepEqual(mergeLedger(new Set(['a']), 0, file), ['a']);
+  assert.deepEqual(mergeLedger(new Set(), 10 * day, file), ['a'], 'still known after the file is gone');
+  assert.deepEqual(mergeLedger(new Set(), 46 * day, file), [], 'forgotten after 45 days');
+});

@@ -21,23 +21,48 @@ const posting = (id, postedMs, overrides = {}) => ({
 
 test('keeps the newest posting of a load and removes the older copies', () => {
   const plan = planDuplicateRemoval([
-    posting(187126714, 1000),
-    posting(187184236, 3000),
-    posting(187150000, 2000, { TotalRevenue: 2400 })
+    posting(187126714, 100000),
+    posting(187184236, 300000),
+    posting(187150000, 200000, { TotalRevenue: 2400 })
   ]);
   assert.deepEqual(plan.keep, [187184236]);
   assert.deepEqual(plan.remove.sort(), [187126714, 187150000]);
 });
 
-test('different pickup windows, lanes, weights or agencies are different loads', () => {
+test('different pickup days, lanes, trailers or agencies are different loads', () => {
   const plan = planDuplicateRemoval([
     posting(1, 1000),
-    posting(2, 2000, { PickupFromDateForDisplay: '11/09/26 08:00' }),
-    posting(3, 3000, { DestinationCityState: 'MANSFIELD, TX' }),
-    posting(4, 4000, { Weight: 40000 }),
-    posting(5, 5000, { Agency: 'SNB' })
+    posting(2, 200000, { PickupFromDateForDisplay: '11/09/26 08:00', PickupThruDateForDisplay: '11/09/26 20:00' }),
+    posting(3, 300000, { DestinationCityState: 'MANSFIELD, TX' }),
+    posting(4, 400000, { TrailerTypes: ['REFR'] }),
+    posting(5, 500000, { Agency: 'SNB' })
   ]);
   assert.deepEqual(plan.remove, []);
+});
+
+test('a re-export with a shifted pickup start, delivery window or weight replaces the old posting', () => {
+  const plan = planDuplicateRemoval([
+    posting(1, 1000, { PickupFromDateForDisplay: '11/08/26 00:07', DeliveryFromDateForDisplay: '11/09/26 00:00' }),
+    posting(2, 500000, { Weight: 33138 }),
+    posting(3, 900000, { PickupFromDateForDisplay: '11/08/26 10:00', Weight: 30000 })
+  ]);
+  assert.deepEqual(plan.keep, [3]);
+  assert.deepEqual(plan.remove.sort(), [1, 2]);
+});
+
+test('several loads on one lane and day from the same upload are all kept', () => {
+  const plan = planDuplicateRemoval([
+    posting(1, 1000), posting(2, 1200),
+    posting(3, 900000), posting(4, 900300)
+  ]);
+  assert.deepEqual(plan.keep.sort(), [3, 4]);
+  assert.deepEqual(plan.remove.sort(), [1, 2]);
+});
+
+test('bulk uploads are recognised by loads posted seconds apart; a lone Quick Post is not', () => {
+  const { bulkUploadedIds } = require('./dedupe');
+  const ids = bulkUploadedIds([posting(1, 1000), posting(2, 1500), posting(3, 2900), posting(9, 600000)]);
+  assert.deepEqual([...ids].sort(), ['1', '2', '3']);
 });
 
 test('postings made by hand (not bulk uploads) are never removed', () => {
@@ -49,9 +74,9 @@ test('postings made by hand (not bulk uploads) are never removed', () => {
 });
 
 test('same posted time falls back to the higher load number', () => {
-  const plan = planDuplicateRemoval([posting(10, 1000), posting(11, 1000)]);
-  assert.deepEqual(plan.keep, [11]);
-  assert.deepEqual(plan.remove, [10]);
+  const plan = planDuplicateRemoval([posting(10, 1000), posting(11, 1000), posting(12, 900000)]);
+  assert.deepEqual(plan.keep, [12]);
+  assert.deepEqual(plan.remove, [11, 10]);
 });
 
 test('protected loads are never removed, even by a confirmed remove-all run', () => {

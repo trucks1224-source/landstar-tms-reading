@@ -54,3 +54,6 @@ bot/email-bot-report.json
 bot/email-bot-report.json.*.tmp
 bot/email-bot-status.json
 bot/email-bot-status.json.*.tmp
+# Upload bot: what the bot has posted (kept after the spreadsheets are cleaned up)
+bot/uploaded-ledger.json
+bot/uploaded-ledger.json.tmp

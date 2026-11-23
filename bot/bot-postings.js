@@ -48,12 +48,34 @@ function fileSignatures(filePath) {
 
 const cache = new Map(); // file path -> { mtimeMs, signatures }
 
+// Uploaded spreadsheets are deleted after a day (upload.js cleanOldExports), but the
+// postings stay live longer. Every signature read from them is kept here, so the bot
+// still knows its own older postings (and can remove their copies) after the cleanup.
+const LEDGER_FILE = path.join(__dirname, 'uploaded-ledger.json');
+
+function mergeLedger(signatures, now, ledgerFile = LEDGER_FILE) {
+  let ledger = {};
+  try { ledger = JSON.parse(fs.readFileSync(ledgerFile, 'utf8')) || {}; } catch { /* first run */ }
+  let changed = false;
+  for (const [sig, seenAt] of Object.entries(ledger)) {
+    if (now - seenAt > MAX_FILE_AGE_MS) { delete ledger[sig]; changed = true; }
+  }
+  signatures.forEach(sig => { if (!ledger[sig]) { ledger[sig] = now; changed = true; } });
+  if (changed) {
+    try {
+      fs.writeFileSync(`${ledgerFile}.tmp`, JSON.stringify(ledger));
+      fs.renameSync(`${ledgerFile}.tmp`, ledgerFile);
+    } catch { /* the files still work for today */ }
+  }
+  return Object.keys(ledger);
+}
+
 // Signatures of every load in the spreadsheets the bot uploaded recently.
-// onlyFiles: e.g. /^Landstar_Bulk_Nolan/i for one customer's uploads.
-function uploadedSignatures(folder = UPLOADED_FOLDER, now = Date.now(), onlyFiles = null) {
+// onlyFiles: e.g. /^Landstar_Bulk_Nolan/i for one customer's uploads (files only, no ledger).
+function uploadedSignatures(folder = UPLOADED_FOLDER, now = Date.now(), onlyFiles = null, ledgerFile = folder === UPLOADED_FOLDER ? LEDGER_FILE : null) {
   const all = new Set();
   let names = [];
-  try { names = fs.readdirSync(folder).filter(name => /\.xlsx$/i.test(name) && (!onlyFiles || onlyFiles.test(name))); } catch { return all; }
+  try { names = fs.readdirSync(folder).filter(name => /\.xlsx$/i.test(name) && (!onlyFiles || onlyFiles.test(name))); } catch { names = []; }
   for (const name of names) {
     const filePath = path.join(folder, name);
     let stat;
@@ -66,6 +88,7 @@ function uploadedSignatures(folder = UPLOADED_FOLDER, now = Date.now(), onlyFile
     }
     entry.signatures.forEach(s => all.add(s));
   }
+  if (!onlyFiles && ledgerFile) mergeLedger(all, now, ledgerFile).forEach(s => all.add(s));
   return all;
 }
 
@@ -73,4 +96,4 @@ function isBotPosting(posting, signatures = uploadedSignatures()) {
   return signatures.has(postingSignature(posting));
 }
 
-module.exports = { isBotPosting, uploadedSignatures, postingSignature, signature, serialToBoardTime, UPLOADED_FOLDER };
+module.exports = { isBotPosting, uploadedSignatures, mergeLedger, postingSignature, signature, serialToBoardTime, UPLOADED_FOLDER };

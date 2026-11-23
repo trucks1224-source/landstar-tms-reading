@@ -3,9 +3,9 @@
 // Re-importing a customer's list and exporting again posts every still-open load
 // again, and Landstar keeps the older posting live too, so copies pile up. This
 // scans the load board for your bulk-uploaded postings (SourceSystemID PORTAL)
-// under your own posting codes, groups identical loads (same origin, destination,
-// pickup and delivery windows, weight and trailer types), and cancels every copy
-// except the most recently posted one. Postings you made by hand are never touched.
+// under your own posting codes, groups them by lane, pickup day and trailer type,
+// and cancels every posting older than the newest upload of that lane. Postings
+// you made by hand are never touched.
 //
 // Used by upload.js after uploads and while idle. Can also run on its own:
 //   node dedupe.js            <- report only, removes nothing
@@ -32,19 +32,24 @@ const STATES = ['AL', 'AR', 'AZ', 'CA', 'CO', 'CT', 'DC', 'DE', 'FL', 'GA', 'IA'
 
 const postedAt = load => Number(String(load.OrderDate || '').match(/-?\d+/)?.[0] || 0);
 
-// Same load = same agency, lane, pickup and delivery windows, weight and trailer types.
+// Same load = same agency, lane, pickup day and trailer types. Re-exports often shift the
+// pickup start, the delivery window or the weight a little (seen 2026-11-23: 24 copies
+// survived an exact-match check), so those are not part of the key.
 function postingKey(load) {
   return [
     String(load.Agency || '').trim().toUpperCase(),
     load.OriginCityState, load.DestinationCityState,
-    load.PickupFromDateForDisplay, load.PickupThruDateForDisplay,
-    load.DeliveryFromDateForDisplay, load.DeliveryThruDateForDisplay,
-    load.Weight,
+    String(load.PickupThruDateForDisplay || load.PickupFromDateForDisplay || '').trim().split(' ')[0],
     (load.TrailerTypes || []).map(type => String(type).trim()).sort().join('+')
   ].join('|');
 }
 
-// Returns { keep: [...], remove: [...] } load IDs: newest posting of each load is kept.
+// Loads posted this close together came from the same upload: several of them on one lane
+// and day are separate loads on the customer's list, not copies.
+const SAME_UPLOAD_MS = 60 * 1000;
+
+// Returns { keep: [...], remove: [...] } load IDs. For each lane and pickup day, the postings
+// of the newest upload are kept and every older posting is removed.
 function planDuplicateRemoval(postings) {
   const groups = new Map();
   postings
@@ -59,10 +64,28 @@ function planDuplicateRemoval(postings) {
   for (const group of groups.values()) {
     if (group.length < 2) continue;
     group.sort((a, b) => postedAt(b) - postedAt(a) || Number(b.LoadId) - Number(a.LoadId));
-    keep.push(group[0].LoadId);
-    group.slice(1).forEach(load => remove.push(load.LoadId));
+    const newest = postedAt(group[0]);
+    const older = group.filter((load, i) => i > 0 && newest - postedAt(load) > SAME_UPLOAD_MS);
+    if (!older.length) continue;
+    group.filter(load => !older.includes(load)).forEach(load => keep.push(load.LoadId));
+    older.forEach(load => remove.push(load.LoadId));
   }
   return { keep, remove };
+}
+
+// A bulk upload posts many loads within a second or two; a hand Quick Post is one load on its
+// own. Used to recognise the bot's older uploads after their spreadsheet was cleaned up.
+const BULK_GAP_MS = 3000;
+function bulkUploadedIds(postings) {
+  const sorted = postings
+    .filter(load => String(load.SourceSystemID || '').toUpperCase() === 'PORTAL' && postedAt(load) > 0)
+    .sort((a, b) => postedAt(a) - postedAt(b));
+  const ids = new Set();
+  sorted.forEach((load, i) => {
+    const near = [sorted[i - 1], sorted[i + 1]].some(other => other && Math.abs(postedAt(other) - postedAt(load)) <= BULK_GAP_MS);
+    if (near) ids.add(String(load.LoadId));
+  });
+  return ids;
 }
 
 // ---------- board and portal ----------
@@ -154,7 +177,9 @@ function filterRemovable(requestedIds, { protectedIds, postings, confirmedAllOwn
   });
 }
 
-async function cancelPostings(page, requestedIds, log = console.log, { refreshLoad, confirmedAllOwnAvailable = false } = {}) {
+// olderCopies: every requested posting is an older copy whose newest copy stays live, so the
+// TMS load is still posted and the TMS protection does not keep the copy (protected-loads.json still does).
+async function cancelPostings(page, requestedIds, log = console.log, { refreshLoad, confirmedAllOwnAvailable = false, olderCopies = false } = {}) {
   const { readSnapshot, isProtectedPosting, refreshIsCurrent, postingKey } = require('./posting-maintenance');
   const snapshot = readSnapshot();
   const refreshAllowed = refreshLoad && refreshIsCurrent(refreshLoad, snapshot);
@@ -162,7 +187,7 @@ async function cancelPostings(page, requestedIds, log = console.log, { refreshLo
   const unprotected = filterRemovable(requestedIds, {
     protectedIds, postings: seenPostings, confirmedAllOwnAvailable,
     isStillProtected: posting => {
-      if (!isProtectedPosting(posting, snapshot)) return false;
+      if (olderCopies || !isProtectedPosting(posting, snapshot)) return false;
       if (!refreshAllowed) return true;
       const key = require('./bot-postings').postingSignature(posting);
       // A refresh may replace its own protected posting, never another protected load.
@@ -176,7 +201,9 @@ async function cancelPostings(page, requestedIds, log = console.log, { refreshLo
   // Only the bot's own bulk uploads are ever removed: loads posted by hand (Quick Post)
   // stay up even when they are not on the customer's list. See bot-postings.js.
   const signatures = uploadedSignatures();
-  const isOwn = id => seenPostings.has(String(id)) && isBotPosting(seenPostings.get(String(id)), signatures);
+  const bulk = bulkUploadedIds([...seenPostings.values()]);
+  const isOwn = id => seenPostings.has(String(id))
+    && (isBotPosting(seenPostings.get(String(id)), signatures) || bulk.has(String(id)));
   const loadIds = confirmedAllOwnAvailable ? unprotected : unprotected.filter(isOwn);
   if (loadIds.length < unprotected.length) {
     log(`  Kept ${unprotected.length - loadIds.length} posting(s) not uploaded by the bot (posted by hand): ${unprotected.filter(id => !isOwn(id)).join(', ')}`);
@@ -231,12 +258,12 @@ async function removeDuplicatePostings(context, { apply = true, log = console.lo
     return 0;
   }
   setStatus('logged-in', `Removing ${remove.length} duplicate posting(s)`);
-  const cancelled = await cancelPostings(boardPage, remove, log);
+  const cancelled = await cancelPostings(boardPage, remove, log, { olderCopies: true });
   log(`  Removed ${cancelled} older duplicate posting(s); the newest posting of each load is still live.`);
   return cancelled;
 }
 
-module.exports = { removeDuplicatePostings, planDuplicateRemoval, postingKey, listPostings, cancelPostings, protectedLoadIds, filterRemovable, STATES };
+module.exports = { removeDuplicatePostings, planDuplicateRemoval, bulkUploadedIds, postingKey, listPostings, cancelPostings, protectedLoadIds, filterRemovable, STATES };
 
 if (require.main === module) {
   const apply = process.argv.includes('--apply');

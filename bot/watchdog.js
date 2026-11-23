@@ -103,5 +103,15 @@ async function check() {
 
 log('Watchdog on. Keeping the TMS, posting, helper, removal and rate workers running.');
 log('Close this window to turn the watchdog off.');
-void check();
+
+// At sign-in the TMS is usually not running yet: start it right away instead of
+// waiting out RESTART_AFTER_MS, so the TMS window opens without "refused to connect".
+(async () => {
+  if (!(await answers(TMS_URL))) {
+    lastLaunch.tms = Date.now();
+    log('The TMS dev server is not running - starting it now.');
+    launchTms();
+  }
+  void check();
+})();
 setInterval(check, CHECK_MS);

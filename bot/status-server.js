@@ -111,11 +111,29 @@ function readResults() {
   }
 }
 
+// Saves a small JSON file: write a copy, then swap it in. The project folder is in OneDrive, which
+// briefly locks files while it syncs them (EPERM on the swap, 2026-11-23: it stopped the rates
+// bot's hazmat check). So the swap is retried, then the file is written in place.
+const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function saveJsonFile(file, value) {
+  const text = JSON.stringify(value);
+  const temp = `${file}.${process.pid}.tmp`;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      fs.writeFileSync(temp, text);
+      fs.renameSync(temp, file);
+      return;
+    } catch (error) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error;
+      pause(60 * (attempt + 1));
+    }
+  }
+  fs.writeFileSync(file, text);
+  try { fs.unlinkSync(temp); } catch { /* already gone */ }
+}
+
 function updateResults(change) {
-  const next = change(readResults());
-  const temp = `${RESULTS_FILE}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify(next));
-  fs.renameSync(temp, RESULTS_FILE);
+  saveJsonFile(RESULTS_FILE, change(readResults()));
 }
 
 // The helper bot's light: { state, message, at } written by helper.js every few seconds.
@@ -485,9 +503,12 @@ function start() {
 function setStatus(state, message = '') {
   if (IS_RATES) {
     const rateState = state === 'logged-in' && /^(Rate-checking|Checking)/i.test(message) ? 'working' : state;
-    const temp = `${RATES_STATUS_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify({ state: rateState, message, at: Date.now(), pid: process.pid }));
-    fs.renameSync(temp, RATES_STATUS_FILE);
+    // A status note that cannot be saved must never stop a rate check (it is written again in seconds).
+    try {
+      saveJsonFile(RATES_STATUS_FILE, { state: rateState, message, at: Date.now(), pid: process.pid });
+    } catch (error) {
+      console.error('Could not save the rate worker status (it is tried again shortly):', error.message);
+    }
     return;
   }
   if (IS_REMOVAL) {

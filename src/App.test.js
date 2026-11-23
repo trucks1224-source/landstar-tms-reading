@@ -55,7 +55,7 @@ export {
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
-  normalizeBrokerList, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
+  normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
   getPastedImage, readClipboardImage, getImportedLoadSelection,
   getFuelSurchargeRegion, getFuelSurchargeRate, normalizeFuelSurchargeRates, parseFuelSurchargeEmail,
@@ -4392,4 +4392,12 @@ test('a Bulk Postings error the bot deleted badges its load until the load is ex
   assert.equal(policy.hasOpenLandstarError(flagged), true);
   assert.equal(policy.hasOpenLandstarError({ ...flagged, landstarExportedAt: '2026-11-23T17:00:00.000Z' }), false, 'exported again after the error');
   assert.equal(policy.hasOpenLandstarError(exported), false);
+});
+
+test('customers that still have loads stay in the customer list', () => {
+  const list = ['Para 1522166 - ATZ', 'R X O 2429200 - ATZ'];
+  const orders = { 'Para 1522166 - ATZ': [{ id: '1' }], 'R X O 2429200 - ATZ V': [{ id: '2' }], 'Old Empty': [] };
+  assert.equal(JSON.stringify(policy.addCustomersWithLoads(list, orders)), JSON.stringify([...list, 'R X O 2429200 - ATZ V']));
+  const complete = [...list, 'R X O 2429200 - ATZ V'];
+  assert.equal(policy.addCustomersWithLoads(complete, orders), complete, 'nothing missing: same list');
 });

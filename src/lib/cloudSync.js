@@ -370,17 +370,22 @@ async function doFlush() {
   if (!currentUserId || !hasPending()) return;
   setStatus('saving');
   try {
-    const keys = Object.keys(pending);
-    if (keys.length) {
-      const rows = keys.map(key => ({ user_id: currentUserId, key, value: pending[key], updated_at: new Date().toISOString() }));
-      const { error } = await supabase.from('app_data').upsert(rows, { onConflict: 'user_id,key' });
-      if (error) throw error;
-      rows.forEach(row => {
-        ownPushes[row.key] = [...(ownPushes[row.key] || []), row.value].slice(-ownPushLimit);
-        lastSynced[row.key] = row.value;
-        if (pending[row.key] === row.value) delete pending[row.key];
-      });
+    // One request per key, smallest first: a slow save of the big load list (it can time
+    // out) must not take the customer list, booking log or settings down with it.
+    const keys = Object.keys(pending).sort((a, b) => String(pending[a]).length - String(pending[b]).length);
+    let firstError = null;
+    for (const key of keys) {
+      const row = { user_id: currentUserId, key, value: pending[key], updated_at: new Date().toISOString() };
+      const { error } = await supabase.from('app_data').upsert([row], { onConflict: 'user_id,key' });
+      if (error) {
+        firstError = firstError || error;
+        continue;
+      }
+      ownPushes[row.key] = [...(ownPushes[row.key] || []), row.value].slice(-ownPushLimit);
+      lastSynced[row.key] = row.value;
+      if (pending[row.key] === row.value) delete pending[row.key];
     }
+    if (firstError) throw firstError;
     await flushShared(pendingLoads, 'shared_loads', 'load_id', 'data', 'id', 'data', 'loads');
     await flushShared(pendingRates, 'shared_lane_rates', 'rate_key', 'rate', 'key', 'rate', 'rates');
     for (const [name, order] of [...pendingOrder.entries()]) {

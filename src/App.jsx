@@ -3856,6 +3856,16 @@ function normalizeBrokerList(value) {
   return normalizedBrokers;
 }
 
+// Every customer that still has loads stays in the customer list. Deleting a customer
+// deletes its loads too, so this only brings back names a stale or broken save dropped
+// (11/23: another browser saved a 4-name list and 8 customers vanished from the sidebar).
+function addCustomersWithLoads(brokerList, ordersMap) {
+  const missing = Object.entries(ordersMap || {})
+    .filter(([name, loads]) => Array.isArray(loads) && loads.length && !brokerList.includes(name))
+    .map(([name]) => name);
+  return missing.length ? [...brokerList, ...missing] : brokerList;
+}
+
 function normalizeCustomerOrders(value) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : defaultCustomerDatasets;
   const normalized = {};
@@ -6692,6 +6702,11 @@ export default function App({ sharing = null, userId = null } = {}) {
       console.error(`Could not copy ${label} to the clipboard:`, error);
     }
   };
+
+  useEffect(() => {
+    const complete = addCustomersWithLoads(brokers, customerOrdersMap);
+    if (complete !== brokers) setBrokers(complete);
+  }, [brokers, customerOrdersMap]);
 
   // Picks up changes saved from another browser or by teammates on shared customers.
   // Only keys whose stored value actually changed are adopted, so an unrelated sync

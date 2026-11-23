@@ -7,7 +7,7 @@ const { spawnSync } = require('child_process');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'assign-lock-'));
 process.env.ASSIGN_QUEUE_FILE = path.join(dir, 'queue.json');
-const { claimAssignQueue, reserveAssignment, processAssignQueue, reconcileAssignQueue, findTractorOption } = require('./assign');
+const { claimAssignQueue, reserveAssignment, processAssignQueue, reconcileAssignQueue, findTractorOption, judgeAssignCheck, checkUnconfirmedAssign } = require('./assign');
 
 test('team trucks select the first exact tractor match, not a different tractor', () => {
   const options = ['5818301 - LRGR\nOther truck', '581830 - LRGR\nDriver one', '581830 - LRGR\nDriver two'];
@@ -24,6 +24,27 @@ test('only one worker can process capacity assignments, even across processes', 
     { cwd: __dirname, env: process.env, encoding: 'utf8' });
     assert.equal(child.status, 0, child.stderr);
   } finally { release(); }
+});
+
+test('a lock left by a stopped worker that never reached Assign is taken over', () => {
+  const lock = `${process.env.ASSIGN_QUEUE_FILE}.lock`;
+  const dead = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).stdout.trim();
+  fs.rmSync(`${process.env.ASSIGN_QUEUE_FILE}.attempts`, { recursive: true, force: true });
+  fs.writeFileSync(lock, dead);
+  const release = claimAssignQueue();
+  assert.equal(typeof release, 'function');
+  assert.equal(fs.readFileSync(lock, 'utf8'), String(process.pid));
+  release();
+});
+
+test('a lock left by a stopped worker after an Assign attempt still needs a person', () => {
+  const lock = `${process.env.ASSIGN_QUEUE_FILE}.lock`;
+  const dead = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).stdout.trim();
+  fs.writeFileSync(lock, dead);
+  assert.equal(reserveAssignment('555000111', '333333'), true);
+  assert.throws(() => claimAssignQueue(), /stopped during processing/);
+  fs.unlinkSync(lock);
+  fs.rmSync(`${process.env.ASSIGN_QUEUE_FILE}.attempts`, { recursive: true, force: true });
 });
 
 test('an empty queue releases its lock without browser access', async () => {
@@ -69,4 +90,34 @@ test.after(() => {
   }
   fs.rmdirSync(`${process.env.ASSIGN_QUEUE_FILE}.attempts`);
   fs.rmdirSync(dir);
+});
+
+test('an unconfirmed Assign is judged from the Landstar record, never guessed', () => {
+  const rec = obj => ({ httpStatus: 200, body: JSON.stringify(obj) });
+  assert.equal(judgeAssignCheck(rec({ status: 'Covered', capacity: { tractorNumber: '540514' } }), '540514').state, 'assigned');
+  assert.equal(judgeAssignCheck(rec({ loadStatus: 'Assigned', tractor: '999999' }), '540514').state, 'probably');
+  assert.equal(judgeAssignCheck(rec({ loadStatus: 'Available' }), '540514').state, 'available');
+  assert.equal(judgeAssignCheck(rec({ weight: 540514 }), '540514').state, 'unknown');
+  assert.equal(judgeAssignCheck({ httpStatus: 404, body: '' }, '540514').state, 'probably');
+  assert.equal(judgeAssignCheck({ httpStatus: 401, body: '' }, '540514').state, 'unknown');
+  assert.equal(judgeAssignCheck(null, '540514').state, 'unknown');
+  assert.equal(judgeAssignCheck({ httpStatus: 200, body: '<html>' }, '540514').state, 'unknown');
+});
+
+test('only a record naming the truck turns an unconfirmed Assign into assigned', async () => {
+  const pageWith = answer => ({ waitForTimeout: async () => {}, evaluate: async () => answer });
+  const logs = [];
+  const yes = await checkUnconfirmedAssign(pageWith({ httpStatus: 200, body: JSON.stringify({ status: 'Covered', bcoTractor: '540514 - LRGR' }) }),
+    '190318597', '540514', '540514 - LRGR / Carrier', m => logs.push(m), 'fallback', 0);
+  assert.equal(yes.ok, true);
+  assert.match(yes.message, /confirmed on the board/);
+  const maybe = await checkUnconfirmedAssign(pageWith({ httpStatus: 404, body: '' }), '190318597', '540514', '', () => {}, 'fallback', 0);
+  assert.equal(maybe.ok, false);
+  assert.equal(maybe.retry, false);
+  assert.equal(maybe.unconfirmed, true);
+  assert.match(maybe.message, /probably assigned/);
+  const unknown = await checkUnconfirmedAssign(pageWith(null), '190318597', '540514', '', () => {}, 'fallback', 0);
+  assert.equal(unknown.retry, false);
+  assert.match(unknown.message, /^fallback/);
+  fs.rmSync(path.join(__dirname, 'logs', 'assign-check-190318597.json'), { force: true });
 });

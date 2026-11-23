@@ -29,11 +29,26 @@ function claimAssignQueue() {
     if (!Number.isInteger(owner) || owner <= 0) throw new Error('Invalid assignment lock; manual review required.');
     try { process.kill(owner, 0); } catch (processError) {
       if (processError.code !== 'ESRCH') throw processError;
-      throw new Error('Assignment worker stopped during processing. Check Landstar before manually clearing the assignment lock.');
+      // The worker died. If it never reserved an assignment (that happens right before the
+      // Assign click), it never clicked Assign, so the lock is safe to take over.
+      if (attemptedSince(fs.statSync(file).mtimeMs)) {
+        throw new Error('Assignment worker stopped during processing. Check Landstar before manually clearing the assignment lock.');
+      }
+      fs.unlinkSync(file);
+      return claimAssignQueue();
     }
     return null;
   }
   return () => fs.unlinkSync(file);
+}
+
+// True when an assignment reservation was written at or after `sinceMs` (a 2 s margin
+// covers coarse file timestamps).
+function attemptedSince(sinceMs) {
+  const directory = `${ASSIGN_QUEUE_FILE}.attempts`;
+  let names = [];
+  try { names = fs.readdirSync(directory); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return names.some(name => fs.statSync(path.join(directory, name)).mtimeMs >= sinceMs - 2000);
 }
 
 // Never clear automatically: a timeout or crash after Assign may still create a freight bill.
@@ -80,6 +95,72 @@ function findTractorOption(texts, truck) {
 }
 
 const clean = text => String(text || '').replace(/\s+/g, ' ').trim();
+
+// After an Assign click Landstar did not confirm: read the posting's portal record and decide.
+// Never clicks anything. Returns { state: 'assigned' | 'probably' | 'available' | 'unknown', detail }.
+//  - 'assigned': the record names this tractor in an assignment/capacity field
+//  - 'probably': the record is gone (404) or its status is no longer Available
+//  - 'available': the record still says Available (Landstar did not take it)
+function judgeAssignCheck(check, truck) {
+  if (!check) return { state: 'unknown', detail: 'no answer from Landstar' };
+  if (check.httpStatus === 404 || check.httpStatus === 410) return { state: 'probably', detail: 'the posting is no longer on the board' };
+  if (check.httpStatus >= 400 || !check.httpStatus) return { state: 'unknown', detail: 'Landstar returned HTTP ' + check.httpStatus };
+  let record;
+  try { record = JSON.parse(check.body); } catch { return { state: 'unknown', detail: 'unreadable answer from Landstar' }; }
+  const want = String(truck || '').trim().replace(/^0+/, '');
+  const statuses = [];
+  let tractorFound = false;
+  (function walk(value, key) {
+    if (Array.isArray(value)) return value.forEach(item => walk(item, key));
+    if (value && typeof value === 'object') return Object.entries(value).forEach(([k, v]) => walk(v, k));
+    if (typeof value !== 'string' && typeof value !== 'number') return;
+    const text = String(value).trim();
+    if (/status/i.test(key || '') && typeof value === 'string' && text) statuses.push(text);
+    if (want && /tractor|bco|truck/i.test(key || '') && text.split(/[\s\-\/]+/)[0].replace(/^0+/, '') === want) tractorFound = true;
+  })(record, '');
+  if (tractorFound) return { state: 'assigned', detail: 'Landstar lists tractor ' + truck + ' on it' };
+  if (statuses.some(s => /^avail/i.test(s))) return { state: 'available', detail: 'Landstar still lists it as Available' };
+  if (statuses.length) return { state: 'probably', detail: 'its Landstar status is now "' + statuses[0] + '"' };
+  return { state: 'unknown', detail: 'no status in the Landstar record' };
+}
+
+// Reads the posting's portal record from the (signed-in) assign page and saves it to logs/.
+async function readPostingRecord(page, landstarLoadId) {
+  const check = await page.evaluate(async id => {
+    let token = null;
+    for (const store of [sessionStorage, localStorage]) {
+      for (let i = 0; i < store.length; i += 1) {
+        const key = store.key(i);
+        if (/oidc\.user/i.test(key)) { try { token = JSON.parse(store.getItem(key)).access_token || token; } catch { /* next */ } }
+      }
+    }
+    if (!token) return null;
+    const r = await fetch('/loadboards/v1/availableLoad/agent/PORTAL/' + id, { headers: { Authorization: 'Bearer ' + token } });
+    return { httpStatus: r.status, body: await r.text() };
+  }, String(landstarLoadId)).catch(() => null);
+  try {
+    fs.mkdirSync(path.join(__dirname, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(__dirname, 'logs', 'assign-check-' + landstarLoadId + '.json'), JSON.stringify(check, null, 1));
+  } catch { /* the check still counts */ }
+  return check;
+}
+
+// Turns an unconfirmed Assign into a result after checking Landstar (never retries the click).
+async function checkUnconfirmedAssign(page, landstarLoadId, truck, choice, log, fallbackMessage, wait = 20000) {
+  await page.waitForTimeout(wait).catch(() => {});
+  const verdict = judgeAssignCheck(await readPostingRecord(page, landstarLoadId), truck);
+  log('  Assign not confirmed by Landstar; checked load #' + landstarLoadId + ': ' + verdict.detail);
+  if (verdict.state === 'assigned') {
+    return { ok: true, message: 'Assigned ' + (choice || 'truck ' + truck) + ' to Landstar load #' + landstarLoadId + ' (confirmed on the board)' };
+  }
+  if (verdict.state === 'probably') {
+    return { ok: false, retry: false, unconfirmed: true, message: 'Truck ' + truck + ' was probably assigned to Landstar load #' + landstarLoadId + ': ' + verdict.detail + '. Check its freight bill; do not assign it again' };
+  }
+  if (verdict.state === 'available') {
+    return { ok: false, retry: false, unconfirmed: true, message: 'Landstar did not take the assignment of truck ' + truck + ' to load #' + landstarLoadId + ' (' + verdict.detail + '). Check that load on Landstar, then assign it by hand' };
+  }
+  return { ok: false, retry: false, unconfirmed: true, message: fallbackMessage + ' (' + verdict.detail + ')' };
+}
 
 // Fills Landstar's Assign Capacity form for one posting. Returns { ok, message, retry }.
 async function assignOnLandstar(context, landstarLoadId, truck, log, loadId) {
@@ -131,7 +212,8 @@ async function assignOnLandstar(context, landstarLoadId, truck, log, loadId) {
       return { ok: false, retry: false, message: `Landstar stopped the assignment: ${text.slice(0, 300) || 'warning dialog'}` };
     }
     if (outcome.kind !== 'response') {
-      return { ok: false, retry: false, unconfirmed: true, message: `Landstar did not confirm the assignment of truck ${truck} to load #${landstarLoadId}. It may have gone through: check that load on Landstar before assigning it again` };
+      return await checkUnconfirmedAssign(page, landstarLoadId, truck, choice, log,
+        `Landstar did not confirm the assignment of truck ${truck} to load #${landstarLoadId}. It may have gone through: check that load on Landstar before assigning it again`);
     }
     if (outcome.status >= 400) {
       const body = clean(await outcome.body);
@@ -142,7 +224,9 @@ async function assignOnLandstar(context, landstarLoadId, truck, log, loadId) {
     return { ok: true, message: `Assigned ${choice} to Landstar load #${landstarLoadId}` };
   } catch (error) {
     if (clicked) {
-      return { ok: false, retry: false, unconfirmed: true, message: `Something went wrong after clicking Assign for truck ${truck} on load #${landstarLoadId} (${error.message}). Check that load on Landstar before assigning it again` };
+      return await checkUnconfirmedAssign(page, landstarLoadId, truck, '', log,
+        `Something went wrong after clicking Assign for truck ${truck} on load #${landstarLoadId} (${error.message}). Check that load on Landstar before assigning it again`)
+        .catch(() => ({ ok: false, retry: false, unconfirmed: true, message: `Something went wrong after clicking Assign for truck ${truck} on load #${landstarLoadId} (${error.message}). Check that load on Landstar before assigning it again` }));
     }
     return { ok: false, retry: true, message: error.message };
   } finally {
@@ -220,7 +304,7 @@ function reconcileAssignQueue(queue, done) {
   });
 }
 
-module.exports = { processAssignQueue, assignOnLandstar, isTractorOption, findTractorOption, pickPosting, claimAssignQueue, reserveAssignment, reconcileAssignQueue };
+module.exports = { processAssignQueue, assignOnLandstar, isTractorOption, findTractorOption, pickPosting, claimAssignQueue, reserveAssignment, reconcileAssignQueue, judgeAssignCheck, checkUnconfirmedAssign };
 
 if (require.main === module) {
   const { chromium } = require('playwright');

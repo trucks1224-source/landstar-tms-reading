@@ -5428,8 +5428,13 @@ function TeamInvite({ sharing }) {
         body: JSON.stringify({ email: address })
       });
       const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || 'The invite could not be sent.');
-      setMessage({ ok: true, text: `Invite sent to ${result.email}. They open the email, choose a password and sign in. Then share customers with them from the customer list.` });
+      if (!response.ok) throw new Error(result.error || 'The teammate could not be added.');
+      setMessage({
+        ok: true,
+        password: result.tempPassword,
+        text: `${result.existed ? `New temporary password for ${result.email}` : `Account created for ${result.email}`}. `
+          + 'Text them this password. They sign in at the TMS website and choose their own password right away. Then share customers with them from the customer list.'
+      });
       setEmail('');
       loadTeammates();
     } catch (error) {
@@ -5441,7 +5446,7 @@ function TeamInvite({ sharing }) {
   return (
     <fieldset className="border border-[#1c2541] rounded p-3 space-y-2">
       <legend className="px-1 text-xs font-bold text-gray-300">👥 Team</legend>
-      <p className="text-[11px] text-gray-400">Add a teammate: they get an email invite to choose a password. Each person has their own workspace.</p>
+      <p className="text-[11px] text-gray-400">Add a teammate: you get a temporary password to text them (no email is sent). Forgot their password? Type their email again for a new one.</p>
       <div className="flex gap-2">
         <input
           type="email"
@@ -5458,10 +5463,22 @@ function TeamInvite({ sharing }) {
           disabled={busy || !email.trim()}
           className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-3 py-1.5 text-xs rounded font-bold whitespace-nowrap"
         >
-          {busy ? 'Sending…' : 'Add teammate'}
+          {busy ? 'Saving…' : 'Add teammate'}
         </button>
       </div>
       {message && <p role={message.ok ? 'status' : 'alert'} className={`text-[11px] ${message.ok ? 'text-emerald-300' : 'text-red-400'}`}>{message.text}</p>}
+      {message?.password && (
+        <div className="flex items-center gap-2">
+          <code aria-label="Temporary password" className="flex-1 bg-[#0b132b] border border-emerald-600 rounded px-2 py-1.5 text-base text-white font-mono tracking-wider select-all">{message.password}</code>
+          <button
+            type="button"
+            onClick={() => { void navigator.clipboard?.writeText(message.password).catch(() => {}); }}
+            className="bg-slate-700 hover:bg-slate-600 text-white px-2.5 py-1.5 rounded text-xs"
+          >
+            📋 Copy
+          </button>
+        </div>
+      )}
       {teammates.length > 0 && (
         <p className="text-[11px] text-gray-400">On the TMS: {teammates.map(person => person.email).join(', ')}</p>
       )}

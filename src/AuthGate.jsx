@@ -60,7 +60,9 @@ function LoginForm() {
     setBusy(true);
     const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}/` });
     setBusy(false);
-    if (resetError) setError(resetError.message);
+    if (resetError && /rate limit/i.test(resetError.message || '')) {
+      setError('Too many password emails right now. Ask the TMS owner for a temporary password instead (⚙ My Settings → Team).');
+    } else if (resetError) setError(resetError.message);
     else setNotice(`If ${email.trim()} has a TMS account, a link to choose a new password is on its way.`);
   };
 
@@ -116,7 +118,8 @@ function SetPasswordForm({ email, onDone }) {
     if (password.length < 8) { setError('Use at least 8 characters.'); return; }
     if (password !== confirm) { setError('The two passwords do not match.'); return; }
     setBusy(true);
-    const { error: updateError } = await supabase.auth.updateUser({ password });
+    // Also clears the "temporary password" mark the owner's Add teammate set.
+    const { error: updateError } = await supabase.auth.updateUser({ password, data: { must_change_password: false } });
     setBusy(false);
     if (updateError) setError(updateError.message);
     else onDone();
@@ -235,7 +238,9 @@ export default function AuthGate() {
   }, [phase]);
 
   if (phase === 'local') return <App />;
-  if (needsPassword && session) {
+  // A temporary password from Add teammate must be replaced before the TMS opens.
+  const temporaryPassword = Boolean(session?.user?.user_metadata?.must_change_password);
+  if ((needsPassword || temporaryPassword) && session) {
     return (
       <SetPasswordForm
         email={session.user?.email}

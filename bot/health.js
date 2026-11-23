@@ -18,6 +18,17 @@ function writeWatchdogHeartbeat(now = Date.now()) {
   fs.renameSync(temp, WATCHDOG_STATUS_FILE);
 }
 
+// The email bot's heartbeat (bot/email-bot.js), written every 10 seconds.
+const EMAIL_BOT_STATUS_FILE = process.env.EMAIL_BOT_STATUS_FILE || path.join(__dirname, 'email-bot-status.json');
+function readEmailBotStatus(now = Date.now()) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(EMAIL_BOT_STATUS_FILE, 'utf8'));
+    return now - Number(parsed.at) < 90000 ? parsed : { state: 'off', message: 'Email bot is not running' };
+  } catch {
+    return { state: 'off', message: 'Email bot is not running' };
+  }
+}
+
 function readWatchdogStatus(now = Date.now()) {
   try {
     const parsed = JSON.parse(fs.readFileSync(WATCHDOG_STATUS_FILE, 'utf8'));
@@ -62,6 +73,10 @@ function buildHealthReport(inputs) {
     botRow('removal', 'Removal bot', removal, { botsEnabled, now, offFix: watchdog.state === 'running' ? restartHint : 'Start the watchdog, or double-click "Start Removal Bot" in the bot folder.' }),
     botRow('rates', 'Rate worker', rates, { botsEnabled, now, offFix: watchdog.state === 'running' ? restartHint : 'Start the watchdog, or double-click "Start Rate Worker" in the bot folder.' })
   ];
+  if (inputs.emailBot) {
+    rows.push(botRow('emailbot', inputs.emailBot.mode === 'dry-run' ? 'Email bot (dry run)' : 'Email bot', inputs.emailBot,
+      { botsEnabled, now, offFix: watchdog.state === 'running' ? restartHint : 'Start the watchdog, or double-click "Start Email Bot" in the bot folder.' }));
+  }
   // Sends that started but never finished (bot/email-record.js): Daniel checks Gmail and settles them.
   const unknownEmails = Array.isArray(inputs.unknownEmails) ? inputs.unknownEmails : [];
   if (unknownEmails.length) {
@@ -87,4 +102,7 @@ function buildHealthReport(inputs) {
   return { at: now, worst, rows };
 }
 
-module.exports = { buildHealthReport, writeWatchdogHeartbeat, readWatchdogStatus, WATCHDOG_STATUS_FILE, SIGN_IN_GRACE_MS };
+module.exports = {
+  buildHealthReport, writeWatchdogHeartbeat, readWatchdogStatus, WATCHDOG_STATUS_FILE, SIGN_IN_GRACE_MS,
+  readEmailBotStatus, EMAIL_BOT_STATUS_FILE
+};

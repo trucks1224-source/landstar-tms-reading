@@ -50,3 +50,7 @@ bot/logs/
 bot/email-record.json
 bot/email-record.json.lock
 bot/email-record.json.*.tmp
+bot/email-bot-report.json
+bot/email-bot-report.json.*.tmp
+bot/email-bot-status.json
+bot/email-bot-status.json.*.tmp

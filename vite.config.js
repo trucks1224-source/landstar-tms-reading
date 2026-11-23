@@ -14,7 +14,7 @@ import { describeSaveResult, extractProspects, isBlockedProspect } from './src/l
 // The TMS account that owns imported prospects, looked up once per server run.
 let prospectOwnerId = null
 const { readRatesStatus, readHelperStatus, readRemovalStatus } = createRequire(import.meta.url)('./bot/status-server.js')
-const { buildHealthReport, readWatchdogStatus } = createRequire(import.meta.url)('./bot/health.js')
+const { buildHealthReport, readWatchdogStatus, readEmailBotStatus } = createRequire(import.meta.url)('./bot/health.js')
 const { sendOnce, SEND_ACTIONS, markEmailSkipped, settleUnknownEmail, listUnknownEmails } = createRequire(import.meta.url)('./bot/email-record.js')
 const { readBotControl, writeBotControl } = createRequire(import.meta.url)('./bot/local-bot-control.js')
 
@@ -144,6 +144,7 @@ export default defineConfig(({ mode }) => {
               helper: withSignIn('helper', readHelperStatus()),
               removal: withSignIn('removal', readRemovalStatus()),
               rates: withSignIn('rates', readRatesStatus()),
+              emailBot: readEmailBotStatus(),
               unknownEmails: (() => { try { return listUnknownEmails() } catch { return [] } })()
             })))
           })

@@ -59,6 +59,15 @@ test('several loads on one lane and day from the same upload are all kept', () =
   assert.deepEqual(plan.remove.sort(), [1, 2]);
 });
 
+test('the same file uploaded twice 20 seconds apart: the older upload is removed', () => {
+  const plan = planDuplicateRemoval([
+    posting(1, 100000), posting(2, 101000), posting(3, 102000, { DestinationCityState: 'MANSFIELD, TX' }),
+    posting(4, 122000), posting(5, 123000), posting(6, 124000, { DestinationCityState: 'MANSFIELD, TX' })
+  ]);
+  assert.deepEqual(plan.keep.sort(), [4, 5, 6]);
+  assert.deepEqual(plan.remove.sort(), [1, 2, 3]);
+});
+
 test('bulk uploads are recognised by loads posted seconds apart; a lone Quick Post is not', () => {
   const { bulkUploadedIds } = require('./dedupe');
   const ids = bulkUploadedIds([posting(1, 1000), posting(2, 1500), posting(3, 2900), posting(9, 600000)]);

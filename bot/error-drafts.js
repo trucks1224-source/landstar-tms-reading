@@ -152,6 +152,23 @@ async function deleteDrafts(page, draftIds, log = console.log) {
       // elements ("#" + "8395943"), so take the innermost element whose text contains it.
       const label = `contains(translate(normalize-space(.), ' ', ''), '#${id}')`;
       const box = page.locator(`xpath=//*[${label}][not(*[${label}])]/ancestor::*[.//input[@type='checkbox']][1]//input[@type='checkbox']`).first();
+      // Bulk Postings only draws the rows near the top (newest first); scroll down until the
+      // draft's row is drawn (2026-11-23: #8395943 was row 26 of 26 and never on screen).
+      for (let scroll = 0; scroll < 40 && !(await box.count()); scroll += 1) {
+        const moved = await page.evaluate(() => {
+          let changed = false;
+          const scrollers = [document.scrollingElement, ...document.querySelectorAll('*')]
+            .filter(el => el && el.scrollHeight > el.clientHeight + 20 && getComputedStyle(el).overflowY !== 'hidden');
+          for (const el of scrollers) {
+            const before = el.scrollTop;
+            el.scrollTop = before + Math.max(400, el.clientHeight * 0.8);
+            if (el.scrollTop !== before) changed = true;
+          }
+          return changed;
+        }).catch(() => false);
+        await page.waitForTimeout(700);
+        if (!moved && !(await box.count())) break;
+      }
       if (!(await box.count())) {
         // Evidence for fixing this: a screenshot and the page around the number.
         const shot = path.join(__dirname, 'logs', `error-draft-${id}.png`);

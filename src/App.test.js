@@ -61,7 +61,7 @@ export {
   writeSyncedKey, initSyncGuardFromStorage, readDataVersions, getChangedSyncedKeys,
   isUnversionedExternalChange, restoreLastSavedKey, markStorageAdopted, classifyChangedSyncedKeys,
   getStatusTag, bookLoad, addBookingEntry, removeBookingEntry, summarizeBookings, getBookingWeekStart, buildDriverDirectory, findKnownDriver, getPostingMaintenanceLoads, getPostingRefreshDetails,
-  getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getPaperworkSince, checkBeforePodRequest, isDailyCustomerUpdateDue, getLoadedTimeWarning, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
+  getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getPaperworkSince, checkBeforePodRequest, isDailyCustomerUpdateDue, getLoadedTimeWarning, getNearStopWarning, getTrackingEmailWarning, milesBetween,toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, copyLoadDetails, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, getTrackingEmailBroker, getCustomerRequestOrders, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
   buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer, getEquipmentListCategory
@@ -3986,6 +3986,45 @@ test('loaded email: automatic unless the truck was at the shipper under 15 minut
   assert.equal(policy.getLoadedTimeWarning({ arrivedShipperAt: info.arrivedShipperAt }), '', 'not loaded yet');
 });
 
+test('check-in / check-out emails wait for Send when the truck is under 10 miles from the stop', () => {
+  const baxter = { lat: 36.1367, lng: -85.6206 };
+  const tulsa = { lat: 36.2148, lng: -95.8445 };
+  const near = { lat: 36.15, lng: -85.65 }; // about 2 miles from Baxter
+  const info = { pickupPoint: baxter, deliveryPoint: tulsa, pickupCity: 'Baxter, TN', deliveryCity: 'Tulsa, OK' };
+  assert.ok(Math.abs(policy.milesBetween(baxter, tulsa) - 570) < 15, 'Baxter to Tulsa is about 570 straight-line miles');
+  assert.equal(policy.milesBetween(baxter, null), null);
+  assert.match(policy.getNearStopWarning('arrived', { ...info, truckPoint: near }), /is [12]\.\d mi from the shipper in Baxter, TN\. Is this check-in correct\?/);
+  assert.match(policy.getNearStopWarning('departed', { ...info, truckPoint: near }), /Is this check-out correct\?/);
+  assert.equal(policy.getNearStopWarning('arrived', { ...info, truckPoint: tulsa }), '', 'far from the shipper: usual rules');
+  assert.match(policy.getNearStopWarning('arrivedDelivery', { ...info, truckPoint: tulsa }), /0\.0 mi from the receiver in Tulsa, OK\. Is this check-in correct\?/);
+  assert.match(policy.getNearStopWarning('delivered', { ...info, truckPoint: tulsa }), /check-out/);
+  assert.equal(policy.getNearStopWarning('delivered', { ...info, truckPoint: near }), '');
+  assert.equal(policy.getNearStopWarning('arrived', info), '', 'no GPS ping: usual rules');
+  assert.equal(policy.getNearStopWarning('location', { ...info, truckPoint: near }), '', 'only check-in / check-out emails');
+  const loaded = { ...info, truckPoint: near, arrivedShipperAt: '2026-11-07T18:33:00Z', leftShipperAt: '2026-11-07T18:39:00Z' };
+  const both = policy.getTrackingEmailWarning('departed', loaded);
+  assert.match(both, /only 6 min/);
+  assert.match(both, /mi from the shipper/);
+  assert.equal(policy.getTrackingEmailWarning('departed', { ...loaded, truckPoint: tulsa, leftShipperAt: '2026-11-07T19:39:00Z' }), '');
+});
+
+test('delivery check-in and delivered emails', () => {
+  const now = Date.parse('2026-11-09T15:00:00Z');
+  const booked = { ...load, id: '2283600', status: 'BOOKED', pickupTime: '11/07/2026 08:00', paramountTracking: { emails: { initial: { at: 'x' }, departed: { at: 'x' } } } };
+  const info = { ok: true, trackingLink: 'https://t', leftShipperAt: '2026-11-07T18:39:00Z', deliveryCity: 'Tulsa, OK', deliveryTimezone: 'America/Chicago', driver: 'DAMARCUS DALLAS' };
+  assert.deepEqual([...policy.getDueParamountEmails(booked, { ...info, arrivedReceiverAt: '2026-11-09T14:10:00Z' }, now)], ['arrivedDelivery']);
+  assert.match(policy.buildParamountEmail('arrivedDelivery', booked, { ...info, arrivedReceiverAt: '2026-11-09T14:10:00Z' }), /Damarcus Dallas has arrived at the receiver in Tulsa, OK \(11\/09 at 08:10 CST\)/);
+  const delivered = { ...info, arrivedReceiverAt: '2026-11-09T14:10:00Z', deliveredAt: '2026-11-09T14:55:00Z' };
+  assert.deepEqual([...policy.getDueParamountEmails(booked, delivered, now)], ['delivered']);
+  const notLoadedYet = { ...booked, paramountTracking: { emails: { initial: { at: 'x' } } } };
+  assert.deepEqual([...policy.getDueParamountEmails(notLoadedYet, delivered, now)], ['delivered'], 'delivered is the last email and covers the rest');
+  assert.match(policy.buildParamountEmail('delivered', booked, delivered), /has been delivered in Tulsa, OK \(11\/09 at 08:55 CST\)/);
+  const done = policy.markParamountEmail(notLoadedYet, 'delivered');
+  assert.ok(done.paramountTracking.emails.departed.skipped && done.paramountTracking.emails.arrivedDelivery.skipped);
+  assert.deepEqual([...policy.getDueParamountEmails(done, delivered, now)], []);
+  assert.equal(policy.applyParamountTrackingInfo({ ...booked, trackingStage: 'Loaded' }, { ...info, arrivedReceiverAt: '2026-11-09T14:10:00Z' }).trackingStage, 'At Delivery');
+});
+
 test('rolling loads get one customer location email a day from 9 AM', () => {
   const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute).getTime();
   const info = { ok: true, trackingLink: 'https://t', leftShipperAt: new Date(at(7, 13, 39)).toISOString(), lastLocation: 'Ashland, VA',
@@ -4000,7 +4039,7 @@ test('rolling loads get one customer location email a day from 9 AM', () => {
   const updated = policy.markParamountEmail(departed, 'location', { at: new Date(at(8, 9)).toISOString() });
   assert.deepEqual(due(updated, info, at(8, 16)), [], 'once a day');
   assert.deepEqual(due(updated, info, at(9, 9, 5)), ['location'], 'next day again');
-  assert.deepEqual(due(updated, { ...info, deliveredAt: 'x' }, at(9, 10)), [], 'delivered: no more location emails');
+  assert.deepEqual(due(updated, { ...info, deliveredAt: 'x' }, at(9, 10)), ['delivered'], 'delivered: the delivered email, no more location emails');
   assert.deepEqual(due(updated, { ...info, lastLocation: ', ' }, at(9, 10)), [], 'no location from Clarity');
   const text = policy.buildParamountEmail('location', { ...load, id: '2282980' }, info, { greetingName: 'Heather' });
   assert.match(text, /^Hi Heather and team,\n\nDaily update on order 2282980: the truck is in Ashland, VA \(as of .*\), on the way to Knightdale, NC\./);

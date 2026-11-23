@@ -4799,7 +4799,7 @@ function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
 function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip, onDismissReply }) {
   const [open, setOpen] = useState(false);
   if (!drafts.length && !replies.length) return null;
-  const kindLabel = { customerUpdate: 'Reply to customer update request', initial: 'Tracking link + pickup ETA', pickupEta: 'Morning pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', rxo: 'Reply to update request', rxoForward: 'Forward RXO request to Ivan', driverEta: 'Driver ETA update', driverStatus: 'Driver status update', paperwork: 'POD / paperwork (files attached)', location: 'Daily location update', dailyCustomer: 'Daily customer update', checkCall: 'Logged check call update' };
+  const kindLabel = { customerUpdate: 'Reply to customer update request', initial: 'Tracking link + pickup ETA', pickupEta: 'Morning pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', arrivedDelivery: 'Arrived at receiver', delivered: 'Delivered', rxo: 'Reply to update request', rxoForward: 'Forward RXO request to Ivan', driverEta: 'Driver ETA update', driverStatus: 'Driver status update', paperwork: 'POD / paperwork (files attached)', location: 'Daily location update', dailyCustomer: 'Daily customer update', checkCall: 'Logged check call update' };
   const approvalsLeft = draft => Math.max(0, PARAMOUNT_AUTO_SEND_AFTER
     - readApprovedCount(draft.kind === 'paperwork' ? paperworkApprovedKey : draft.kind === 'driver' ? driverApprovedKey : ['rxo', 'customerUpdate'].includes(draft.kind) ? rxoApprovedKey : paramountApprovedKey));
   const who = draft => (draft.kind === 'driver' ? 'Driver' : draft.kind === 'checkCall' ? draft.customer : draft.kind === 'rxoForward' ? 'Ivan' : draft.kind === 'customerUpdate' ? draft.customer : draft.kind === 'rxo' || draft.target === 'rxo' || isRxoAccount(draft.customer) ? 'RXO' : 'Paramount');
@@ -4859,7 +4859,7 @@ function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip,
           <div className="flex flex-wrap gap-2 mt-1 items-center">
             <button type="button" disabled={draft.sending} onClick={() => onSend(draft)} className="bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white px-3 py-0.5 rounded font-semibold cursor-pointer">{draft.sending ? 'Sending…' : 'Send'}</button>
             <button type="button" disabled={draft.sending} onClick={() => onSkip(draft)} className="bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded cursor-pointer">Don&apos;t send</button>
-            <span className="text-gray-400">{draft.warning ? 'Waits for your Send (short stop at the shipper)' : paramountAlwaysAskKinds.has(draft.kind) ? 'Always waits for your Send' : approvalsLeft(draft) ? `${approvalsLeft(draft)} more approval${approvalsLeft(draft) === 1 ? '' : 's'}, then these send automatically` : 'Sending automatically'}</span>
+            <span className="text-gray-400">{draft.warning ? 'Waits for your Send' : paramountAlwaysAskKinds.has(draft.kind) ? 'Always waits for your Send' : approvalsLeft(draft) ? `${approvalsLeft(draft)} more approval${approvalsLeft(draft) === 1 ? '' : 's'}, then these send automatically` : 'Sending automatically'}</span>
           </div>
         </div>
       ))}
@@ -5036,6 +5036,33 @@ function getLoadedTimeWarning(info = {}) {
     ? `The truck was at the shipper only ${minutes} min (arrived ${formatParamountTime(info.arrivedShipperAt, info.pickupTimezone)}, left ${formatParamountTime(info.leftShipperAt, info.pickupTimezone)}). Is this really the loaded time?`
     : '';
 }
+// Check-in / check-out emails (pickup arrived / loaded, delivery arrived / delivered) wait for
+// Daniel's Send when the truck's last GPS ping is under 10 miles from that stop (his rule,
+// 2026-11-23). No GPS from Clarity: the usual rules apply.
+const NEAR_STOP_HOLD_MILES = 10;
+const checkInOutStops = { arrived: 'pickup', departed: 'pickup', arrivedDelivery: 'delivery', delivered: 'delivery' };
+function milesBetween(a, b) {
+  const valid = p => p && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lng));
+  if (!valid(a) || !valid(b)) return null;
+  const rad = degrees => (Number(degrees) * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat);
+  const dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 3958.8 * 2 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+function getNearStopWarning(kind, info = {}) {
+  const stop = checkInOutStops[kind];
+  if (!stop) return '';
+  const miles = milesBetween(info.truckPoint, stop === 'pickup' ? info.pickupPoint : info.deliveryPoint);
+  if (miles === null || miles >= NEAR_STOP_HOLD_MILES) return '';
+  const place = stop === 'pickup' ? info.pickupCity : info.deliveryCity;
+  const asOf = info.lastLocationAt ? ` (as of ${formatParamountTime(info.lastLocationAt, stop === 'pickup' ? info.pickupTimezone : info.deliveryTimezone)})` : '';
+  return `The truck's last GPS ping is ${miles.toFixed(1)} mi from the ${stop === 'pickup' ? 'shipper' : 'receiver'}${place ? ` in ${place}` : ''}${asOf}. Is this ${kind === 'arrived' || kind === 'arrivedDelivery' ? 'check-in' : 'check-out'} correct?`;
+}
+// Every reason a check-in / check-out email must wait for Daniel's Send.
+function getTrackingEmailWarning(kind, info = {}) {
+  return [kind === 'departed' ? getLoadedTimeWarning(info) : '', getNearStopWarning(kind, info)].filter(Boolean).join(' ');
+}
 // Daily location update to the customer while the load is rolling (rule 2026-11-07).
 const LOCATION_EMAIL_HOUR = 9;
 // Morning-of-pickup email confirming the driver's ETA to the shipper (rule 2026-11-13).
@@ -5202,6 +5229,18 @@ function buildParamountEmail(kind, load, info = {}, { greetingName = '', phone =
       + 'We\'ll let you know as soon as the truck is loaded and on the way.'
       + `${info.trackingLink ? `\n\nLive tracking: ${info.trackingLink}` : ''}\n\nThank you!${sign}`;
   }
+  if (kind === 'arrivedDelivery') {
+    return `${hello}\n\nQuick update on order ${order}: ${driver} has arrived at the receiver in ${deliveryPlace}`
+      + `${info.arrivedReceiverAt ? ` (${formatParamountTime(info.arrivedReceiverAt, info.deliveryTimezone)})` : ''}. `
+      + 'We\'ll let you know as soon as the truck is unloaded.'
+      + `${info.trackingLink ? `\n\nLive tracking: ${info.trackingLink}` : ''}\n\nThank you!${sign}`;
+  }
+  if (kind === 'delivered') {
+    const deliveredAt = formatParamountTime(info.deliveredAt, info.deliveryTimezone);
+    return `${hello}\n\nGreat news on order ${order}: the load has been delivered in ${deliveryPlace}`
+      + `${deliveredAt ? ` (${deliveredAt})` : ''}. We'll send the signed POD as soon as we have it.`
+      + `\n\nThank you so much for working with us, and please reach out if you need anything!${sign}`;
+  }
   if (kind === 'location') {
     const where = String(info.lastLocation || '').trim();
     const when = info.lastLocationAt ? ` (as of ${formatParamountTime(info.lastLocationAt, info.deliveryTimezone || info.pickupTimezone)})` : '';
@@ -5227,7 +5266,11 @@ function getDueParamountEmails(load, info, now = Date.now()) {
     return due;
   }
   if (!hasPickupDayStarted(load, now)) return [];
+  // Delivered (check-out at the receiver) covers any update not sent yet: Clarity stops
+  // reporting once the load is delivered, so it has to be the last email.
+  if (info.deliveredAt) return sent.delivered ? [] : ['delivered'];
   if (info.leftShipperAt && !sent.departed) return ['departed'];
+  if (info.arrivedReceiverAt && !sent.arrivedDelivery) return ['arrivedDelivery'];
   if (isDailyCustomerUpdateDue(load, info, now)) return ['location'];
   // Morning of pickup: confirm the driver's ETA to the shipper before the truck is there.
   if (!sent.pickupEta && !info.arrivedShipperAt && !info.leftShipperAt) {
@@ -5262,11 +5305,15 @@ function markParamountEmail(load, kind, { at = new Date().toISOString(), skipped
   const emails = { ...(tracking.emails || {}), [kind]: { at, ...(skipped ? { skipped: true } : {}) } };
   // Sending "left the shipper" also settles the "arrived" email.
   if (kind === 'departed' && !emails.arrived) emails.arrived = { at, skipped: true };
+  // Delivered settles every earlier pickup / delivery update.
+  if (kind === 'delivered') {
+    for (const earlier of ['arrived', 'departed', 'arrivedDelivery']) emails[earlier] = emails[earlier] || { at, skipped: true };
+  }
   if (kind === 'initial' && !skipped && tracking.leftShipperAt) {
     emails.arrived = emails.arrived || { at, skipped: true };
     emails.departed = emails.departed || { at, skipped: true };
   }
-  const label = { initial: 'tracking link + pickup ETA', pickupEta: 'morning pickup ETA', arrived: 'arrived at shipper', departed: 'left shipper + delivery ETA', location: 'daily location update' }[kind];
+  const label = { initial: 'tracking link + pickup ETA', pickupEta: 'morning pickup ETA', arrived: 'arrived at shipper', departed: 'left shipper + delivery ETA', arrivedDelivery: 'arrived at receiver', delivered: 'delivered', location: 'daily location update' }[kind];
   const line = `Paramount email ${skipped ? 'skipped' : 'sent'}: ${label}`;
   return { ...load, paramountTracking: { ...tracking, emails }, notes: load.notes ? `${load.notes}\n${line}` : line };
 }
@@ -5277,7 +5324,7 @@ function applyParamountTrackingInfo(load, info) {
   const { key, customer, loadId, ok, at, ...rest } = info;
   const next = { ...load, paramountTracking: { ...(load.paramountTracking || {}), ...rest, checkedAt: at || Date.now() } };
   const order = trackingStages.indexOf(load.trackingStage || 'Booked');
-  const target = info.deliveredAt ? 'Delivered' : info.leftShipperAt ? 'Loaded' : info.arrivedShipperAt ? 'At Pickup' : null;
+  const target = info.deliveredAt ? 'Delivered' : info.arrivedReceiverAt ? 'At Delivery' : info.leftShipperAt ? 'Loaded' : info.arrivedShipperAt ? 'At Pickup' : null;
   if (target && trackingStages.indexOf(target) > order) next.trackingStage = target;
   return next;
 }
@@ -8741,10 +8788,11 @@ export default function App({ sharing = null } = {}) {
         });
         if (cancelled) return;
         const text = buildParamountEmail(kind, load, info, { greetingName: greetingNameFrom(thread.to?.[0]), phone: paramountLatest.phone });
-        // Loaded: automatic, except a short stop at the shipper, which Daniel confirms first.
-        const warning = kind === 'departed' ? getLoadedTimeWarning(info) : '';
+        // Loaded: automatic, except a short stop at the shipper. Any check-in / check-out with
+        // the truck under 10 miles from the stop waits for Daniel's Send too.
+        const warning = getTrackingEmailWarning(kind, info);
         const draft = { id, customer, loadId: String(load.id), kind, text, to: thread.to || [], cc: thread.cc || [], ...(warning ? { warning } : {}) };
-        if (kind === 'departed' ? !warning : paramountMaySendItself(kind)) {
+        if (!warning && (kind === 'departed' || paramountMaySendItself(kind))) {
           await sendParamountDraft(draft, { auto: true });
         } else {
           setParamountDrafts(current => (current.some(item => item.id === id) ? current : [...current, draft]));

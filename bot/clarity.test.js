@@ -64,6 +64,27 @@ test('a completed delivery stop means delivered', () => {
   assert.equal(summarizeClarityLoad({ stops: [pickup, delivery] }, {}).deliveredAt, 'done');
 });
 
+test('GPS points for the truck and stops, and the receiver arrival', () => {
+  const pickup = { id: 'p', stopTypeCode: 'Pickup', isComplete: true, statusUpdates: [], location: { city: 'Baxter', latitude: 36.1366, longitude: -85.6206 } };
+  const delivery = { id: 'd', stopTypeCode: 'Delivery', isComplete: false, statusUpdates: [], location: { city: 'Tulsa' } };
+  const item = {
+    lastLocation: { city: 'Okemah', state: 'OK', geoCoordinates: [-96.1975, 35.3055] },
+    destination: { location: { geoCoordinates: [-95.8445, 36.2148] } }
+  };
+  let summary = summarizeClarityLoad({ stops: [pickup, delivery] }, item);
+  assert.deepEqual(summary.truckPoint, { lat: 35.3055, lng: -96.1975 });
+  assert.deepEqual(summary.pickupPoint, { lat: 36.1366, lng: -85.6206 });
+  assert.deepEqual(summary.deliveryPoint, { lat: 36.2148, lng: -95.8445 }, 'falls back to the list point');
+  assert.equal(summary.arrivedReceiverAt, null);
+  assert.equal(summarizeClarityLoad({ stops: [pickup, delivery] }, {}).truckPoint, null, 'no ping: no point');
+  delivery.statusUpdates.push({ description: 'Estimated arrival', mulesoftStatusUpdate: { status: { code: 'ETA' }, statusDateTime: '2026-11-09T13:00:00Z' } });
+  assert.equal(summarizeClarityLoad({ stops: [pickup, delivery] }, item).arrivedReceiverAt, null, 'an ETA is not an arrival');
+  delivery.statusUpdates.push({ description: 'Arrived at Delivery Location', mulesoftStatusUpdate: { status: { code: 'X1' }, statusDateTime: '2026-11-09T14:10:00Z' } });
+  summary = summarizeClarityLoad({ stops: [pickup, delivery] }, item);
+  assert.equal(summary.arrivedReceiverAt, '2026-11-09T14:10:00Z');
+  assert.equal(summary.deliveredAt, null);
+});
+
 test('a pickup departure time is never treated as an arrival time', () => {
   const pickup = {
     stopTypeCode: 'Pickup', isComplete: true,

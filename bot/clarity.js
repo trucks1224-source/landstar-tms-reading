@@ -39,6 +39,16 @@ function matchClarityLoad(list, watched) {
 const ARRIVED_CODES = new Set(['X3', 'AA']);
 const DEPARTED_CODES = new Set(['AF', 'CP', 'X6']);
 
+// Clarity gives stop points as latitude/longitude and list points as geoCoordinates [lng, lat].
+function geoPoint(location) {
+  if (!location) return null;
+  const [lngFromList, latFromList] = Array.isArray(location.geoCoordinates) ? location.geoCoordinates : [];
+  const lat = Number(location.latitude ?? latFromList);
+  const lng = Number(location.longitude ?? lngFromList);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return null;
+  return { lat, lng };
+}
+
 function statusTime(update) {
   return update?.mulesoftStatusUpdate?.statusDateTime || update?.timestamp || null;
 }
@@ -61,6 +71,8 @@ function summarizeClarityLoad(detail, listItem = {}) {
   const delivered = deliveryUpdates.find(update => ['D1', 'CD'].includes(codeOf(update))
     || /delivered|completed unloading/i.test(textOf(update)) && !/estimated/i.test(textOf(update)));
   const deliveryDone = Boolean(delivery && delivery !== pickup && (delivery.isComplete || delivered));
+  const arrivedReceiver = deliveryUpdates.find(update => ARRIVED_CODES.has(codeOf(update))
+    || /\barriv/i.test(textOf(update)) && !/estimated/i.test(textOf(update)));
   const location = stop => (stop?.location ? `${stop.location.city || ''}, ${stop.location.state?.code || stop.location.state || ''}`.replace(/^, |, $/g, '') : '');
   const operator = (pickup?.operators || [])[0]?.displayName
     || [listItem.operator?.firstName, listItem.operator?.lastName].filter(Boolean).join(' ');
@@ -82,7 +94,13 @@ function summarizeClarityLoad(detail, listItem = {}) {
     leftShipperAt: pickupDone || deliveryDone ? (statusTime(departed) || 'done') : null,
     deliveredAt: deliveryDone ? (statusTime(delivered) || 'done') : null,
     lastLocation: listItem.lastLocation ? `${listItem.lastLocation.city || ''}, ${listItem.lastLocation.state || ''}` : '',
-    lastLocationAt: listItem.lastLocation?.actualDate || null
+    lastLocationAt: listItem.lastLocation?.actualDate || null,
+    // Arrived at the receiver (delivery check-in); deliveredAt is the check-out.
+    arrivedReceiverAt: statusTime(arrivedReceiver) || null,
+    // GPS points {lat, lng} for the 10-mile check on check-in / check-out emails.
+    truckPoint: geoPoint(listItem.lastLocation),
+    pickupPoint: geoPoint(pickup?.location) || geoPoint(listItem.origin?.location),
+    deliveryPoint: geoPoint(delivery?.location) || geoPoint(listItem.destination?.location)
   };
 }
 

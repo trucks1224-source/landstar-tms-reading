@@ -65,6 +65,7 @@ function removalHarness(afterCancellation) {
   let queue = [{ customer: 'Para', loadId: '1', posting: request }];
   let scans = 0;
   const cancellations = [];
+  const reports = [];
   const module = { exports: {} };
   const realRequire = require;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'unpost.js'), 'utf8'), {
@@ -73,6 +74,7 @@ function removalHarness(afterCancellation) {
       if (name === './rate-check') return { openBoard: async () => ({}), OWN_POSTING_CODES: ['ANQ'] };
       if (name === './status-server') return {
         readQueue: () => queue, writeQueue: next => { queue = next; }, setStatus: () => {},
+        reportRemovalResults: results => reports.push(...results),
         QUEUE_FILE: `${process.env.UNPOST_QUEUE_FILE}.mock`
       };
       if (name === './dedupe') return {
@@ -83,7 +85,7 @@ function removalHarness(afterCancellation) {
       return realRequire(name);
     }
   });
-  return { run: () => module.exports.processUnpostQueue(null, { log: () => {} }), cancellations, queue: () => queue };
+  return { run: () => module.exports.processUnpostQueue(null, { log: () => {} }), cancellations, queue: () => queue, reports, setQueue: next => { queue = next; } };
 }
 
 test('removals cancel individually and clear requests only after board verification', async () => {
@@ -91,6 +93,7 @@ test('removals cancel individually and clear requests only after board verificat
   assert.equal(await worker.run(), 2);
   assert.deepEqual(worker.cancellations, [[101], [102]]);
   assert.equal(worker.queue().length, 0);
+  assert.equal(JSON.stringify(worker.reports.map(item => [item.loadId, item.state])), JSON.stringify([['1', 'removed']]), 'the TMS hears the load was removed');
 });
 
 test('accepted cancellations still on the board stay queued and report a retry', async () => {
@@ -98,4 +101,13 @@ test('accepted cancellations still on the board stay queued and report a retry',
   await assert.rejects(worker.run(), /still on Landstar/);
   assert.equal(worker.queue().length, 1);
   assert.equal(worker.queue()[0].loadId, '1');
+  assert.equal(worker.queue()[0].attempts, 1);
+});
+
+test('a posting still on Landstar after the last try is dropped and reported as failed', async () => {
+  const worker = removalHarness([board(102)]);
+  worker.setQueue([{ customer: 'Para', loadId: '1', posting: request, attempts: 2 }]);
+  await assert.rejects(worker.run(), /still on Landstar/);
+  assert.equal(worker.queue().length, 0);
+  assert.equal(worker.reports[0].state, 'failed');
 });

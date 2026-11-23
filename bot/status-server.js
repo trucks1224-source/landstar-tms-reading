@@ -321,6 +321,28 @@ function reportRateRaise(raise) {
   }
 }
 
+// What happened to each load queued for removal (unpost.js): 'removed', 'gone' (not on the
+// board) or 'failed'. Its own file, written only by the removal bot, so the other bots'
+// writes to bot-results.json can never drop it. Served as /status removalResults.
+const REMOVAL_RESULTS_FILE = process.env.REMOVAL_RESULTS_FILE || path.join(__dirname, 'removal-results.json');
+function readRemovalResults() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(REMOVAL_RESULTS_FILE, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+function reportRemovalResults(results) {
+  if (!Array.isArray(results) || !results.length) return;
+  try {
+    const at = Date.now();
+    saveJsonFile(REMOVAL_RESULTS_FILE, [...readRemovalResults(), ...results.map(result => ({ ...result, at }))].slice(-3000));
+  } catch (error) {
+    console.error('Could not record the removal results for the TMS:', error.message);
+  }
+}
+
 // A Bulk Postings error draft the error bot deleted (error-drafts.js), with Landstar's reasons.
 // Served as /status errorDrafts; the TMS shows a banner and badges the matching load.
 function reportErrorDraft(draft) {
@@ -367,7 +389,13 @@ function start() {
         ...(shared.mercurygate.length ? { mercurygateResults: shared.mercurygate } : {}),
         ...(shared.rates.length ? { rateRaises: shared.rates } : {}),
         ...(shared.errorDrafts.length ? { errorDrafts: shared.errorDrafts } : {}),
-        ...(duplicates.length ? { duplicateBills: duplicates } : {}) }));
+        ...(duplicates.length ? { duplicateBills: duplicates } : {}),
+        // Only results newer than ?removalsSince= (the TMS sends the newest it has seen).
+        ...(() => {
+          const since = Number(new URL(req.url, 'http://x').searchParams.get('removalsSince')) || 0;
+          const removals = readRemovalResults().filter(result => Number(result.at) > since);
+          return removals.length ? { removalResults: removals } : {};
+        })() }));
       return;
     }
     if (req.method === 'GET' && route.startsWith('/shots/')) {
@@ -542,5 +570,5 @@ module.exports = {
   readTrackingWatch, setTrackingWatch, reportTrackingResults, TRACKING_WATCH_FILE, readTrackingBills,
   readDuplicateBills, reportDuplicateBills,
   readMercuryGateQueue, writeMercuryGateQueue, enqueueMercuryGate, reportMercuryGateResult,
-  reportRateRaise, reportErrorDraft
+  reportRateRaise, reportErrorDraft, reportRemovalResults, readRemovalResults, REMOVAL_RESULTS_FILE
 };

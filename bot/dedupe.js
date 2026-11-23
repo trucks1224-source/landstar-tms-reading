@@ -150,7 +150,9 @@ async function portalSession(page) {
           if (!/oidc\.user/i.test(key)) continue;
           try {
             const user = JSON.parse(store.getItem(key));
-            if (user?.access_token && user.profile?.ls_unique_id) return { token: user.access_token, userId: Number(user.profile.ls_unique_id) };
+            // Skip a token that has expired or is about to (the portal renews it shortly).
+            const fresh = !user?.expires_at || user.expires_at * 1000 > Date.now() + 60000;
+            if (user?.access_token && user.profile?.ls_unique_id && fresh) return { token: user.access_token, userId: Number(user.profile.ls_unique_id) };
           } catch { /* keep looking */ }
         }
       }
@@ -219,7 +221,7 @@ async function cancelPostings(page, requestedIds, log = console.log, { refreshLo
     log(`  Kept ${unprotected.length - loadIds.length} posting(s) not uploaded by the bot (posted by hand): ${unprotected.filter(id => !isOwn(id)).join(', ')}`);
   }
   if (!loadIds.length) return 0;
-  const { token, userId } = await portalSession(page);
+  let { token, userId } = await portalSession(page);
   let cancelled = 0;
   const failed = {};
   for (let i = 0; i < loadIds.length; i += CANCEL_BATCH) {
@@ -241,7 +243,13 @@ async function cancelPostings(page, requestedIds, log = console.log, { refreshLo
       await page.waitForTimeout(3000);
       return sendBatch(attempt + 1);
     });
-    const result = await sendBatch(1);
+    let result = await sendBatch(1);
+    // The sign-in token expired mid-run (long removal lists): get a fresh one and resend once.
+    if (result.status === 401) {
+      log('  Landstar sign-in expired during removal; refreshing it and retrying...');
+      ({ token, userId } = await portalSession(page));
+      result = await sendBatch(1);
+    }
     if (!result.ok) throw new Error(`Landstar refused the removal (HTTP ${result.status}): ${result.text}`);
     Object.assign(failed, result.errors);
     cancelled += batch.length - Object.keys(result.errors).length;

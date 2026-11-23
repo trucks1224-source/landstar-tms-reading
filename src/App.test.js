@@ -65,7 +65,7 @@ export {
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getPaperworkSince, checkBeforePodRequest, isDailyCustomerUpdateDue, getLoadedTimeWarning, getNearStopWarning, getTrackingEmailWarning, milesBetween, createStatusStore, emailCheckRow, mergeSystemCheck, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, copyLoadDetails, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, getTrackingEmailBroker, getCustomerRequestOrders, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
-  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, loadMatchesRateRaise, applyRateRaise, applyLandstarError, hasOpenLandstarError, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer, getEquipmentListCategory
+  buildLandstarPosting, markRemovalQueued, applyRemovalResult, getRemovalBadge, takeNewRemovalResults, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, loadMatchesRateRaise, applyRateRaise, applyLandstarError, hasOpenLandstarError, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer, getEquipmentListCategory
 };`, { loader: 'jsx', format: 'cjs' });
 // Test loads are dated October 2026, so "today" inside the TMS code is 10/1/2026:
 // those pickups are still ahead, and past-date rules use September dates.
@@ -4400,4 +4400,14 @@ test('customers that still have loads stay in the customer list', () => {
   assert.equal(JSON.stringify(policy.addCustomersWithLoads(list, orders)), JSON.stringify([...list, 'R X O 2429200 - ATZ V']));
   const complete = [...list, 'R X O 2429200 - ATZ V'];
   assert.equal(policy.addCustomersWithLoads(complete, orders), complete, 'nothing missing: same list');
+});
+
+test('loads sent to the removal bot show the removal state, then RMOV', () => {
+  const load = { id: '24723409', status: 'ENT' };
+  const queued = policy.markRemovalQueued(load, 'covered');
+  assert.equal(policy.getRemovalBadge(queued).text, '⏳ SENT TO REMOVAL BOT');
+  assert.equal(policy.getRemovalBadge(policy.applyRemovalResult(queued, { state: 'removed', at: Date.now() })).text, 'RMOV');
+  assert.equal(policy.getRemovalBadge(policy.applyRemovalResult(queued, { state: 'gone', at: Date.now() })).text, 'RMOV');
+  assert.equal(policy.getRemovalBadge(policy.applyRemovalResult(queued, { state: 'failed', at: Date.now() })).text, '⚠ NOT REMOVED');
+  assert.equal(policy.getRemovalBadge(load), null);
 });

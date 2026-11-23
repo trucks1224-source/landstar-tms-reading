@@ -14,7 +14,7 @@ const fs = require('fs');
 const zipcodes = require('zipcodes');
 const { openBoard, OWN_POSTING_CODES } = require('./rate-check');
 const { listPostings, cancelPostings, STATES } = require('./dedupe');
-const { readQueue, writeQueue, setStatus, QUEUE_FILE } = require('./status-server');
+const { readQueue, writeQueue, setStatus, QUEUE_FILE, reportRemovalResults } = require('./status-server');
 
 const MAX_ATTEMPTS = 3;
 
@@ -112,13 +112,25 @@ async function processClaimedQueue(context, { log }) {
   }
 
   // Re-read: the TMS may have added more while this ran.
+  const report = [];
   const remaining = readQueue().flatMap(item => {
     const result = outcome.get(`${item.customer}|${item.loadId}`);
-    if (result === 'matched') return [];
-    if (result === 'missing') {
+    const done = state => report.push({ customer: item.customer, loadId: String(item.loadId), state });
+    if (result === 'matched') {
+      done('removed');
+      return [];
+    }
+    if (result === 'missing' || result === 'retry') {
       const attempts = (item.attempts || 0) + 1;
       if (attempts >= MAX_ATTEMPTS) {
-        log(`  ${item.customer} #${item.loadId}: still no posting after ${attempts} tries; dropped from the queue.`);
+        if (result === 'missing') {
+          log(`  ${item.customer} #${item.loadId}: still no posting after ${attempts} tries; dropped from the queue.`);
+          done('gone');
+        } else {
+          // Posted by hand (the bot never removes those) or Landstar would not cancel it.
+          log(`  ${item.customer} #${item.loadId}: still on Landstar after ${attempts} tries; dropped from the queue. Remove it by hand.`);
+          done('failed');
+        }
         return [];
       }
       return [{ ...item, attempts }];
@@ -126,6 +138,7 @@ async function processClaimedQueue(context, { log }) {
     return [item];
   });
   writeQueue(remaining);
+  reportRemovalResults(report);
   log(`  Removed ${removed} Landstar posting(s).${remaining.length ? ` ${remaining.length} will be retried.` : ''}`);
   if ([...outcome.values()].includes('retry')) {
     throw new Error('Some queued postings are still on Landstar after cancellation; retained for retry. Check agency permissions and protected loads.');

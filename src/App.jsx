@@ -4931,6 +4931,39 @@ function hasOpenLandstarError(load) {
   return !(Number.isFinite(exportedAt) && exportedAt > Number(error.at));
 }
 
+// ---------- Landstar removals (bot/unpost.js) ----------
+// A load sent to the removal bot shows "⏳ SENT TO REMOVAL BOT"; when the bot reports back it
+// shows RMOV (removed, or no longer on the board) or "NOT REMOVED" (remove it by hand).
+const removalSeenKey = 'landstar_removalSeenAt';
+function readRemovalSeenAt() {
+  try { return Number(localStorage.getItem(removalSeenKey)) || 0; } catch { return 0; }
+}
+function takeNewRemovalResults(results) {
+  if (!Array.isArray(results) || !results.length) return [];
+  const seenAt = readRemovalSeenAt();
+  const fresh = results.filter(result => Number(result?.at) > seenAt);
+  if (fresh.length) {
+    try { localStorage.setItem(removalSeenKey, String(Math.max(...fresh.map(result => Number(result.at))))); } catch { /* shown again next time */ }
+  }
+  return fresh;
+}
+function markRemovalQueued(load, reason = '') {
+  return { ...load, landstarRemoval: { state: 'queued', at: new Date().toISOString(), ...(reason ? { reason } : {}) } };
+}
+function applyRemovalResult(load, result) {
+  return { ...load, landstarRemoval: { ...(load.landstarRemoval || {}), state: result.state, at: new Date(Number(result.at) || Date.now()).toISOString() } };
+}
+// Badge text, style and tooltip for a load's removal state (null when it has none).
+function getRemovalBadge(load) {
+  const removal = load?.landstarRemoval;
+  if (!removal?.state) return null;
+  const when = formatCheckTime(removal.at) || '';
+  if (removal.state === 'queued') return { text: '⏳ SENT TO REMOVAL BOT', className: 'bg-amber-500 text-black', title: `Sent to the removal bot ${when}. It takes the posting off the Landstar board.` };
+  if (removal.state === 'removed') return { text: 'RMOV', className: 'bg-slate-500 text-white', title: `Removed from Landstar ${when}.` };
+  if (removal.state === 'gone') return { text: 'RMOV', className: 'bg-slate-500 text-white', title: `No longer on the Landstar board (checked ${when}).` };
+  return { text: '⚠ NOT REMOVED', className: 'bg-red-600 text-white', title: `Still on Landstar after 3 tries (${when}): posted by hand or Landstar refused. Remove it on LandstarOnline.` };
+}
+
 // What the bot needs to assign a booked load on Landstar, or why it can't.
 function buildAssignRequest(customer, load) {
   const truck = String(load?.truck || '').trim();
@@ -5522,7 +5555,7 @@ export function BotStatusLight() {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 1500);
       try {
-        const response = await fetch(BOT_STATUS_URL, { cache: 'no-store', signal: controller.signal });
+        const response = await fetch(`${BOT_STATUS_URL}?removalsSince=${readRemovalSeenAt()}`, { cache: 'no-store', signal: controller.signal });
         const next = await response.json();
         if (!cancelled) setStatus(botStatusStyles[next.state] ? next : offStatus());
         if (showOnly) return;
@@ -5530,6 +5563,9 @@ export function BotStatusLight() {
         takeNewAssignResults(next.assignResults).forEach(result => {
           window.dispatchEvent(new CustomEvent('landstar-assign-result', { detail: result }));
         });
+        // Removal results -> RMOV / NOT REMOVED on the loads.
+        const removals = takeNewRemovalResults(next.removalResults);
+        if (removals.length) window.dispatchEvent(new CustomEvent('landstar-removal-results', { detail: removals }));
         // Rates the bot raised on Landstar -> the load's rate and a warning (one event per batch).
         const raises = takeNewRateRaises(next.rateRaises);
         if (raises.length) window.dispatchEvent(new CustomEvent('landstar-rate-raises', { detail: raises }));
@@ -6564,13 +6600,13 @@ export default function App({ sharing = null, userId = null } = {}) {
     const route = `${selectedOrder.origCity}, ${selectedOrder.origSt} → ${selectedOrder.destCity}, ${selectedOrder.destSt}`;
     const ok = window.confirm(
       `COVERED — load #${selectedOrder.id} (${route})\n\n`
-      + 'Its posting comes off the Landstar board (the local bot removes it, usually within a minute) '
-      + 'and the load is deleted from this TMS so it is not posted again.\n\nRemove it?'
+      + 'Its posting comes off the Landstar board (the local bot removes it). The load stays here marked '
+      + '⏳ SENT TO REMOVAL BOT, then RMOV once it is off Landstar, and it is never exported again.\n\nRemove it?'
     );
     if (!ok) return;
     addToUnpostQueue([{ customer: selectedBroker, loadId: String(selectedOrder.id), posting }]);
     void sendUnpostQueueToBot();
-    handleDelete();
+    saveLoad(markRemovalQueued(selectedOrder, 'covered'));
   };
 
   const selectionKey = (customer, id) => filter === 'OFFER' ? JSON.stringify([customer, String(id)]) : id;
@@ -8200,8 +8236,31 @@ export default function App({ sharing = null, userId = null } = {}) {
         + `${lines.slice(0, 5).join(' · ')}${lines.length > 5 ? ` · …and ${lines.length - 5} more (look for ⚠ LANDSTAR ERROR on the loads)` : ''}`);
     };
     window.addEventListener('landstar-error-drafts', onErrorDrafts);
+    const onRemovalResults = event => {
+      const results = new Map((Array.isArray(event.detail) ? event.detail : []).map(result => [`${result.customer}|${result.loadId}`, result]));
+      if (!results.size) return;
+      setCustomerOrdersMap(prev => {
+        let changed = false;
+        const next = { ...prev };
+        Object.entries(prev).forEach(([customer, loads]) => {
+          if (!Array.isArray(loads) || !loads.some(load => results.has(`${customer}|${load.id}`))) return;
+          next[customer] = loads.map(load => {
+            const result = results.get(`${customer}|${load.id}`);
+            return result ? applyRemovalResult(load, result) : load;
+          });
+          changed = true;
+        });
+        return changed ? next : prev;
+      });
+      setSelectedOrder(current => {
+        const result = current && [...results.values()].find(item => String(item.loadId) === String(current.id));
+        return result ? applyRemovalResult(current, result) : current;
+      });
+    };
+    window.addEventListener('landstar-removal-results', onRemovalResults);
     return () => {
       window.removeEventListener('landstar-error-drafts', onErrorDrafts);
+      window.removeEventListener('landstar-removal-results', onRemovalResults);
       clearInterval(timer);
       clearInterval(assignTimer);
       window.removeEventListener('landstar-assign-result', onAssignResult);
@@ -9186,9 +9245,10 @@ export default function App({ sharing = null, userId = null } = {}) {
     // Export everything on the current list, including loads already exported
     // (ENT) — re-posting the same loads to Landstar is allowed. Loads not on
     // the list are untouched; exported loads are (re)marked ENT below.
-    const candidateLoads = selectedIds.length > 0
+    // Loads taken off Landstar (🚫 Covered) are never posted again.
+    const candidateLoads = (selectedIds.length > 0
       ? orders.filter(o => selectedIds.includes(selectionKey(selectedBroker, o.id)))
-      : filteredOrders;
+      : filteredOrders).filter(o => !o.landstarRemoval);
     // Booked loads already have a truck; never post them to the Landstar board.
     const unbookedLoads = candidateLoads.filter(o => o.status !== 'BOOKED');
     const skippedBookedCount = candidateLoads.length - unbookedLoads.length;
@@ -10638,6 +10698,11 @@ export default function App({ sharing = null, userId = null } = {}) {
                           ⚠ LANDSTAR ERROR
                         </span>
                       )}
+                      {getRemovalBadge(ord) && (
+                        <span title={getRemovalBadge(ord).title} className={`${getRemovalBadge(ord).className} text-[9px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap`}>
+                          {getRemovalBadge(ord).text}
+                        </span>
+                      )}
                       {ord.rateRaise && (
                         <span
                           title={`The bot raised this load on Landstar from ${formatRaiseMoney(ord.rateRaise.from)} to ${formatRaiseMoney(ord.rateRaise.to)}${ord.rateRaise.competitor ? ` because ${ord.rateRaise.competitor} was paying ${formatRaiseMoney(ord.rateRaise.competitorRate)}` : ''}`}
@@ -11078,6 +11143,9 @@ export default function App({ sharing = null, userId = null } = {}) {
               <div className="flex items-center gap-2">
                 {String(selectedOrder.needsCapacity || '').trim() && (
                   <span className="bg-amber-400 text-black text-xs px-2 py-1 rounded font-bold" title="Protected from missing-list removal; local posting refresh requested every 15 minutes">IMPORTANT / NEEDS CAPACITY</span>
+                )}
+                {getRemovalBadge(selectedOrder) && (
+                  <span title={getRemovalBadge(selectedOrder).title} className={`${getRemovalBadge(selectedOrder).className} text-xs px-2.5 py-1 rounded font-extrabold`}>{getRemovalBadge(selectedOrder).text}</span>
                 )}
                 <span className={`text-xs px-2.5 py-1 rounded font-semibold ${selectedOrder.tag === 'ENT' ? 'tms-ent' : selectedOrder.tag === 'HOLD' ? 'bg-red-600 text-white' : selectedOrder.tag === 'OPEN' ? 'tms-open' : selectedOrder.tag === 'BOOKED' ? 'bg-purple-600 text-white' : 'bg-blue-600 text-white'}`}>{selectedOrder.tag}</span>
                 <button

@@ -60,3 +60,5 @@ bot/uploaded-ledger.json.tmp
 # Error bot: when it first saw each Bulk Postings error draft (changes every few minutes)
 bot/error-drafts-seen.json
 bot/error-drafts-seen.json.*.tmp
+bot/removal-results.json
+bot/removal-results.json.*.tmp

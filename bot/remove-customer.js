@@ -1,7 +1,7 @@
 // Removes every bulk-uploaded posting under your own codes whose Landstar customer name
 // matches the given text (e.g. "RXO"). Hand-posted and protected loads are left alone.
 // Report only unless --apply. Stop the bot first: this uses its browser profile.
-//   node remove-customer.js RXO [--apply] [--out report.json]
+//   node remove-customer.js RXO [--apply] [--include-hand-posted] [--out report.json]
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -16,7 +16,9 @@ const { openBoard, OWN_POSTING_CODES } = require('./rate-check');
   const outFile = args.includes('--out') ? args[args.indexOf('--out') + 1] : null;
   const pattern = new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 
-  const browser = await chromium.launchPersistentContext(path.join(__dirname, 'browser-profile'), { headless: false, viewport: null });
+  // --profile=browser-profile-helper borrows another bot's signed-in browser (that bot must be stopped).
+  const profile = (process.argv.find(arg => arg.startsWith('--profile=')) || '--profile=browser-profile').slice(10);
+  const browser = await chromium.launchPersistentContext(path.join(__dirname, profile), { headless: false, viewport: null });
   const board = await openBoard(browser, console.log);
   const postings = await listPostings(board, OWN_POSTING_CODES, console.log);
   const bulk = postings.filter(p => p.SourceSystemID === 'PORTAL');
@@ -68,7 +70,10 @@ const { openBoard, OWN_POSTING_CODES } = require('./rate-check');
   }
 
   if (apply && targets.length) {
-    const removed = await cancelPostings(portal, targets.map(d => d.id), console.log);
+    // --include-hand-posted: also postings the bot can't match to its own upload files (Daniel's
+    // request, 2026-11-20). Protected loads were already left out of targets above.
+    const removed = await cancelPostings(portal, targets.map(d => d.id), console.log,
+      { confirmedAllOwnAvailable: args.includes('--include-hand-posted') });
     console.log(`Removed ${removed} of ${targets.length}.`);
     const after = await listPostings(board, OWN_POSTING_CODES, console.log);
     const left = new Set(after.map(p => p.LoadId));

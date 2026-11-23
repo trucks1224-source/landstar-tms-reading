@@ -73,6 +73,12 @@ class TestDate extends Date {
   constructor(...args) { super(...(args.length ? args : [TEST_NOW])); }
   static now() { return TEST_NOW; }
 }
+// The tracking-email rules (src/lib/trackingEmails.js) run on the same test clock as App.jsx.
+const trackingEmailsSource = await readFile(new URL('./lib/trackingEmails.js', import.meta.url), 'utf8');
+const { code: trackingEmailsCode } = await transform(trackingEmailsSource, { loader: 'js', format: 'cjs' });
+const trackingEmailsModule = { exports: {} };
+vm.runInNewContext(trackingEmailsCode, { module: trackingEmailsModule, exports: trackingEmailsModule.exports, Date: TestDate, console });
+const trackingEmails = trackingEmailsModule.exports;
 const context = {
   Date: TestDate,
   module: { exports: {} },
@@ -81,6 +87,7 @@ const context = {
     if (name === './lib/screenshotTable.js') return screenshotTable;
     if (name === './lib/ntgCards.js') return ntgCards;
     if (name === './lib/textLoads.js') return textLoads;
+    if (name === './lib/trackingEmails.js') return trackingEmails;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
     throw new Error(`Unexpected dependency: ${name}`);
@@ -151,8 +158,10 @@ test('CH HTML preserves blank BIN cells and pickup headings, and overrides the p
         + '<p>10/02/2026 - Fri</p><table><tr><td>575362997</td><td>Dallas</td><td>TX</td><td>Atlanta</td><td>GA</td><td>40,000 lbs</td><td>$2,770</td><td>Book</td><td>WEB</td></tr></table>'
       ) } }
     ] };
+    // normalizeCustomerName now lives in lib/trackingEmails.js; the compiled App code reaches
+    // it through the import object, so give the browser copy that object too.
     const helpers = ['decodeGmailBody', 'getGmailMessageText', 'isCh593772Customer', 'normalizeCustomerName']
-      .map(name => policy[name].toString()).join('\n');
+      .map(name => policy[name].toString()).join('\n') + '\nconst import_trackingEmails = { normalizeCustomerName };';
     const read = customer => page.evaluate(({ helpers, payload, customer }) =>
       new Function('payload', 'customer', `${helpers}; return getGmailMessageText(payload, customer);`)(payload, customer),
     { helpers, payload, customer });
@@ -1385,6 +1394,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/screenshotTable.js') return screenshotTable;
       if (name === './lib/ntgCards.js') return ntgCards;
       if (name === './lib/textLoads.js') return textLoads;
+      if (name === './lib/trackingEmails.js') return trackingEmails;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === 'react') return react;
@@ -1535,6 +1545,7 @@ function createSyncContext(storage) {
       if (name === './lib/screenshotTable.js') return screenshotTable;
       if (name === './lib/ntgCards.js') return ntgCards;
       if (name === './lib/textLoads.js') return textLoads;
+      if (name === './lib/trackingEmails.js') return trackingEmails;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
       throw new Error(`Unexpected dependency: ${name}`);

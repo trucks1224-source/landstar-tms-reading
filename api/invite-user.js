@@ -8,8 +8,9 @@ import { isTmsOwner } from '../src/lib/teamAdmin.js';
 //
 // Only the TMS owner (Daniel, src/lib/teamAdmin.js) may invite; everyone else is refused.
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-// Where the invite link may send people back to: this app only.
-const ALLOWED_ORIGIN = /^(https:\/\/[a-z0-9-]+\.vercel\.app|http:\/\/(127\.0\.0\.1|localhost)(:\d+)?)$/i;
+// Invite links always open the TMS website: a teammate cannot reach 127.0.0.1 on Daniel's
+// computer (the first invites from the local TMS showed "127.0.0.1 refused to connect").
+export const TMS_SITE_URL = (process.env.TMS_SITE_URL || 'https://landstar-tms-reading-cffe.vercel.app').replace(/\/+$/, '');
 
 export async function processInviteRequest({ method, authorization, body, origin }, { getClient = getServiceClient } = {}) {
   if (method !== 'POST') return { status: 405, body: { error: 'Use POST.' } };
@@ -25,8 +26,7 @@ export async function processInviteRequest({ method, authorization, body, origin
   const email = String(body?.email || '').trim().toLowerCase();
   if (!EMAIL.test(email) || email.length > 200) return { status: 400, body: { error: 'Enter a valid email address.' } };
 
-  const redirectTo = ALLOWED_ORIGIN.test(String(origin || '')) ? `${origin}/` : undefined;
-  const { data, error } = await client.auth.admin.inviteUserByEmail(email, redirectTo ? { redirectTo } : undefined);
+  const { data, error } = await client.auth.admin.inviteUserByEmail(email, { redirectTo: `${TMS_SITE_URL}/` });
   if (error) {
     if (/already (been )?registered|already exists/i.test(error.message || '')) {
       return { status: 409, body: { error: `${email} already has a TMS account. They can use "Forgot password?" on the sign-in page.` } };

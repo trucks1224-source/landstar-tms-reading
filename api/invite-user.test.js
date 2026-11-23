@@ -32,11 +32,11 @@ test('only the TMS owner is an owner', () => {
   assert.equal(isTmsOwner(null), false);
 });
 
-test('the owner can invite a teammate; the link comes back to this TMS', async () => {
+test('the owner can invite a teammate; the link opens the TMS website, never 127.0.0.1', async () => {
   const fake = fakeClient();
   const result = await processInviteRequest(request(), { getClient: () => fake.client });
   assert.deepEqual(result, { status: 200, body: { ok: true, email: 'new.person@example.com', userId: 'new-user' } });
-  assert.deepEqual(fake.invites, [{ email: 'new.person@example.com', options: { redirectTo: 'http://127.0.0.1:5173/' } }]);
+  assert.deepEqual(fake.invites, [{ email: 'new.person@example.com', options: { redirectTo: 'https://landstar-tms-reading-cffe.vercel.app/' } }]);
 });
 
 test('anyone else is refused and nothing is sent', async () => {
@@ -56,10 +56,10 @@ test('no sign-in, a bad sign-in, a bad email or a GET are refused', async () => 
   assert.equal(fake.invites.length, 0);
 });
 
-test('a link is never sent back to another website', async () => {
+test('the link never follows the address the request came from', async () => {
   const fake = fakeClient();
   await processInviteRequest(request({ origin: 'https://evil.example' }), { getClient: () => fake.client });
-  assert.equal(fake.invites[0].options, undefined, 'Supabase then uses the site address set in its own settings');
+  assert.equal(fake.invites[0].options.redirectTo, 'https://landstar-tms-reading-cffe.vercel.app/');
 });
 
 test('someone who already has an account gets a clear message', async () => {

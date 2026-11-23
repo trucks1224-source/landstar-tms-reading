@@ -148,9 +148,23 @@ async function deleteDrafts(page, draftIds, log = console.log) {
   try {
     let checked = 0;
     for (const id of draftIds) {
-      // The row that shows "#<draft id>" and its own checkbox.
-      const box = page.locator(`xpath=//*[normalize-space(text())='#${id}']/ancestor::*[.//input[@type='checkbox']][1]//input[@type='checkbox']`).first();
-      if (!(await box.count())) { log(`    ! draft #${id} is not on the Bulk Postings page; left alone.`); continue; }
+      // The row that shows "#<draft id>" and its own checkbox. The number may be split across
+      // elements ("#" + "8395943"), so take the innermost element whose text contains it.
+      const label = `contains(translate(normalize-space(.), ' ', ''), '#${id}')`;
+      const box = page.locator(`xpath=//*[${label}][not(*[${label}])]/ancestor::*[.//input[@type='checkbox']][1]//input[@type='checkbox']`).first();
+      if (!(await box.count())) {
+        // Evidence for fixing this: a screenshot and the page around the number.
+        const shot = path.join(__dirname, 'logs', `error-draft-${id}.png`);
+        await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
+        const around = await page.evaluate(number => {
+          const html = document.body.innerHTML;
+          const at = html.indexOf(number);
+          return at < 0 ? '(number not in the page)' : html.slice(Math.max(0, at - 1500), at + 300).replace(/\s+/g, ' ');
+        }, String(id)).catch(() => '');
+        fs.writeFileSync(path.join(__dirname, 'logs', `error-draft-${id}.html.txt`), around);
+        log(`    ! draft #${id} row was not found on the Bulk Postings page; left alone. Screenshot: ${shot}`);
+        continue;
+      }
       await box.check({ force: true }).catch(() => {});
       if (await box.isChecked().catch(() => false)) checked += 1;
     }

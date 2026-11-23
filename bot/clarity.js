@@ -74,6 +74,13 @@ function summarizeClarityLoad(detail, listItem = {}) {
   const arrivedReceiver = deliveryUpdates.find(update => ARRIVED_CODES.has(codeOf(update))
     || /\barriv/i.test(textOf(update)) && !/estimated/i.test(textOf(update)));
   const location = stop => (stop?.location ? `${stop.location.city || ''}, ${stop.location.state?.code || stop.location.state || ''}`.replace(/^, |, $/g, '') : '');
+  // The truck's last ping: the freight list has it (actualDate), and so does the freight bill
+  // page itself (timestamp). Loads opened directly have only the page's, so use the newer one.
+  const pingTime = ping => Date.parse(ping?.actualDate || ping?.timestamp || '') || 0;
+  // No ping yet, Clarity sends an empty shell ({ state: {}, country: {} }): not a location.
+  const hasPlace = ping => Boolean(ping && (geoPoint(ping) || (typeof ping.city === 'string' && ping.city.trim())));
+  const lastPing = [listItem.lastLocation, detail?.lastLocation].filter(hasPlace)
+    .sort((a, b) => pingTime(b) - pingTime(a))[0] || null;
   const operator = (pickup?.operators || [])[0]?.displayName
     || [listItem.operator?.firstName, listItem.operator?.lastName].filter(Boolean).join(' ');
   return {
@@ -93,12 +100,12 @@ function summarizeClarityLoad(detail, listItem = {}) {
     // Done with no departure time recorded: 'done' (the TMS shows no time for it).
     leftShipperAt: pickupDone || deliveryDone ? (statusTime(departed) || 'done') : null,
     deliveredAt: deliveryDone ? (statusTime(delivered) || 'done') : null,
-    lastLocation: listItem.lastLocation ? `${listItem.lastLocation.city || ''}, ${listItem.lastLocation.state || ''}` : '',
-    lastLocationAt: listItem.lastLocation?.actualDate || null,
+    lastLocation: lastPing ? [lastPing.city, typeof lastPing.state === 'string' ? lastPing.state : lastPing.state?.code].filter(Boolean).join(', ') : '',
+    lastLocationAt: lastPing ? lastPing.actualDate || lastPing.timestamp || null : null,
     // Arrived at the receiver (delivery check-in); deliveredAt is the check-out.
     arrivedReceiverAt: statusTime(arrivedReceiver) || null,
     // GPS points {lat, lng} for the 10-mile check on check-in / check-out emails.
-    truckPoint: geoPoint(listItem.lastLocation),
+    truckPoint: geoPoint(lastPing),
     pickupPoint: geoPoint(pickup?.location) || geoPoint(listItem.origin?.location),
     deliveryPoint: geoPoint(delivery?.location) || geoPoint(listItem.destination?.location)
   };
@@ -212,6 +219,7 @@ async function checkTracking(context, watchList, { log = console.log, candidateB
       const captured = { detail };
       const summary = summarizeClarityLoad(captured.detail, match || {});
       log(`  ${watched.customer} #${watched.loadId}: freight bill ${freightBill}${summary.leftShipperAt ? ', left shipper' : summary.arrivedShipperAt ? ', at shipper' : ''}.`);
+      if (!summary.truckPoint) log('    No GPS ping from this truck in Clarity yet (the 10-mile check is skipped for it).');
       results.push({ key: watched.key, customer: watched.customer, loadId: watched.loadId, ok: true, trackingLink: link, ...summary, freightBill });
     }
   } finally {

@@ -85,6 +85,28 @@ test('GPS points for the truck and stops, and the receiver arrival', () => {
   assert.equal(summary.deliveredAt, null);
 });
 
+test('truck location comes from the freight bill page when the list has none, newest ping wins', () => {
+  const pickup = { id: 'p', stopTypeCode: 'Pickup', isComplete: false, statusUpdates: [] };
+  const delivery = { id: 'd', stopTypeCode: 'Delivery', isComplete: false, statusUpdates: [] };
+  const pagePing = { city: 'Raphine', state: { code: 'VA' }, latitude: 37.927469, longitude: -79.231403, timestamp: '2026-11-23T13:18:58Z' };
+  let summary = summarizeClarityLoad({ stops: [pickup, delivery], lastLocation: pagePing }, {});
+  assert.deepEqual(summary.truckPoint, { lat: 37.927469, lng: -79.231403 }, 'opened directly: the page ping');
+  assert.equal(summary.lastLocation, 'Raphine, VA');
+  assert.equal(summary.lastLocationAt, '2026-11-23T13:18:58Z');
+  const olderListPing = { city: 'Lexington', state: 'VA', geoCoordinates: [-79.44, 37.78], actualDate: '2026-11-23T12:00:00Z' };
+  summary = summarizeClarityLoad({ stops: [pickup, delivery], lastLocation: pagePing }, { lastLocation: olderListPing });
+  assert.equal(summary.lastLocation, 'Raphine, VA', 'the newer page ping wins');
+  const newerListPing = { ...olderListPing, actualDate: '2026-11-23T14:00:00Z' };
+  summary = summarizeClarityLoad({ stops: [pickup, delivery], lastLocation: pagePing }, { lastLocation: newerListPing });
+  assert.deepEqual(summary.truckPoint, { lat: 37.78, lng: -79.44 }, 'the newer list ping wins');
+  assert.equal(summary.lastLocation, 'Lexington, VA');
+  // A truck that never pinged: Clarity sends empty shells.
+  summary = summarizeClarityLoad({ stops: [pickup, delivery], lastLocation: { state: {}, country: {} } }, { lastLocation: { timezone: 'America/Chicago' } });
+  assert.equal(summary.truckPoint, null);
+  assert.equal(summary.lastLocation, '', 'never "[object Object]"');
+  assert.equal(summary.lastLocationAt, null);
+});
+
 test('a pickup departure time is never treated as an arrival time', () => {
   const pickup = {
     stopTypeCode: 'Pickup', isComplete: true,

@@ -6,6 +6,9 @@
 //   - Landstar gives at least one error reason for it (drafts WITHOUT a reason are good loads
 //     Landstar has not finished posting - 2,605 of them in the saved reports - never touched), and
 //   - it has been there for ERROR_DRAFT_MIN_AGE_MS (an upload that is still settling is left alone).
+// Drafts WITHOUT a reason that are still there after the same wait are "stuck" good loads: they
+// are posted with the page's Post button, unless the load is already on the board (deleted: no
+// duplicates) or ATZ has it (deleted and reported: the ATZ rule).
 // Each deleted draft is reported to the TMS (/status errorDrafts): a banner with Landstar's reason
 // and a LANDSTAR ERROR badge on the matching load, so it can be fixed and exported again.
 //
@@ -131,110 +134,199 @@ async function readErrorDrafts(page) {
   });
 }
 
-// Deletes the given drafts with the Bulk Postings page's own checkboxes and Delete button,
-// then confirms with Landstar's list that they are gone. Returns the draft ids really deleted.
-async function deleteDrafts(page, draftIds, log = console.log) {
-  if (!draftIds.length) return [];
+// Stuck drafts: no Landstar error, but still unposted after the settle time. Landstar sometimes
+// leaves good loads of a file as drafts (11/23: 224 loads; 25 RXO reefer loads from 11:38).
+// Daniel (2026-11-23): "If there is no Landstar error you can just click post".
+function planStuckDrafts(drafts, seen, now = Date.now(), minAgeMs = ERROR_DRAFT_MIN_AGE_MS) {
+  return drafts.filter(draft => !draftReasons(draft.details).length
+    && seen[String(draft.draftId)] && now - seen[String(draft.draftId)] >= minAgeMs);
+}
+
+// What to do with one stuck draft, given what is on the board:
+//   'duplicate' - the same load is already posted under your codes: delete the draft (no duplicates)
+//   'atz'       - ATZ already has this load: never post it (ATZ rule); delete the draft and say so
+//   'post'      - otherwise: post it
+function decideStuckDraft(described, ownMatches, atzPosting) {
+  if (ownMatches.length) return 'duplicate';
+  if (atzPosting) return 'atz';
+  return 'post';
+}
+
+// Ticks the given drafts' rows on Bulk Postings. Returns how many are ticked.
+async function tickDraftRows(page, draftIds, log) {
   page.once('dialog', dialog => dialog.accept().catch(() => {}));
   await page.goto(BULK_URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
   await page.waitForURL(/portal\.landstaronline\.com\/agent\/bulk-postings/, { timeout: 60000 }).catch(() => {});
   await page.getByText(/Errors?\s*\|/i).first().waitFor({ timeout: 60000 }).catch(() => {});
   await page.waitForTimeout(2000);
+  let checked = 0;
+  for (const id of draftIds) {
+    // The row that shows "#<draft id>" and its own checkbox. The number may be split across
+    // elements ("#" + "8395943"), so take the innermost element whose text contains it.
+    const label = `contains(translate(normalize-space(.), ' ', ''), '#${id}')`;
+    const box = page.locator(`xpath=//*[${label}][not(*[${label}])]/ancestor::*[.//input[@type='checkbox']][1]//input[@type='checkbox']`).first();
+    // Bulk Postings only draws the rows near the top (newest first); scroll down until the
+    // draft's row is drawn (2026-11-23: #8395943 was row 26 of 26 and never on screen).
+    for (let scroll = 0; scroll < 40 && !(await box.count()); scroll += 1) {
+      const moved = await page.evaluate(() => {
+        let changed = false;
+        const scrollers = [document.scrollingElement, ...document.querySelectorAll('*')]
+          .filter(el => el && el.scrollHeight > el.clientHeight + 20 && getComputedStyle(el).overflowY !== 'hidden');
+        for (const el of scrollers) {
+          const before = el.scrollTop;
+          el.scrollTop = before + Math.max(400, el.clientHeight * 0.8);
+          if (el.scrollTop !== before) changed = true;
+        }
+        return changed;
+      }).catch(() => false);
+      await page.waitForTimeout(700);
+      if (!moved && !(await box.count())) break;
+    }
+    if (!(await box.count())) {
+      const shot = path.join(__dirname, 'logs', `error-draft-${id}.png`);
+      await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
+      log(`    ! draft #${id} row was not found on the Bulk Postings page; left alone. Screenshot: ${shot}`);
+      continue;
+    }
+    await box.check({ force: true }).catch(() => {});
+    if (await box.isChecked().catch(() => false)) checked += 1;
+  }
+  return checked;
+}
+
+// Ticks the drafts and uses the page's own Delete or Post button, then checks Landstar's list.
+// Returns the draft ids that are no longer unposted drafts.
+async function actOnDrafts(page, draftIds, action, log = console.log) {
+  if (!draftIds.length) return [];
   const sent = [];
   const onRequest = request => {
-    if (/bulkUpload/i.test(request.url()) && !['GET', 'OPTIONS'].includes(request.method())) sent.push(`${request.method()} ${request.url().replace(/^https:\/\/[^/]+/, '')}`);
+    if (/loadboards/i.test(request.url()) && !['GET', 'OPTIONS'].includes(request.method())) sent.push(`${request.method()} ${request.url().replace(/^https:\/\/[^/]+/, '')}`);
   };
   page.on('request', onRequest);
   try {
-    let checked = 0;
-    for (const id of draftIds) {
-      // The row that shows "#<draft id>" and its own checkbox. The number may be split across
-      // elements ("#" + "8395943"), so take the innermost element whose text contains it.
-      const label = `contains(translate(normalize-space(.), ' ', ''), '#${id}')`;
-      const box = page.locator(`xpath=//*[${label}][not(*[${label}])]/ancestor::*[.//input[@type='checkbox']][1]//input[@type='checkbox']`).first();
-      // Bulk Postings only draws the rows near the top (newest first); scroll down until the
-      // draft's row is drawn (2026-11-23: #8395943 was row 26 of 26 and never on screen).
-      for (let scroll = 0; scroll < 40 && !(await box.count()); scroll += 1) {
-        const moved = await page.evaluate(() => {
-          let changed = false;
-          const scrollers = [document.scrollingElement, ...document.querySelectorAll('*')]
-            .filter(el => el && el.scrollHeight > el.clientHeight + 20 && getComputedStyle(el).overflowY !== 'hidden');
-          for (const el of scrollers) {
-            const before = el.scrollTop;
-            el.scrollTop = before + Math.max(400, el.clientHeight * 0.8);
-            if (el.scrollTop !== before) changed = true;
-          }
-          return changed;
-        }).catch(() => false);
-        await page.waitForTimeout(700);
-        if (!moved && !(await box.count())) break;
-      }
-      if (!(await box.count())) {
-        // Evidence for fixing this: a screenshot and the page around the number.
-        const shot = path.join(__dirname, 'logs', `error-draft-${id}.png`);
-        await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
-        const around = await page.evaluate(number => {
-          const html = document.body.innerHTML;
-          const at = html.indexOf(number);
-          return at < 0 ? '(number not in the page)' : html.slice(Math.max(0, at - 1500), at + 300).replace(/\s+/g, ' ');
-        }, String(id)).catch(() => '');
-        fs.writeFileSync(path.join(__dirname, 'logs', `error-draft-${id}.html.txt`), around);
-        log(`    ! draft #${id} row was not found on the Bulk Postings page; left alone. Screenshot: ${shot}`);
-        continue;
-      }
-      await box.check({ force: true }).catch(() => {});
-      if (await box.isChecked().catch(() => false)) checked += 1;
+    if (!(await tickDraftRows(page, draftIds, log))) return [];
+    // Exact names only: "Post" must never match the "Quick Post" tab.
+    const name = action === 'delete' ? /^\s*delete(\s+selected)?(\s*\(\d+\))?\s*$/i : /^\s*post(\s+selected)?(\s*\(\d+\))?\s*$/i;
+    const button = page.getByRole('button', { name }).first();
+    if (!(await button.count())) {
+      const buttons = (await page.locator('button').allInnerTexts().catch(() => [])).map(text => text.trim()).filter(Boolean);
+      const shot = path.join(__dirname, 'logs', `bulk-${action}-buttons.png`);
+      await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
+      log(`    ! no ${action === 'delete' ? 'Delete' : 'Post'} button after ticking the rows (buttons: ${JSON.stringify(buttons).slice(0, 300)}). Screenshot: ${shot}`);
+      return [];
     }
-    if (!checked) return [];
-    const remove = page.getByRole('button', { name: /^\s*delete/i }).first();
-    await remove.click({ timeout: 15000 });
+    await button.click({ timeout: 15000 });
     await page.waitForTimeout(1500);
-    const confirm = page.locator('.cdk-overlay-pane, [role="dialog"]').getByRole('button', { name: /^\s*(delete|yes|confirm|ok)\b/i }).last();
+    const confirmName = action === 'delete' ? /^\s*(delete|yes|confirm|ok)\b/i : /^\s*(post|yes|confirm|ok|submit)\b/i;
+    const confirm = page.locator('.cdk-overlay-pane, [role="dialog"]').getByRole('button', { name: confirmName }).last();
     if (await confirm.count()) await confirm.click({ timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(6000);
+    await page.waitForTimeout(action === 'post' ? 10000 : 6000);
   } finally {
     page.off('request', onRequest);
   }
-  if (sent.length) log(`    Landstar delete request: ${[...new Set(sent)].join(', ')}`);
+  if (sent.length) log(`    Landstar ${action} request: ${[...new Set(sent)].join(', ')}`);
   const left = new Set((await readErrorDrafts(page)).map(draft => String(draft.draftId)));
   return draftIds.filter(id => !left.has(String(id)));
 }
 
-// One pass: read, decide, delete, report. Returns the deleted drafts (described).
-async function cleanErrorDrafts(page, { apply = true, log = console.log, report = () => {}, seenFile = SEEN_FILE } = {}) {
-  const drafts = await readErrorDrafts(page);
-  const seen = readSeen(seenFile);
-  const due = planErrorDraftCleanup(drafts, seen);
-  writeSeen(seen, seenFile);
-  const withErrors = drafts.filter(draft => draftReasons(draft.details).length).length;
-  if (!due.length) {
-    if (withErrors) log(`  Bulk Postings: ${withErrors} error draft(s) waiting out the 10-minute settle time.`);
-    return [];
+const deleteDrafts = (page, draftIds, log) => actOnDrafts(page, draftIds, 'delete', log);
+
+// The board loads that decide what happens to stuck drafts: your own postings in the drafts'
+// origin states, and ATZ's postings on each draft's lane and pickup day.
+async function boardChecks(board, stuck, log) {
+  const { listPostings } = require('./dedupe');
+  const { OWN_POSTING_CODES, searchBoard, isSkipAgencyPosting } = require('./rate-check');
+  const { findMatchingPostings } = require('./unpost');
+  const states = [...new Set(stuck.map(draft => String(draft.listing?.originRegion || '').trim()).filter(Boolean))];
+  const own = await listPostings(board, OWN_POSTING_CODES, log, states);
+  const searches = new Map();
+  const results = [];
+  for (const draft of stuck) {
+    const d = describeDraft(draft);
+    const l = draft.listing || {};
+    const pickupDate = d.pickup ? `${d.pickup.slice(0, 6)}20${d.pickup.slice(6, 8)}` : '';
+    const lane = {
+      pickupDate, originState: String(l.originRegion || '').trim(), destState: String(l.destinationRegion || '').trim(),
+      originCity: String(l.originLocality || '').trim(), destCity: String(l.destinationLocality || '').trim(),
+      originZip: d.posting.originZip, destZip: d.posting.destZip
+    };
+    let atz = null;
+    if (lane.originState && lane.destState && pickupDate) {
+      const key = `${lane.originState}|${lane.destState}|${pickupDate}`;
+      if (!searches.has(key)) searches.set(key, await searchBoard(board, lane.originState, lane.destState, pickupDate).catch(() => []));
+      atz = searches.get(key).find(b => isSkipAgencyPosting(b, lane)) || null;
+    }
+    const ownMatches = findMatchingPostings(own, d.posting);
+    results.push({ draft, described: d, decision: decideStuckDraft(d, ownMatches, atz), atz });
   }
-  const described = due.map(describeDraft);
-  described.forEach(d => log(`  Error draft #${d.draftId} ${d.customer} ${d.lane} (pickup ${d.pickup}): ${d.reasons.join('; ')}`));
-  if (!apply) return described;
-  const deleted = new Set((await deleteDrafts(page, described.map(d => d.draftId), log)).map(String));
-  const done = described.filter(d => deleted.has(d.draftId));
-  described.filter(d => !deleted.has(d.draftId)).forEach(d => log(`    ! draft #${d.draftId} could not be deleted; it will be tried again.`));
-  done.forEach(d => report({ ...d, action: 'deleted' }));
-  log(`  Bulk Postings: deleted ${done.length} of ${described.length} error draft(s).`);
-  return done;
+  return results;
+}
+
+// One pass: error drafts are deleted and reported; stuck drafts with no error are posted (or
+// deleted when the load is already on the board, or when ATZ has it). `context` is the bot's
+// signed-in browser; it opens its own tab for Bulk Postings.
+async function cleanErrorDrafts(context, { apply = true, log = console.log, report = () => {}, seenFile = SEEN_FILE } = {}) {
+  const { openBoard } = require('./rate-check');
+  const board = await openBoard(context, log); // first: it closes the browser's other tabs
+  const page = await context.newPage();
+  try {
+    const drafts = await readErrorDrafts(page);
+    const seen = readSeen(seenFile);
+    const due = planErrorDraftCleanup(drafts, seen);
+    const stuck = planStuckDrafts(drafts, seen);
+    writeSeen(seen, seenFile);
+    const waiting = drafts.length - due.length - stuck.length;
+    if (!due.length && !stuck.length) {
+      if (waiting) log(`  Bulk Postings: ${waiting} draft(s) waiting out the 10-minute settle time.`);
+      return { deleted: [], posted: [] };
+    }
+
+    // Error drafts.
+    const errors = due.map(describeDraft);
+    errors.forEach(d => log(`  Error draft #${d.draftId} ${d.customer} ${d.lane} (pickup ${d.pickup}): ${d.reasons.join('; ')}`));
+
+    // Stuck drafts: check the board first.
+    const checks = stuck.length ? await boardChecks(board, stuck, log) : [];
+    checks.forEach(({ described: d, decision, atz }) => log(`  Stuck draft #${d.draftId} ${d.customer} ${d.lane} (pickup ${d.pickup}): `
+      + (decision === 'duplicate' ? 'already on the board - delete the draft'
+        : decision === 'atz' ? `ATZ already has it (#${atz.LoadId}) - delete the draft` : 'no Landstar error - post it')));
+    if (!apply) return { deleted: errors, posted: checks.filter(c => c.decision === 'post').map(c => c.described) };
+
+    const atzDrafts = checks.filter(c => c.decision === 'atz')
+      .map(c => ({ ...c.described, reasons: [`ATZ already has this load on the board (#${c.atz.LoadId}); not posted`] }));
+    const duplicates = checks.filter(c => c.decision === 'duplicate').map(c => c.described);
+    const toDelete = [...errors, ...atzDrafts, ...duplicates];
+    const deletedIds = new Set((await deleteDrafts(page, toDelete.map(d => d.draftId), log)).map(String));
+    toDelete.filter(d => !deletedIds.has(d.draftId)).forEach(d => log(`    ! draft #${d.draftId} could not be deleted; it will be tried again.`));
+    // Reported to the TMS: errors and ATZ skips (the load is not on Landstar). Duplicates are
+    // not: the load is already posted.
+    const reported = [...errors, ...atzDrafts].filter(d => deletedIds.has(d.draftId));
+    reported.forEach(d => report({ ...d, action: 'deleted' }));
+
+    const toPost = checks.filter(c => c.decision === 'post').map(c => c.described);
+    const postedIds = new Set((await actOnDrafts(page, toPost.map(d => d.draftId), 'post', log)).map(String));
+    toPost.filter(d => !postedIds.has(d.draftId)).forEach(d => log(`    ! draft #${d.draftId} is still a draft after Post; it will be tried again.`));
+    const posted = toPost.filter(d => postedIds.has(d.draftId));
+
+    log(`  Bulk Postings: deleted ${deletedIds.size} draft(s) (${errors.filter(d => deletedIds.has(d.draftId)).length} with errors, `
+      + `${duplicates.filter(d => deletedIds.has(d.draftId)).length} already on the board, ${atzDrafts.filter(d => deletedIds.has(d.draftId)).length} ATZ), `
+      + `posted ${posted.length} of ${toPost.length} stuck draft(s).`);
+    return { deleted: reported, posted };
+  } finally {
+    await page.close().catch(() => {});
+  }
 }
 
 module.exports = {
-  cleanErrorDrafts, readErrorDrafts, deleteDrafts, planErrorDraftCleanup, describeDraft, draftReasons,
-  boardTime, ERROR_DRAFT_MIN_AGE_MS
+  cleanErrorDrafts, readErrorDrafts, deleteDrafts, actOnDrafts, planErrorDraftCleanup, planStuckDrafts, decideStuckDraft,
+  describeDraft, draftReasons, boardTime, ERROR_DRAFT_MIN_AGE_MS
 };
 
 if (require.main === module) {
   const { chromium } = require('playwright');
-  const { openBoard } = require('./rate-check');
   (async () => {
     const context = await chromium.launchPersistentContext(path.join(__dirname, 'browser-profile-removal'), { headless: false, viewport: null });
-    await openBoard(context);
-    const page = await context.newPage();
-    await cleanErrorDrafts(page, { apply: process.argv.includes('--apply') });
+    await cleanErrorDrafts(context, { apply: process.argv.includes('--apply') });
     await context.close();
   })().catch(error => {
     console.error(error.message);

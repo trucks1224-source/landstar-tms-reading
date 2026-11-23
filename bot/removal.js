@@ -53,14 +53,11 @@ async function main() {
         }
         if (Date.now() >= errorDraftsDueAt) {
           errorDraftsDueAt = Date.now() + ERROR_DRAFT_CHECK_MS;
-          setStatus('working', 'Checking Bulk Postings errors');
-          const page = await context.newPage();
+          setStatus('working', 'Checking Bulk Postings errors and stuck drafts');
           try {
-            await cleanErrorDrafts(page, { apply: true, report: reportErrorDraft });
+            await cleanErrorDrafts(context, { apply: true, report: reportErrorDraft });
           } catch (error) {
             console.error('Bulk Postings error check failed; it runs again in 5 minutes:', error.message);
-          } finally {
-            await page.close().catch(() => {});
           }
         }
         setStatus('logged-in', 'Waiting for queued removals');

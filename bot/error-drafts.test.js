@@ -50,3 +50,20 @@ test('a deleted draft is described for the TMS with the posting it matches loads
     reasons: ['Invalid Destination', 'TMS load must include calculated Miles']
   });
 });
+
+test('a draft with no Landstar error is stuck only after the same 10-minute wait', () => {
+  const { planStuckDrafts } = require('./error-drafts');
+  const seen = { 2: 1_000_000, 8395943: 1_000_000 };
+  assert.deepEqual(planStuckDrafts([anzac, goodLoad], seen, 1_000_000 + ERROR_DRAFT_MIN_AGE_MS - 1), [], 'still settling');
+  assert.deepEqual(planStuckDrafts([anzac, goodLoad], seen, 1_000_000 + ERROR_DRAFT_MIN_AGE_MS).map(d => d.draftId), [2],
+    'only the draft without an error; drafts with errors are deleted, never posted');
+  assert.deepEqual(planStuckDrafts([goodLoad], {}, 9_999_999_999), [], 'never seen before: wait first');
+});
+
+test('a stuck draft is posted unless the load is already on the board or ATZ has it', () => {
+  const { decideStuckDraft } = require('./error-drafts');
+  assert.equal(decideStuckDraft({}, [], null), 'post');
+  assert.equal(decideStuckDraft({}, [{ LoadId: 1 }], null), 'duplicate', 'no duplicate loads on the board');
+  assert.equal(decideStuckDraft({}, [], { LoadId: 2, Agency: 'ATZ' }), 'atz', 'never post a load ATZ already has');
+  assert.equal(decideStuckDraft({}, [{ LoadId: 1 }], { LoadId: 2 }), 'duplicate');
+});

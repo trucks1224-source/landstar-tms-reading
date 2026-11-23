@@ -1,7 +1,7 @@
 // Deletes every unposted (error) draft on Landstar's Bulk Postings page by selecting all
 // rows and using the page's own Delete button. Without --apply it only reports what it sees.
 // Stop the bot first.
-//   node clear-drafts.js <screenshot-folder> [--apply]
+//   node clear-drafts.js <screenshot-folder> [--apply] [--rounds=40]  (one round = one page of drafts)
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -35,7 +35,8 @@ async function errorCount(page) {
   console.log(`Buttons: ${JSON.stringify(buttons.map(b => b.trim()).filter(Boolean))}`);
   if (!apply) { await browser.close(); return; }
 
-  for (let round = 0; round < 10; round += 1) {
+  const rounds = Number((process.argv.find(arg => arg.startsWith("--rounds=")) || "--rounds=40").slice(9));
+  for (let round = 0; round < rounds; round += 1) {
     const before = await errorCount(page);
     if (!before) break;
     // Select every row shown, then use the page's Delete action.

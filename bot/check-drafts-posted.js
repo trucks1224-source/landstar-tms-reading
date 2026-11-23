@@ -35,7 +35,7 @@ const boardTime = iso => {
           if (user?.access_token) { token = user.access_token; userId = String(user.profile?.ls_unique_id || ''); }
         }
       }
-      const response = await fetch('/loadboards/v1/bulkUpload/unpostedDrafts?pageIndex=0&pageSize=200', {
+      const response = await fetch('/loadboards/v1/bulkUpload/unpostedDrafts?pageIndex=0&pageSize=500', {
         method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ loadStatuses: ['Active'], userId, sortColumn: 'PostingNumber', sortType: 'Desc', lockedInRate: false })
       });

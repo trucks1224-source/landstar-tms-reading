@@ -184,8 +184,11 @@ async function waitForUploadToFinish(page) {
   // the modal (and its close animation) to fully clear before the next file.
   await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => {});
 
-  // Landstar's success dialog stays open until Done is clicked.
-  await closeSuccessfulUploadConfirmation(page);
+  // Wait for Landstar's result window: moving on or reloading before it shows leaves the
+  // file's loads as unposted drafts. Success stays open until Done is clicked; a partial
+  // result is closed here and its error drafts are filed by the draft check.
+  const outcome = await closeSuccessfulUploadConfirmation(page);
+  if (outcome.state === 'partial') await closeLeftoverDialogs(page);
   await page.waitForTimeout(4000);
 
   // Confirm the upload button is clickable again (no overlay intercepting).

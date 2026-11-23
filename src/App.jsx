@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
+import { isTmsOwner } from './lib/teamAdmin.js';
 import { detectScreenshotGrid, readScreenshotGrid } from './lib/screenshotTable.js';
 import { findNtgCardRegions } from './lib/ntgCards.js';
 import { parseTextLoadList } from './lib/textLoads.js';
@@ -4844,6 +4845,71 @@ const BOT_ASSIGN_URL = 'http://127.0.0.1:47615/assign';
 const assignQueueKey = 'landstar_assignQueue';
 const assignSeenKey = 'landstar_assignSeenAt';
 
+// ---------- Rate raises from the bot's board-rate watch (bot/hazmat-watch.js) ----------
+const rateRaiseSeenKey = 'landstar_rateRaiseSeenAt';
+const sameZip = (a, b) => String(a || '').trim().padStart(5, '0') === String(b || '').trim().padStart(5, '0');
+// The TMS load a raise belongs to: its saved Landstar posting has the same origin ZIP,
+// destination ZIP, pickup end and weight as the raised posting.
+function loadMatchesRateRaise(load, raise) {
+  const mine = load?.landstarPosting;
+  const theirs = raise?.posting;
+  if (!mine || !theirs) return false;
+  return sameZip(mine.originZip, theirs.originZip) && sameZip(mine.destZip, theirs.destZip)
+    && String(mine.pickupThru || '').trim() === String(theirs.pickupThru || '').trim()
+    && (!theirs.weight || !mine.weight || Number(mine.weight) === Number(theirs.weight));
+}
+// The load after the bot raised it on Landstar: its rate is the new board rate and it remembers
+// the raise (the ⬆ RAISED badge). It counts as a set rate ('user-entered'): the rate box and the
+// export only accept user-entered/DAT rates, a re-export then posts this exact rate with no RXO
+// DAT discount, and re-imports and DAT refreshes keep it. It is not saved as a lane rate.
+function applyRateRaise(load, raise) {
+  return {
+    ...load,
+    rateInput: String(raise.to),
+    rateSource: 'user-entered',
+    rateRaise: {
+      from: Number(raise.from) || 0, to: Number(raise.to) || 0,
+      competitor: raise.competitor || '', competitorRate: Number(raise.competitorRate) || 0,
+      landstarLoadId: raise.landstarLoadId || '', at: Number(raise.at) || Date.now()
+    }
+  };
+}
+function takeNewRateRaises(raises) {
+  if (!Array.isArray(raises) || !raises.length) return [];
+  let seenAt = 0;
+  try { seenAt = Number(localStorage.getItem(rateRaiseSeenKey)) || 0; } catch { /* first time */ }
+  const fresh = raises.filter(raise => Number(raise?.at) > seenAt);
+  if (fresh.length) {
+    try { localStorage.setItem(rateRaiseSeenKey, String(Math.max(...fresh.map(raise => Number(raise.at))))); } catch { /* shown again next time */ }
+  }
+  return fresh;
+}
+const formatRaiseMoney = value => `$${Number(value || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+
+// ---------- Bulk Postings error drafts the bot deleted (bot/error-drafts.js) ----------
+const errorDraftSeenKey = 'landstar_errorDraftSeenAt';
+function takeNewErrorDrafts(drafts) {
+  if (!Array.isArray(drafts) || !drafts.length) return [];
+  let seenAt = 0;
+  try { seenAt = Number(localStorage.getItem(errorDraftSeenKey)) || 0; } catch { /* first time */ }
+  const fresh = drafts.filter(draft => Number(draft?.at) > seenAt);
+  if (fresh.length) {
+    try { localStorage.setItem(errorDraftSeenKey, String(Math.max(...fresh.map(draft => Number(draft.at))))); } catch { /* shown again next time */ }
+  }
+  return fresh;
+}
+// The load after Landstar rejected its posting and the bot deleted the error draft.
+function applyLandstarError(load, draft) {
+  return { ...load, landstarError: { reasons: draft.reasons || [], draftId: draft.draftId || '', at: Number(draft.at) || Date.now() } };
+}
+// The LANDSTAR ERROR badge shows until the load is exported again after the error.
+function hasOpenLandstarError(load) {
+  const error = load?.landstarError;
+  if (!error) return false;
+  const exportedAt = Date.parse(load.landstarExportedAt || '');
+  return !(Number.isFinite(exportedAt) && exportedAt > Number(error.at));
+}
+
 // What the bot needs to assign a booked load on Landstar, or why it can't.
 function buildAssignRequest(customer, load) {
   const truck = String(load?.truck || '').trim();
@@ -5335,6 +5401,74 @@ function BookingsReportPage({ onBack, fuelRates = null }) {
   );
 }
 
+// ⚙ My Settings → Team: invite a teammate by email (api/invite-user.js) and see who is on the TMS.
+// Its own component so its state never shifts the App's (tests address App state by position).
+function TeamInvite({ sharing }) {
+  const [email, setEmail] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState(null);
+  const [teammates, setTeammates] = useState([]);
+  const loadTeammates = () => {
+    if (!sharing?.listTeammates) return;
+    sharing.listTeammates().then(list => setTeammates(Array.isArray(list) ? list : [])).catch(() => {});
+  };
+  useEffect(loadTeammates, [sharing]);
+  const invite = async () => {
+    const address = email.trim();
+    if (!address) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      if (!token) throw new Error('Sign in to the TMS first.');
+      const response = await fetch('/api/invite-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email: address })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'The invite could not be sent.');
+      setMessage({ ok: true, text: `Invite sent to ${result.email}. They open the email, choose a password and sign in. Then share customers with them from the customer list.` });
+      setEmail('');
+      loadTeammates();
+    } catch (error) {
+      setMessage({ ok: false, text: error.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <fieldset className="border border-[#1c2541] rounded p-3 space-y-2">
+      <legend className="px-1 text-xs font-bold text-gray-300">👥 Team</legend>
+      <p className="text-[11px] text-gray-400">Add a teammate: they get an email invite to choose a password. Each person has their own workspace.</p>
+      <div className="flex gap-2">
+        <input
+          type="email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void invite(); } }}
+          placeholder="teammate@email.com"
+          aria-label="Teammate email"
+          className="flex-1 min-w-0 bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
+        />
+        <button
+          type="button"
+          onClick={() => void invite()}
+          disabled={busy || !email.trim()}
+          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-3 py-1.5 text-xs rounded font-bold whitespace-nowrap"
+        >
+          {busy ? 'Sending…' : 'Add teammate'}
+        </button>
+      </div>
+      {message && <p role={message.ok ? 'status' : 'alert'} className={`text-[11px] ${message.ok ? 'text-emerald-300' : 'text-red-400'}`}>{message.text}</p>}
+      {teammates.length > 0 && (
+        <p className="text-[11px] text-gray-400">On the TMS: {teammates.map(person => person.email).join(', ')}</p>
+      )}
+    </fieldset>
+  );
+}
+
 export function BotStatusLight() {
   const [status, setStatus] = useState({ state: 'off', message: 'Upload bot is not running' });
   const startRequestedAt = useRef(0);
@@ -5358,6 +5492,12 @@ export function BotStatusLight() {
         takeNewAssignResults(next.assignResults).forEach(result => {
           window.dispatchEvent(new CustomEvent('landstar-assign-result', { detail: result }));
         });
+        // Rates the bot raised on Landstar -> the load's rate and a warning (one event per batch).
+        const raises = takeNewRateRaises(next.rateRaises);
+        if (raises.length) window.dispatchEvent(new CustomEvent('landstar-rate-raises', { detail: raises }));
+        // Bulk Postings error drafts the bot deleted -> a banner and a badge on the load.
+        const errorDrafts = takeNewErrorDrafts(next.errorDrafts);
+        if (errorDrafts.length) window.dispatchEvent(new CustomEvent('landstar-error-drafts', { detail: errorDrafts }));
         // MercuryGate results (helper bot) -> load notes.
         let mgSeen = 0;
         try { mgSeen = Number(localStorage.getItem(mercurygateSeenKey)) || 0; } catch { /* first time */ }
@@ -5766,7 +5906,7 @@ function SystemCheck({ emailStore }) {
 // Load cards drawn at a time in the load list (more appear as you scroll).
 const LOAD_LIST_PAGE = 100;
 
-export default function App({ sharing = null } = {}) {
+export default function App({ sharing = null, userId = null } = {}) {
   const [brokers, setBrokers] = useState(() => {
     try {
       return normalizeBrokerList(JSON.parse(localStorage.getItem('landstar_brokers')));
@@ -6129,7 +6269,9 @@ export default function App({ sharing = null } = {}) {
         delete updatedOrder.rateSource;
       }
     }
-    
+    // A rate changed by hand (or by a lane change) is no longer the bot's raise: drop the badge.
+    if (updatedOrder.rateInput !== selectedOrder.rateInput) delete updatedOrder.rateRaise;
+
     setSelectedOrder(updatedOrder);
     setCustomerOrdersMap(prev => ({
       ...prev,
@@ -7952,10 +8094,79 @@ export default function App({ sharing = null } = {}) {
       }
     };
     window.addEventListener('landstar-assign-result', onAssignResult);
+    // The bot raised these postings on Landstar because another agency paid the same or more.
+    const onRateRaises = event => {
+      const raises = Array.isArray(event.detail) ? event.detail : [];
+      const found = [];
+      setCustomerOrdersMap(prev => {
+        let changed = false;
+        const next = { ...prev };
+        Object.entries(prev).forEach(([customer, loads]) => {
+          if (!Array.isArray(loads)) return;
+          let customerChanged = false;
+          const updated = loads.map(load => {
+            const raise = raises.find(item => loadMatchesRateRaise(load, item));
+            if (!raise) return load;
+            customerChanged = true;
+            found.push({ customer, load, raise });
+            return applyRateRaise(load, raise);
+          });
+          if (customerChanged) { next[customer] = updated; changed = true; }
+        });
+        return changed ? next : prev;
+      });
+      setSelectedOrder(current => {
+        const raise = current && raises.find(item => loadMatchesRateRaise(current, item));
+        return raise ? applyRateRaise(current, raise) : current;
+      });
+      const lines = raises.map(raise => {
+        const match = found.find(item => item.raise === raise);
+        return `${raise.hazmat ? '☢ ' : ''}${match ? `#${match.load.id}` : `Landstar #${raise.landstarLoadId}`} ${raise.lane}: `
+          + `${formatRaiseMoney(raise.from)} → ${formatRaiseMoney(raise.to)}${raise.competitor ? ` (${raise.competitor} was paying ${formatRaiseMoney(raise.competitorRate)})` : ''}`;
+      });
+      pushNotice(`⬆ The bot raised ${raises.length} rate${raises.length === 1 ? '' : 's'} on Landstar to stay the highest: `
+        + `${lines.slice(0, 5).join(' · ')}${lines.length > 5 ? ` · …and ${lines.length - 5} more (look for ⬆ RAISED on the loads)` : ''}`);
+    };
+    window.addEventListener('landstar-rate-raises', onRateRaises);
+    // Landstar rejected these postings; the bot deleted the error drafts from Bulk Postings.
+    const onErrorDrafts = event => {
+      const drafts = Array.isArray(event.detail) ? event.detail : [];
+      const found = [];
+      setCustomerOrdersMap(prev => {
+        let changed = false;
+        const next = { ...prev };
+        Object.entries(prev).forEach(([customer, loads]) => {
+          if (!Array.isArray(loads)) return;
+          let customerChanged = false;
+          const updated = loads.map(load => {
+            const draft = drafts.find(item => loadMatchesRateRaise(load, item));
+            if (!draft) return load;
+            customerChanged = true;
+            found.push({ load, draft });
+            return applyLandstarError(load, draft);
+          });
+          if (customerChanged) { next[customer] = updated; changed = true; }
+        });
+        return changed ? next : prev;
+      });
+      setSelectedOrder(current => {
+        const draft = current && drafts.find(item => loadMatchesRateRaise(current, item));
+        return draft ? applyLandstarError(current, draft) : current;
+      });
+      const lines = drafts.map(draft => {
+        const match = found.find(item => item.draft === draft);
+        return `${draft.hazmat ? '☢ ' : ''}${match ? `#${match.load.id}` : draft.customer} ${draft.lane} (pickup ${draft.pickup}): ${(draft.reasons || []).join('; ')}`;
+      });
+      pushNotice(`🗑 Landstar rejected ${drafts.length} posting${drafts.length === 1 ? '' : 's'}; the bot deleted ${drafts.length === 1 ? 'it' : 'them'} from Bulk Postings: `
+        + `${lines.slice(0, 5).join(' · ')}${lines.length > 5 ? ` · …and ${lines.length - 5} more (look for ⚠ LANDSTAR ERROR on the loads)` : ''}`);
+    };
+    window.addEventListener('landstar-error-drafts', onErrorDrafts);
     return () => {
+      window.removeEventListener('landstar-error-drafts', onErrorDrafts);
       clearInterval(timer);
       clearInterval(assignTimer);
       window.removeEventListener('landstar-assign-result', onAssignResult);
+      window.removeEventListener('landstar-rate-raises', onRateRaises);
     };
   }, []);
 
@@ -10365,6 +10576,22 @@ export default function App({ sharing = null } = {}) {
                       {customer === selectedBroker && exportErrorIds.includes(String(ord.id)) && (
                         <span className="bg-red-700 text-white text-[9px] px-1.5 py-0.5 rounded font-bold">EXPORT ERROR</span>
                       )}
+                      {hasOpenLandstarError(ord) && (
+                        <span
+                          title={`Landstar rejected this posting and the bot deleted it from Bulk Postings: ${ord.landstarError.reasons.join('; ')}. Fix the load and export it again.`}
+                          className="bg-red-600 text-white text-[9px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap"
+                        >
+                          ⚠ LANDSTAR ERROR
+                        </span>
+                      )}
+                      {ord.rateRaise && (
+                        <span
+                          title={`The bot raised this load on Landstar from ${formatRaiseMoney(ord.rateRaise.from)} to ${formatRaiseMoney(ord.rateRaise.to)}${ord.rateRaise.competitor ? ` because ${ord.rateRaise.competitor} was paying ${formatRaiseMoney(ord.rateRaise.competitorRate)}` : ''}`}
+                          className="bg-amber-400 text-black text-[9px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap"
+                        >
+                          ⬆ RAISED {formatRaiseMoney(ord.rateRaise.to)}
+                        </span>
+                      )}
                       <span className="bg-blue-900/60 text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{getDisplayEquipmentCode(ord.eCode)}</span>
                                             {isHazmatLoad(ord) && (
                                               <span aria-label={`Hazmat load ${ord.id}`} title="Hazmat load" className="bg-orange-500 text-black text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">☢ HAZ</span>
@@ -10628,6 +10855,8 @@ export default function App({ sharing = null } = {}) {
                   ))}
                 </div>
               </fieldset>
+              {/* Only the TMS owner (Daniel) sees Add teammate; the server refuses anyone else too. */}
+              {sharing && isTmsOwner(userId) && <TeamInvite sharing={sharing} />}
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setProfileDraft(null)} className="bg-gray-600 hover:bg-gray-500 text-white px-3 py-1.5 text-xs rounded">Cancel</button>
                 <button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 text-xs rounded font-bold">Save</button>
@@ -11062,6 +11291,20 @@ export default function App({ sharing = null } = {}) {
                         </div>
                       );
                     })()}
+                    {hasOpenLandstarError(selectedOrder) && (
+                      <div role="alert" className="mt-2 rounded border-2 border-red-500 bg-red-950/60 px-3 py-2 text-xs text-red-200">
+                        <span className="font-extrabold text-red-300">⚠ Landstar rejected this posting (the bot deleted it from Bulk Postings): </span>
+                        {selectedOrder.landstarError.reasons.join('; ') || 'no reason given'}. Fix the load and export it again.
+                      </div>
+                    )}
+                    {selectedOrder.rateRaise && (
+                      <div role="status" className="mt-2 rounded border-2 border-amber-400 bg-amber-950/60 px-3 py-2 text-xs text-amber-200">
+                        <span className="font-extrabold text-amber-300">⬆ Rate raised by the bot on Landstar: </span>
+                        {formatRaiseMoney(selectedOrder.rateRaise.from)} → <span className="font-extrabold text-white">{formatRaiseMoney(selectedOrder.rateRaise.to)}</span>
+                        {selectedOrder.rateRaise.competitor ? ` because ${selectedOrder.rateRaise.competitor} was paying ${formatRaiseMoney(selectedOrder.rateRaise.competitorRate)}` : ''}
+                        {selectedOrder.rateRaise.at ? ` · ${new Date(selectedOrder.rateRaise.at).toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}
+                      </div>
+                    )}
                     {(() => {
                       const fscRate = getFuelSurchargeRate(profile.fuelSurcharge, selectedOrder.origSt);
                       if (!fscRate) return null;

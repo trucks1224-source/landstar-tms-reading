@@ -102,9 +102,12 @@ function removalActive() {
 function readResults() {
   try {
     const parsed = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
-    return { assign: parsed.assign || [], tracking: parsed.tracking || {}, mercurygate: parsed.mercurygate || [] };
+    return {
+      assign: parsed.assign || [], tracking: parsed.tracking || {}, mercurygate: parsed.mercurygate || [],
+      rates: parsed.rates || [], errorDrafts: parsed.errorDrafts || []
+    };
   } catch {
-    return { assign: [], tracking: {}, mercurygate: [] };
+    return { assign: [], tracking: {}, mercurygate: [], rates: [], errorDrafts: [] };
   }
 }
 
@@ -287,6 +290,30 @@ function reportMercuryGateResult(result) {
   updateResults(results => ({ ...results, mercurygate: [...results.mercurygate, { ...result, at: Date.now() }].slice(-30) }));
 }
 
+// A posting the rate watch raised on Landstar (hazmat-watch.js). The TMS matches it to the
+// load by its posting (origin ZIP, destination ZIP, pickup end, weight), sets the load's rate
+// to the new board rate and shows a "rate raised" warning. Served as /status rateRaises.
+function reportRateRaise(raise) {
+  start();
+  try {
+    updateResults(results => ({ ...results, rates: [...results.rates, { ...raise, at: Date.now() }].slice(-300) }));
+  } catch (error) {
+    // The raise is already saved on Landstar; only the TMS note is missed.
+    console.error('Could not record the rate raise for the TMS:', error.message);
+  }
+}
+
+// A Bulk Postings error draft the error bot deleted (error-drafts.js), with Landstar's reasons.
+// Served as /status errorDrafts; the TMS shows a banner and badges the matching load.
+function reportErrorDraft(draft) {
+  start();
+  try {
+    updateResults(results => ({ ...results, errorDrafts: [...results.errorDrafts, { ...draft, at: Date.now() }].slice(-300) }));
+  } catch (error) {
+    console.error('Could not record the deleted error draft for the TMS:', error.message);
+  }
+}
+
 // The program running this process ("upload.js" for the posting bot).
 const SCRIPT = path.basename(require.main?.filename || process.argv[1] || '');
 
@@ -320,6 +347,8 @@ function start() {
         ...(shared.assign.length ? { assignResults: shared.assign } : {}),
         ...(Object.keys(shared.tracking).length ? { trackingResults: Object.values(shared.tracking) } : {}),
         ...(shared.mercurygate.length ? { mercurygateResults: shared.mercurygate } : {}),
+        ...(shared.rates.length ? { rateRaises: shared.rates } : {}),
+        ...(shared.errorDrafts.length ? { errorDrafts: shared.errorDrafts } : {}),
         ...(duplicates.length ? { duplicateBills: duplicates } : {}) }));
       return;
     }
@@ -491,5 +520,6 @@ module.exports = {
   readAssignQueue, writeAssignQueue, enqueueAssign, reportAssignResult, ASSIGN_QUEUE_FILE,
   readTrackingWatch, setTrackingWatch, reportTrackingResults, TRACKING_WATCH_FILE, readTrackingBills,
   readDuplicateBills, reportDuplicateBills,
-  readMercuryGateQueue, writeMercuryGateQueue, enqueueMercuryGate, reportMercuryGateResult
+  readMercuryGateQueue, writeMercuryGateQueue, enqueueMercuryGate, reportMercuryGateResult,
+  reportRateRaise, reportErrorDraft
 };

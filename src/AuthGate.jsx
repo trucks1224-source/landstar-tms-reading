@@ -51,6 +51,19 @@ function LoginForm() {
     setBusy(false);
   };
 
+  const [notice, setNotice] = useState('');
+  // Emails a link back to this TMS; opening it shows "Choose your password".
+  const handleForgot = async () => {
+    setError('');
+    setNotice('');
+    if (!email.trim()) { setError('Type your email first, then click Forgot password?'); return; }
+    setBusy(true);
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}/` });
+    setBusy(false);
+    if (resetError) setError(resetError.message);
+    else setNotice(`If ${email.trim()} has a TMS account, a link to choose a new password is on its way.`);
+  };
+
   return (
     <div className="h-screen flex items-center justify-center bg-[#0b132b] text-white">
       <form onSubmit={handleSubmit} className="w-80 bg-[#121829] border border-[#1c2541] rounded p-5 space-y-3">
@@ -74,6 +87,7 @@ function LoginForm() {
           className="w-full bg-[#161f36] border border-[#1c2541] rounded p-2 text-xs text-white placeholder-gray-500"
         />
         {error && <p role="alert" className="text-[11px] text-red-400">{error}</p>}
+        {notice && <p role="status" className="text-[11px] text-emerald-300">{notice}</p>}
         <button
           type="submit"
           disabled={busy}
@@ -81,10 +95,54 @@ function LoginForm() {
         >
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
+        <button type="button" onClick={handleForgot} disabled={busy} className="w-full text-[11px] text-blue-400 hover:text-blue-300 underline">
+          Forgot password?
+        </button>
       </form>
     </div>
   );
 }
+
+// Invite and password-reset links land here: the person is signed in by the link and
+// chooses a password before the TMS opens.
+function SetPasswordForm({ email, onDone }) {
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const handleSubmit = async event => {
+    event.preventDefault();
+    setError('');
+    if (password.length < 8) { setError('Use at least 8 characters.'); return; }
+    if (password !== confirm) { setError('The two passwords do not match.'); return; }
+    setBusy(true);
+    const { error: updateError } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (updateError) setError(updateError.message);
+    else onDone();
+  };
+  return (
+    <div className="h-screen flex items-center justify-center bg-[#0b132b] text-white">
+      <form onSubmit={handleSubmit} className="w-80 bg-[#121829] border border-[#1c2541] rounded p-5 space-y-3">
+        <h1 className="text-sm font-bold text-gray-200">Landstar TMS – Choose your password</h1>
+        {email && <p className="text-[11px] text-gray-400">{email}</p>}
+        <input type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="New password (8+ characters)"
+          autoComplete="new-password" required className="w-full bg-[#161f36] border border-[#1c2541] rounded p-2 text-xs text-white placeholder-gray-500" />
+        <input type="password" value={confirm} onChange={event => setConfirm(event.target.value)} placeholder="Type it again"
+          autoComplete="new-password" required className="w-full bg-[#161f36] border border-[#1c2541] rounded p-2 text-xs text-white placeholder-gray-500" />
+        {error && <p role="alert" className="text-[11px] text-red-400">{error}</p>}
+        <button type="submit" disabled={busy} className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-2 py-1.5 text-xs font-bold rounded">
+          {busy ? 'Saving…' : 'Save password and open the TMS'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// True when this page was opened from an invite or password-reset email link. Read once when
+// the page loads: Supabase removes the link's details from the address bar right after.
+const openedFromPasswordLink = typeof window !== 'undefined'
+  && /type=(invite|recovery)/.test(`${window.location.hash}${window.location.search}`);
 
 function SyncBadge({ email }) {
   const [status, setStatus] = useState('idle');
@@ -123,6 +181,8 @@ export default function AuthGate() {
   const [session, setSession] = useState(null);
   const [phase, setPhase] = useState(supabase ? 'loading' : 'local');
   const [syncError, setSyncError] = useState('');
+  // Opened from an invite / password-reset email: choose a password before the TMS loads.
+  const [needsPassword, setNeedsPassword] = useState(openedFromPasswordLink);
 
   useEffect(() => {
     if (!supabase) return undefined;
@@ -130,7 +190,8 @@ export default function AuthGate() {
       setSession(data.session);
       setPhase(data.session ? 'syncing' : 'signedOut');
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (event === 'PASSWORD_RECOVERY') setNeedsPassword(true);
       setSession(current => {
         if (current?.user?.id === nextSession?.user?.id) return nextSession;
         setPhase(nextSession ? 'syncing' : 'signedOut');
@@ -174,6 +235,18 @@ export default function AuthGate() {
   }, [phase]);
 
   if (phase === 'local') return <App />;
+  if (needsPassword && session) {
+    return (
+      <SetPasswordForm
+        email={session.user?.email}
+        onDone={() => {
+          // Drop the link's #access_token=... from the address bar.
+          window.history.replaceState(null, '', window.location.pathname);
+          setNeedsPassword(false);
+        }}
+      />
+    );
+  }
   if (phase === 'loading' || phase === 'syncing') {
     return (
       <div className="h-screen flex items-center justify-center bg-[#0b132b] text-xs text-gray-300">

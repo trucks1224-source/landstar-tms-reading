@@ -7,6 +7,7 @@ import { transform } from 'esbuild';
 import * as XLSX from 'xlsx';
 import * as screenshotTable from './lib/screenshotTable.js';
 import * as ntgCards from './lib/ntgCards.js';
+import * as teamAdmin from './lib/teamAdmin.js';
 import * as textLoads from './lib/textLoads.js';
 import * as emailWorker from './lib/emailWorker.js';
 import zipcodes from 'zipcodes';
@@ -64,7 +65,7 @@ export {
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getPaperworkSince, checkBeforePodRequest, isDailyCustomerUpdateDue, getLoadedTimeWarning, getNearStopWarning, getTrackingEmailWarning, milesBetween, createStatusStore, emailCheckRow, mergeSystemCheck, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
   getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, copyLoadDetails, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, getTrackingEmailBroker, getCustomerRequestOrders, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
-  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer, getEquipmentListCategory
+  buildLandstarPosting, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, loadMatchesRateRaise, applyRateRaise, applyLandstarError, hasOpenLandstarError, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer, getEquipmentListCategory
 };`, { loader: 'jsx', format: 'cjs' });
 // Test loads are dated October 2026, so "today" inside the TMS code is 10/1/2026:
 // those pickups are still ahead, and past-date rules use September dates.
@@ -86,6 +87,7 @@ const context = {
     if (name === '../bot/automation-policy.json') return automationPolicy;
     if (name === './lib/screenshotTable.js') return screenshotTable;
     if (name === './lib/ntgCards.js') return ntgCards;
+    if (name === './lib/teamAdmin.js') return teamAdmin;
     if (name === './lib/textLoads.js') return textLoads;
     if (name === './lib/trackingEmails.js') return trackingEmails;
     if (name === './lib/emailWorker.js') return emailWorker;
@@ -1393,6 +1395,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
     require(name) {
       if (name === './lib/screenshotTable.js') return screenshotTable;
       if (name === './lib/ntgCards.js') return ntgCards;
+    if (name === './lib/teamAdmin.js') return teamAdmin;
       if (name === './lib/textLoads.js') return textLoads;
       if (name === './lib/trackingEmails.js') return trackingEmails;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
@@ -1602,6 +1605,7 @@ function createSyncContext(storage) {
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === './lib/screenshotTable.js') return screenshotTable;
       if (name === './lib/ntgCards.js') return ntgCards;
+    if (name === './lib/teamAdmin.js') return teamAdmin;
       if (name === './lib/textLoads.js') return textLoads;
       if (name === './lib/trackingEmails.js') return trackingEmails;
       if (name === './lib/emailWorker.js') return emailWorker;
@@ -4342,4 +4346,38 @@ test('customer update requests are matched only against booked, undelivered load
     'Para 1522166 - ATZ': [{ ...booked, id: '2287775', postingCode: 'SNB' }]
   }, 'ANQ');
   assert.deepEqual({ ...orders }, { 24780780: 'ANQ', 2287775: 'SNB' });
+});
+
+test('a rate the bot raised on Landstar finds its load by posting and becomes the load rate', () => {
+  const posting = { originZip: '07102', destZip: '45801', pickupThru: '11/27/26 08:00', deliveryThru: '11/28/26 08:00', weight: 42000 };
+  const exported = { ...load, id: '24581209', rateInput: '1760', rateSource: 'dat-api', landstarPosting: posting };
+  const raise = {
+    landstarLoadId: '190228717', posting: { originZip: '7102', destZip: '45801', pickupThru: '11/27/26 08:00', weight: 42000 },
+    lane: 'NEWARK, NJ -> LIMA, OH', from: 1760, to: 1945, competitor: 'GGL', competitorRate: 1920, at: 1795450000000
+  };
+  assert.equal(policy.loadMatchesRateRaise(exported, raise), true, 'a ZIP that lost its leading zero still matches');
+  assert.equal(policy.loadMatchesRateRaise({ ...exported, landstarPosting: { ...posting, pickupThru: '11/28/26 08:00' } }, raise), false, 'another pickup day');
+  assert.equal(policy.loadMatchesRateRaise({ ...exported, landstarPosting: { ...posting, weight: 40000 } }, raise), false, 'another load on the same lane');
+  assert.equal(policy.loadMatchesRateRaise({ ...exported, landstarPosting: undefined }, raise), false, 'never exported');
+
+  const raised = policy.applyRateRaise(exported, raise);
+  assert.equal(raised.rateInput, '1945');
+  assert.equal(raised.rateSource, 'user-entered', 'shown in the rate box and exported as-is, with no DAT discount');
+  assert.deepEqual({ ...raised.rateRaise }, { from: 1760, to: 1945, competitor: 'GGL', competitorRate: 1920, landstarLoadId: '190228717', at: 1795450000000 });
+  assert.equal(raised.landstarPosting, posting, 'the posting is kept for the next raise');
+});
+
+test('a Bulk Postings error the bot deleted badges its load until the load is exported again', () => {
+  const posting = { originZip: 'T0P 1J0', destZip: 'T9E 0V6', pickupThru: '11/30/26 17:00', deliveryThru: '12/02/26 16:00', weight: 9268 };
+  const exported = { ...load, id: '24604411', landstarPosting: posting, landstarExportedAt: '2026-11-23T16:24:00.000Z' };
+  const draft = {
+    draftId: '8395943', lane: 'Anzac, AB -> EDMONTON INTERNATI, CA', pickup: '11/30/26 08:00', posting,
+    reasons: ['Invalid Destination', 'TMS load must include calculated Miles'], at: Date.parse('2026-11-23T16:40:00.000Z')
+  };
+  assert.equal(policy.loadMatchesRateRaise(exported, draft), true, 'matched by the same posting details as a rate raise');
+  const flagged = policy.applyLandstarError(exported, draft);
+  assert.deepEqual([...flagged.landstarError.reasons], draft.reasons);
+  assert.equal(policy.hasOpenLandstarError(flagged), true);
+  assert.equal(policy.hasOpenLandstarError({ ...flagged, landstarExportedAt: '2026-11-23T17:00:00.000Z' }), false, 'exported again after the error');
+  assert.equal(policy.hasOpenLandstarError(exported), false);
 });

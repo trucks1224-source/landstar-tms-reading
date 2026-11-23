@@ -14,7 +14,27 @@ const { listPostings } = require('./dedupe');
 const {
   openBoard, searchBoard, sameCity, getTrailerGroups, boardPickupDate, OWN_POSTING_CODES, OUTBID_BY, isSameLoadNearby
 } = require('./rate-check');
-const { setStatus } = require('./status-server');
+const { setStatus, reportRateRaise } = require('./status-server');
+
+// What the TMS needs to find the load and show the raise: the same posting details the TMS
+// saved when it exported the load (origin ZIP, destination ZIP, pickup end, weight).
+function rateRaiseReport(posting, raise) {
+  return {
+    landstarLoadId: String(posting.LoadId),
+    posting: {
+      originZip: String(posting.OriginZipCode || '').trim(),
+      destZip: String(posting.DestinationZipCode || '').trim(),
+      pickupThru: String(posting.PickupThruDateForDisplay || '').trim(),
+      weight: Number(posting.Weight) || 0
+    },
+    lane: `${posting.OriginCityStateForDisplay || ''} -> ${posting.DestinationCityStateForDisplay || ''}`.trim(),
+    from: raise.from,
+    to: raise.to,
+    competitor: raise.top?.Agency || '',
+    competitorRate: Number(raise.top?.TotalRevenue) || 0,
+    hazmat: isHazmatPosting(posting)
+  };
+}
 const { uploadedSignatures, postingSignature } = require('./bot-postings');
 
 const clean = value => String(value ?? '').trim().toUpperCase();
@@ -62,14 +82,29 @@ function planRaise(mine, competitors, outbidBy = OUTBID_BY) {
   return { loadId: mine.LoadId, from: Number(mine.TotalRevenue), to: Number(top.TotalRevenue) + outbidBy, top };
 }
 
+// "$8,275.00" -> 8275
+const moneyValue = text => Number(String(text ?? '').replace(/[^0-9.]/g, ''));
+
+// Every number in a saved request body, to confirm the new rate is really in it.
+function numbersIn(value, out = []) {
+  if (value && typeof value === 'object') Object.values(value).forEach(v => numbersIn(v, out));
+  else if (value !== null && value !== '' && Number.isFinite(Number(value))) out.push(Number(value));
+  return out;
+}
+
 // Changes one posting's flat rate with the portal's Edit form; true when Landstar saved it.
+// The rate is typed key by key (a value set directly is not always picked up by Landstar's
+// form, which then saved the old rate + $0.01 instead of the raise, 2026-11-23), checked in
+// the box before saving, and checked again in the request Landstar receives.
 async function raisePostingRate(context, loadId, rate, log) {
   const page = await context.newPage();
   try {
     let saved = null;
+    let sentBody = null;
     page.on('response', response => {
       if (/\/loadboards\/v1\/availableLoad$/.test(response.url()) && response.request().method() === 'PATCH') {
         saved = response.status();
+        try { sentBody = JSON.parse(response.request().postData() || 'null'); } catch { sentBody = null; }
       }
     });
     await page.goto(`https://portal.landstaronline.com/agent/detail/PORTAL/${loadId}/LRGR`, { waitUntil: 'domcontentloaded' }).catch(() => {});
@@ -77,13 +112,58 @@ async function raisePostingRate(context, loadId, rate, log) {
     await page.getByRole('button', { name: /^\s*edit\s*$/i }).first().click({ timeout: 30000 });
     const flat = page.locator('input[formcontrolname="flatRate"]');
     await flat.waitFor({ timeout: 30000 });
-    await flat.fill(String(rate));
-    await flat.blur();
-    await page.waitForTimeout(500);
-    await page.getByRole('button', { name: /^\s*save(?:\s+changes)?\s*$/i }).click();
+    // Landstar's rate box reformats typed digits (typing 1945 left "$1760.02", 2026-11-23), so
+    // try a few ways to enter the rate and keep the first one the box really shows.
+    const target = Number(rate);
+    const shows = async () => moneyValue(await flat.inputValue().catch(() => ''));
+    const tried = [];
+    const ways = [
+      ['typed', async () => {
+        await flat.click();
+        await flat.press('Control+A');
+        await flat.press('Backspace');
+        await flat.pressSequentially(String(rate), { delay: 40 });
+      }],
+      ['cleared then typed with cents', async () => {
+        await flat.click({ clickCount: 3 });
+        await flat.press('Delete');
+        for (let i = 0; i < 12; i += 1) await flat.press('Backspace');
+        await flat.pressSequentially(target.toFixed(2), { delay: 40 });
+      }],
+      ['set directly', async () => {
+        await flat.evaluate((el, value) => {
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+          el.focus();
+          setter.call(el, value);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }, target.toFixed(2));
+      }]
+    ];
+    let entered = false;
+    for (const [name, enter] of ways) {
+      await enter();
+      await flat.blur();
+      await page.waitForTimeout(500);
+      const value = await shows();
+      tried.push(`${name}: $${value}`);
+      if (Math.abs(value - target) < 0.005) { entered = true; break; }
+    }
+    if (!entered) {
+      // Evidence for fixing this: what the box is and what each way left in it.
+      const box = await flat.evaluate(el => [...el.attributes].map(a => `${a.name}="${a.value}"`).join(' ')).catch(() => '');
+      const shot = path.join(__dirname, 'logs', `rate-box-${loadId}.png`);
+      await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
+      throw new Error(`The rate box for load #${loadId} would not take $${rate} (${tried.join('; ')}); nothing was saved. Box: ${box.slice(0, 400)}. Screenshot: ${shot}`);
+    }
+    const save = page.getByRole('button', { name: /^\s*save(?:\s+changes)?\s*$/i });
+    await save.click({ timeout: 15000 });
     for (let i = 0; i < 30 && saved === null; i += 1) await page.waitForTimeout(500);
     if (saved !== 204) {
       throw new Error(`Landstar did not confirm saving rate for load #${loadId} (${saved === null ? 'no answer; verify before retrying' : `HTTP ${saved}`}).`);
+    }
+    if (sentBody && !numbersIn(sentBody).some(n => Math.abs(n - Number(rate)) < 0.005)) {
+      throw new Error(`Landstar saved load #${loadId} without the new rate $${rate} (sent: ${JSON.stringify(sentBody).slice(0, 300)}).`);
     }
     return true;
   } finally {
@@ -119,16 +199,27 @@ async function checkHazmatRates(context, { apply = true, log = console.log, shou
     const raise = planRaise(posting, findCompetitors(posting, searches.get(key), trailerGroup));
     const lane = `${posting.OriginCityStateForDisplay} -> ${posting.DestinationCityStateForDisplay} ${posting.PickupFromDateForDisplay}`;
     if (!raise) continue;
-    log(`  #${raise.loadId} ${lane}: $${raise.from} -> $${raise.to} (${raise.top.Agency} pays $${raise.top.TotalRevenue})`);
-    if (apply) raise.saved = await raisePostingRate(context, raise.loadId, raise.to, log);
+    log(`  #${raise.loadId} ${lane}${isHazmatPosting(posting) ? ' [HAZMAT]' : ''}: $${raise.from} -> $${raise.to} (${raise.top.Agency} pays $${raise.top.TotalRevenue})`);
+    if (apply) {
+      // One load that will not save must not stop the rest of the pass (hazmat first).
+      try {
+        raise.saved = await raisePostingRate(context, raise.loadId, raise.to, log);
+        reportRateRaise(rateRaiseReport(posting, raise));
+      } catch (error) {
+        raise.saved = false;
+        raise.error = error.message.split('\n')[0];
+        log(`    ! not raised: ${raise.error}`);
+      }
+    }
     raises.push(raise);
   }
   const saved = raises.filter(r => r.saved).length;
-  log(`  PARA/RXO rate check (hazmat first): ${mine.length} posting(s), ${raises.length} outbid${apply ? `, ${saved} raised` : ' (report only)'}.`);
+  const failed = raises.filter(r => r.error).length;
+  log(`  PARA/RXO rate check (hazmat first): ${mine.length} posting(s), ${raises.length} outbid${apply ? `, ${saved} raised${failed ? `, ${failed} could not be saved` : ''}` : ' (report only)'}.`);
   return raises;
 }
 
-module.exports = { checkHazmatRates, findCompetitors, planRaise, isHazmatPosting, raisePostingRate, selectRateWatchPostings, eligibleExport };
+module.exports = { checkHazmatRates, findCompetitors, planRaise, isHazmatPosting, raisePostingRate, selectRateWatchPostings, eligibleExport, rateRaiseReport };
 
 if (require.main === module) {
   const { chromium } = require('playwright');

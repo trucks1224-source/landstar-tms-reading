@@ -14,7 +14,8 @@ const posting = (id, extra = {}) => ({
 test('only your own bulk-posted hazmat loads are watched, for every customer', () => {
   assert.equal(isHazmatPosting(posting(1)), true);
   assert.equal(isHazmatPosting(posting(2, { CommodityCode: 'CGAPP' })), false);
-  assert.equal(isHazmatPosting(posting(3, { Agency: 'SNB' })), false, 'SNB is not yours');
+  assert.equal(isHazmatPosting(posting(3, { Agency: 'SNB' })), true, 'SNB is yours again (2026-11-23)');
+  assert.equal(isHazmatPosting(posting(5, { Agency: 'XYZ' })), false, 'another agency is not yours');
   assert.equal(isHazmatPosting(posting(4, { SourceSystemID: 'AW' })), false, 'hand-posted loads are left alone');
 });
 
@@ -23,7 +24,7 @@ test('recurring rate check selects verified PARA and RXO only, with hazmat first
   const hazmat = posting(2, { Weight: 2 });
   const ambiguous = posting(3, { Weight: 3 });
   const unknown = posting(4, { Weight: 4 });
-  const otherAgency = posting(5, { Agency: 'SNB', Weight: 5 });
+  const otherAgency = posting(5, { Agency: 'XYZ', Weight: 5 });
   const eligible = new Set([van, hazmat, ambiguous, otherAgency].map(postingSignature));
   const other = new Set([postingSignature(ambiguous)]);
   assert.deepEqual(selectRateWatchPostings([van, ambiguous, unknown, otherAgency, hazmat], eligible, other).map(p => p.LoadId), [2, 1]);
@@ -57,9 +58,10 @@ test('raise to the top rate + $25 when someone pays the same or more; otherwise 
   assert.equal(planRaise(mine, []), null);
 });
 
-function editContext(label, status = 204) {
+function editContext(label, status = 204, { shows, sentRate } = {}) {
   let onResponse;
   const calls = [];
+  let typed = '';
   const page = {
     on(event, handler) { if (event === 'response') onResponse = handler; },
     async goto() {},
@@ -68,10 +70,16 @@ function editContext(label, status = 204) {
       assert.equal(selector, 'input[formcontrolname="flatRate"]');
       return {
         async waitFor() {},
-        async fill(rate) { calls.push(['rate', rate]); },
-        async blur() {}
+        async click() {},
+        async press(key) { if (key === 'Backspace') typed = ''; },
+        async pressSequentially(rate) { typed = rate; calls.push(['rate', rate]); },
+        async inputValue() { return shows ?? `$${Number(typed).toLocaleString('en-US', { minimumFractionDigits: 2 })}`; },
+        async blur() {},
+        // "set directly" passes the value; the evidence step reads the box's attributes.
+        async evaluate(fn, value) { if (value !== undefined) { typed = value; calls.push(['set', value]); } return 'formcontrolname="flatRate"'; }
       };
     },
+    async screenshot() { calls.push(['screenshot']); },
     getByRole(role, { name }) {
       assert.equal(role, 'button');
       if (name.test('Edit')) return { first: () => ({ async click() {} }) };
@@ -84,7 +92,7 @@ function editContext(label, status = 204) {
           calls.push(['save', label]);
           if (status !== null) onResponse({
             url: () => 'https://portal.landstaronline.com/loadboards/v1/availableLoad',
-            request: () => ({ method: () => 'PATCH' }),
+            request: () => ({ method: () => 'PATCH', postData: () => JSON.stringify({ loadId: 123, rate: { flatRate: sentRate ?? Number(typed) } }) }),
             status: () => status
           });
         }
@@ -112,6 +120,31 @@ for (const status of [400, 403, 500, null]) {
   });
 }
 
+test('a rate box that does not show the new rate is never saved (old rate + $0.01 bug, 2026-11-23)', async () => {
+  const { context, calls } = editContext('Save Changes', 204, { shows: '$8,225.01' });
+  await assert.rejects(raisePostingRate(context, 123, 8275),
+    /would not take \$8275 \(typed: \$8225\.01; cleared then typed with cents: \$8225\.01; set directly: \$8225\.01\); nothing was saved/);
+  assert.equal(calls.some(([kind]) => kind === 'save'), false);
+  assert.ok(calls.some(([kind]) => kind === 'screenshot'), 'a screenshot of the form is kept');
+});
+
+test('when typing does not register, the next way of entering the rate is used', async () => {
+  let attempt = 0;
+  const { context, calls } = editContext('Save Changes');
+  const page = await context.newPage();
+  const box = page.locator('input[formcontrolname="flatRate"]');
+  const realType = box.pressSequentially;
+  page.locator = () => ({ ...box, async pressSequentially(rate) { attempt += 1; await realType(attempt === 1 ? '8225.01' : rate); } });
+  context.newPage = async () => page;
+  assert.equal(await raisePostingRate(context, 123, 8275), true);
+  assert.deepEqual(calls.filter(([kind]) => kind !== 'closed').map(([kind, value]) => `${kind}:${value}`), ['rate:8225.01', 'rate:8275.00', 'save:Save Changes']);
+});
+
+test('a save that Landstar received without the new rate counts as not raised', async () => {
+  const { context } = editContext('Save Changes', 204, { sentRate: 8225.01 });
+  await assert.rejects(raisePostingRate(context, 123, 8275), /saved load #123 without the new rate \$8275/);
+});
+
 test('the same load re-posted from towns within 25 miles still counts (HUC Perrysburg, 2026-11-20)', () => {
   const ours = posting(1, {
     CommodityCode: 'CGAPP', OriginCity: 'LUCKEY', OriginState: 'OH', OriginZipCode: '43443',
@@ -135,4 +168,18 @@ test('the same load re-posted from towns within 25 miles still counts (HUC Perry
   for (const other of [lighter, farAway, otherDay, reefer]) {
     assert.deepEqual(findCompetitors(ours, [other], trailerGroup), [], 'a different load is not matched');
   }
+});
+
+test('a saved raise is reported to the TMS with the posting details it matches loads by', () => {
+  const { rateRaiseReport } = require('./hazmat-watch');
+  const mine = posting(190228717, {
+    OriginZipCode: '07102', DestinationZipCode: '45801', PickupThruDateForDisplay: '11/27/26 08:00', Weight: 42000,
+    OriginCityStateForDisplay: 'NEWARK, NJ', DestinationCityStateForDisplay: 'LIMA, OH', TotalRevenue: 1760
+  });
+  const report = rateRaiseReport(mine, { from: 1760, to: 1945, top: { Agency: 'GGL', TotalRevenue: 1920 } });
+  assert.deepEqual(report, {
+    landstarLoadId: '190228717',
+    posting: { originZip: '07102', destZip: '45801', pickupThru: '11/27/26 08:00', weight: 42000 },
+    lane: 'NEWARK, NJ -> LIMA, OH', from: 1760, to: 1945, competitor: 'GGL', competitorRate: 1920, hazmat: true
+  });
 });

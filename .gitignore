@@ -57,3 +57,6 @@ bot/email-bot-status.json.*.tmp
 # Upload bot: what the bot has posted (kept after the spreadsheets are cleaned up)
 bot/uploaded-ledger.json
 bot/uploaded-ledger.json.tmp
+# Error bot: when it first saw each Bulk Postings error draft (changes every few minutes)
+bot/error-drafts-seen.json
+bot/error-drafts-seen.json.*.tmp

@@ -4,7 +4,10 @@ process.env.BOT_ROLE = 'removal';
 
 const path = require('path');
 const { chromium } = require('playwright');
-const { readQueue, setStatus, readRemovalStatus } = require('./status-server');
+const { readQueue, setStatus, readRemovalStatus, reportErrorDraft } = require('./status-server');
+const { cleanErrorDrafts } = require('./error-drafts');
+// Bulk Postings error drafts are checked this often (error-drafts.js).
+const ERROR_DRAFT_CHECK_MS = 5 * 60 * 1000;
 const { openBoard } = require('./rate-check');
 const { processUnpostQueue } = require('./unpost');
 const { readBotControl } = require('./local-bot-control');
@@ -34,7 +37,8 @@ async function main() {
     context.on('close', () => { closed = true; });
     process.once('SIGINT', () => { closed = true; void context.close(); });
     await openBoard(context);
-    console.log('Removal bot signed in. Processing only the existing removal queue.');
+    console.log('Removal bot signed in. Processing the removal queue and Bulk Postings error drafts.');
+    let errorDraftsDueAt = Date.now() + 60 * 1000;
     while (!closed) {
       try {
         if (!readBotControl()) {
@@ -46,6 +50,18 @@ async function main() {
         if (count) {
           setStatus('working', `Removing ${count} queued load(s)`);
           await processUnpostQueue(context);
+        }
+        if (Date.now() >= errorDraftsDueAt) {
+          errorDraftsDueAt = Date.now() + ERROR_DRAFT_CHECK_MS;
+          setStatus('working', 'Checking Bulk Postings errors');
+          const page = await context.newPage();
+          try {
+            await cleanErrorDrafts(page, { apply: true, report: reportErrorDraft });
+          } catch (error) {
+            console.error('Bulk Postings error check failed; it runs again in 5 minutes:', error.message);
+          } finally {
+            await page.close().catch(() => {});
+          }
         }
         setStatus('logged-in', 'Waiting for queued removals');
       } catch (error) {

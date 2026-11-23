@@ -9,6 +9,7 @@ import { processRoadMilesRequest } from './api/road-miles.js'
 import { processDatRateRequest, getDatConfig } from './api/dat-rate.js'
 import { handleParamountEmail } from './api/_lib/gmailThread.js'
 import { getServiceClient } from './api/_lib/server.js'
+import { processInviteRequest } from './api/invite-user.js'
 import { describeSaveResult, extractProspects, isBlockedProspect } from './src/lib/prospects.js'
 
 // The TMS account that owns imported prospects, looked up once per server run.
@@ -301,6 +302,31 @@ export default defineConfig(({ mode }) => {
             } catch (error) {
               console.error('Paramount email request failed:', error.message)
               reply(502, { error: error.message || 'The Gmail request failed.' })
+            }
+          })
+
+          // "Add teammate" (⚙ My Settings): the same handler as the website's /api/invite-user.
+          server.middlewares.use('/api/invite-user', async (req, res) => {
+            let body = ''
+            for await (const chunk of req) {
+              body += chunk
+              if (body.length > 4096) break
+            }
+            let parsed = {}
+            try { parsed = JSON.parse(body || '{}') } catch { /* invalid JSON -> empty */ }
+            try {
+              const result = await processInviteRequest({
+                method: req.method, authorization: req.headers.authorization, body: parsed, origin: req.headers.origin
+              })
+              res.statusCode = result.status
+              res.setHeader('Content-Type', 'application/json')
+              res.setHeader('Cache-Control', 'no-store')
+              res.end(JSON.stringify(result.body))
+            } catch (error) {
+              console.error('Invite failed:', error.message)
+              res.statusCode = 500
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'The invite could not be sent.' }))
             }
           })
 

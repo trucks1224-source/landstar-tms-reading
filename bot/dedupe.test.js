@@ -53,3 +53,20 @@ test('same posted time falls back to the higher load number', () => {
   assert.deepEqual(plan.keep, [11]);
   assert.deepEqual(plan.remove, [10]);
 });
+
+test('protected loads are never removed, even by a confirmed remove-all run', () => {
+  const { filterRemovable } = require('./dedupe');
+  const postings = new Map([
+    ['187371843', { LoadId: '187371843', Agency: 'ANQ' }],
+    ['200000001', { LoadId: '200000001', Agency: 'ANQ' }],
+    ['200000002', { LoadId: '200000002', Agency: 'SNB' }]
+  ]);
+  const protectedIds = new Set(['187371843']);
+  const requested = ['187371843', '200000001', '200000002'];
+  assert.deepEqual(filterRemovable(requested, { protectedIds, postings, confirmedAllOwnAvailable: true, ownCodes: ['ANQ'] }),
+    ['200000001'], 'confirmed run: protected and other agencies stay up');
+  assert.deepEqual(filterRemovable(requested, { protectedIds, postings, ownCodes: ['ANQ'] }),
+    ['200000001', '200000002'], 'normal run: protected stays up (bot-upload check comes later)');
+  assert.deepEqual(filterRemovable(['200000001'], { protectedIds, postings, isStillProtected: () => true }),
+    [], 'a posting the TMS still protects stays up');
+});

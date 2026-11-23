@@ -140,24 +140,35 @@ function protectedLoadIds() {
   }
 }
 
+// Which requested load numbers may be removed (before the "uploaded by the bot" check).
+// protected-loads.json always wins, even for a confirmed "remove all of mine" run
+// (remove-customer.js --include-hand-posted, clear-board-all-once.js).
+function filterRemovable(requestedIds, { protectedIds, postings, confirmedAllOwnAvailable = false, ownCodes = OWN_POSTING_CODES, isStillProtected = () => false }) {
+  return requestedIds.filter(id => {
+    if (protectedIds.has(String(id))) return false;
+    const posting = postings.get(String(id));
+    if (confirmedAllOwnAvailable) {
+      return Boolean(posting) && ownCodes.includes(String(posting.Agency || '').trim().toUpperCase());
+    }
+    return !posting || !isStillProtected(posting);
+  });
+}
+
 async function cancelPostings(page, requestedIds, log = console.log, { refreshLoad, confirmedAllOwnAvailable = false } = {}) {
   const { readSnapshot, isProtectedPosting, refreshIsCurrent, postingKey } = require('./posting-maintenance');
   const snapshot = readSnapshot();
   const refreshAllowed = refreshLoad && refreshIsCurrent(refreshLoad, snapshot);
   const protectedIds = protectedLoadIds();
-  const unprotected = requestedIds.filter(id => {
-    if (confirmedAllOwnAvailable) {
-      const posting = seenPostings.get(String(id));
-      return posting && OWN_POSTING_CODES.includes(String(posting.Agency || '').trim().toUpperCase());
+  const unprotected = filterRemovable(requestedIds, {
+    protectedIds, postings: seenPostings, confirmedAllOwnAvailable,
+    isStillProtected: posting => {
+      if (!isProtectedPosting(posting, snapshot)) return false;
+      if (!refreshAllowed) return true;
+      const key = require('./bot-postings').postingSignature(posting);
+      // A refresh may replace its own protected posting, never another protected load.
+      return !snapshot.loads.filter(item => postingKey(item.posting) === key)
+        .every(item => `${item.customer}|${item.loadId}` === `${refreshLoad.customer}|${refreshLoad.loadId}`);
     }
-    if (protectedIds.has(String(id))) return false;
-    const posting = seenPostings.get(String(id));
-    if (!posting || !isProtectedPosting(posting, snapshot)) return true;
-    if (!refreshAllowed) return false;
-    const key = require('./bot-postings').postingSignature(posting);
-    // A refresh may replace its own protected posting, never another protected load.
-    return snapshot.loads.filter(item => postingKey(item.posting) === key)
-      .every(item => `${item.customer}|${item.loadId}` === `${refreshLoad.customer}|${refreshLoad.loadId}`);
   });
   if (unprotected.length < requestedIds.length) {
     log(`  Kept ${requestedIds.length - unprotected.length} protected posting(s): ${requestedIds.filter(id => protectedIds.has(String(id))).join(', ')}`);
@@ -225,7 +236,7 @@ async function removeDuplicatePostings(context, { apply = true, log = console.lo
   return cancelled;
 }
 
-module.exports = { removeDuplicatePostings, planDuplicateRemoval, postingKey, listPostings, cancelPostings, protectedLoadIds, STATES };
+module.exports = { removeDuplicatePostings, planDuplicateRemoval, postingKey, listPostings, cancelPostings, protectedLoadIds, filterRemovable, STATES };
 
 if (require.main === module) {
   const apply = process.argv.includes('--apply');

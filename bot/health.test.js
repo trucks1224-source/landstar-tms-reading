@@ -58,3 +58,14 @@ test('sends that never finished are red, listed with what they were', () => {
   assert.deepEqual(item.emails.map(email => email.label), ['Para 1522166 - ATZ · #2283600 · arrived']);
   assert.equal(row(buildHealthReport(allUp), 'email-record'), undefined);
 });
+
+test('only the posting bot itself counts as the posting bot', () => {
+  const { postingBotFromStatus } = require('./health');
+  assert.deepEqual(postingBotFromStatus({ state: 'logged-in', message: 'Ready', bot: { script: 'upload.js', pid: 1 } }), { state: 'logged-in', message: 'Ready' });
+  assert.deepEqual(postingBotFromStatus({ state: 'logged-in', message: 'Ready' }), { state: 'logged-in', message: 'Ready' }, 'a bot started before this change');
+  assert.deepEqual(postingBotFromStatus({ state: 'logged-in', bot: { script: 'analyze.js', pid: 21468 } }), { state: 'off', heldBy: 'analyze.js (process 21468)' });
+  assert.equal(postingBotFromStatus(null), null);
+  const report = buildHealthReport({ ...allUp, upload: postingBotFromStatus({ state: 'logged-in', bot: { script: 'analyze.js', pid: 21468 } }) });
+  assert.equal(row(report, 'upload').level, 'bad');
+  assert.match(row(report, 'upload').detail, /another program, analyze\.js \(process 21468\), holds its address/);
+});

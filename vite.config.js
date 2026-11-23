@@ -14,7 +14,7 @@ import { describeSaveResult, extractProspects, isBlockedProspect } from './src/l
 // The TMS account that owns imported prospects, looked up once per server run.
 let prospectOwnerId = null
 const { readRatesStatus, readHelperStatus, readRemovalStatus } = createRequire(import.meta.url)('./bot/status-server.js')
-const { buildHealthReport, readWatchdogStatus, readEmailBotStatus } = createRequire(import.meta.url)('./bot/health.js')
+const { buildHealthReport, readWatchdogStatus, readEmailBotStatus, postingBotFromStatus } = createRequire(import.meta.url)('./bot/health.js')
 const { sendOnce, SEND_ACTIONS, markEmailSkipped, settleUnknownEmail, listUnknownEmails } = createRequire(import.meta.url)('./bot/email-record.js')
 const { readBotControl, writeBotControl } = createRequire(import.meta.url)('./bot/local-bot-control.js')
 
@@ -140,7 +140,8 @@ export default defineConfig(({ mode }) => {
             res.end(JSON.stringify(buildHealthReport({
               now, bootedAt: now - os.uptime() * 1000, botsEnabled, postingEnabled,
               watchdog: readWatchdogStatus(now),
-              upload: withSignIn('upload', upload && { state: upload.state, message: upload.message }),
+              // Only the posting bot itself counts (another program can hold its address).
+              upload: withSignIn('upload', postingBotFromStatus(upload)),
               helper: withSignIn('helper', readHelperStatus()),
               removal: withSignIn('removal', readRemovalStatus()),
               rates: withSignIn('rates', readRatesStatus()),

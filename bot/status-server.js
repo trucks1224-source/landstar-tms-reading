@@ -287,9 +287,17 @@ function reportMercuryGateResult(result) {
   updateResults(results => ({ ...results, mercurygate: [...results.mercurygate, { ...result, at: Date.now() }].slice(-30) }));
 }
 
+// The program running this process ("upload.js" for the posting bot).
+const SCRIPT = path.basename(require.main?.filename || process.argv[1] || '');
+
 function start() {
   // Test scripts set BOT_NO_STATUS=1 so they never show up as the bot in the TMS.
   if (server || process.env.BOT_NO_STATUS === '1' || IS_HELPER || IS_REMOVAL || IS_RATES) return;
+  // Only the posting bot serves this address. One-off scripts that sign in to Landstar through
+  // the same code (analyze, remove-customer, explore-clarity...) used to take it while the
+  // posting bot was down, so the watchdog and the TMS took them for the posting bot
+  // (2026-11-23: the posting bot stayed down 6 minutes).
+  if (SCRIPT !== 'upload.js') return;
   server = http.createServer((req, res) => {
     // The TMS page (localhost or its live site) calls this; the Private-Network
     // header lets Chrome allow a web page to reach this local address.
@@ -307,6 +315,8 @@ function start() {
       res.end(JSON.stringify({ ...status, ...(progress ? { progress } : {}), helper: readHelperStatus(), removal: readRemovalStatus(), rates: readRatesStatus(),
         postingRefresh: require('./refresh').readRefreshStatus(),
         coordination: { dedicatedRates: process.argv.includes('--dedicated-rates') },
+        // Which program answers here, so the watchdog and System check can tell it is the posting bot.
+        bot: { pid: process.pid, script: SCRIPT },
         ...(shared.assign.length ? { assignResults: shared.assign } : {}),
         ...(Object.keys(shared.tracking).length ? { trackingResults: Object.values(shared.tracking) } : {}),
         ...(shared.mercurygate.length ? { mercurygateResults: shared.mercurygate } : {}),
@@ -472,6 +482,8 @@ function setProgress(next) {
 }
 
 module.exports = {
+  // True when this process opened the posting bot's status address (only upload.js does).
+  servingStatus: () => Boolean(server),
   readRatesStatus, RATES_STATUS_FILE,
   readRemovalStatus, removalActive, REMOVAL_STATUS_FILE,
   readHelperStatus, helperActive, HELPER_STATUS_FILE, readResults,

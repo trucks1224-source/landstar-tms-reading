@@ -38,11 +38,25 @@ function readWatchdogStatus(now = Date.now()) {
   }
 }
 
+// The posting bot's status address answered with `body`: is it really the posting bot?
+// Returns the status to show, or { state: 'off', heldBy } when another program holds the address.
+// A bot started before 2026-11-23 doesn't say which program it is: taken as the posting bot.
+function postingBotFromStatus(body) {
+  if (!body) return null;
+  const script = body.bot?.script;
+  if (script && script !== 'upload.js') return { state: 'off', heldBy: `${script} (process ${body.bot.pid})` };
+  return { state: body.state, message: body.message };
+}
+
 const timeOf = ms => new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
 // One bot's row. status = { state, message, at, signingInSince? } or null when unreachable.
 function botRow(id, label, status, { botsEnabled, expected = true, now, offFix }) {
   const state = status?.state || 'off';
+  if (status?.heldBy) {
+    return { id, label, level: 'bad', detail: `Not running: another program, ${status.heldBy}, holds its address`,
+      fix: 'Close that program (usually a one-off script). The watchdog then starts the posting bot again.' };
+  }
   if (state === 'off') {
     if (!expected) return { id, label, level: 'ok', detail: 'Turned off on purpose' };
     if (!botsEnabled) return { id, label, level: 'warn', detail: 'Paused (the bot switch is off)', fix: 'Turn on the bot switch in the header when you want it running.' };
@@ -104,5 +118,5 @@ function buildHealthReport(inputs) {
 
 module.exports = {
   buildHealthReport, writeWatchdogHeartbeat, readWatchdogStatus, WATCHDOG_STATUS_FILE, SIGN_IN_GRACE_MS,
-  readEmailBotStatus, EMAIL_BOT_STATUS_FILE
+  readEmailBotStatus, EMAIL_BOT_STATUS_FILE, postingBotFromStatus
 };

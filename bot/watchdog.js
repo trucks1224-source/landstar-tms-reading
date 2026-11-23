@@ -25,7 +25,7 @@ const BOT_DIR = __dirname;
 const HELPER_STATUS_FILE = path.join(BOT_DIR, 'helper-status.json');
 const { removalActive, readRatesStatus } = require('./status-server');
 const { readBotControl } = require('./local-bot-control');
-const { writeWatchdogHeartbeat, readEmailBotStatus } = require('./health');
+const { writeWatchdogHeartbeat, readEmailBotStatus, postingBotFromStatus } = require('./health');
 
 const TMS_URL = 'http://127.0.0.1:5173';
 const BOT_STATUS_URL = 'http://127.0.0.1:47615/status';
@@ -48,6 +48,18 @@ async function answers(url) {
   } catch {
     return false;
   }
+}
+
+// Is the posting bot itself answering on its address? { up, heldBy }.
+let heldByLogged = '';
+async function postingBotState() {
+  let body = null;
+  try {
+    const response = await fetch(BOT_STATUS_URL, { signal: AbortSignal.timeout(3000) });
+    if (response.ok) body = await response.json();
+  } catch { /* not answering */ }
+  const status = postingBotFromStatus(body);
+  return { up: Boolean(status && status.state !== 'off'), heldBy: status?.heldBy || '' };
 }
 
 function helperRunning() {
@@ -93,11 +105,20 @@ function maybeRestart(key, isUp, start, label) {
 async function check() {
   // Heartbeat for the TMS system check (bot/health.js).
   try { writeWatchdogHeartbeat(); } catch (error) { log(`Could not write the watchdog heartbeat: ${error.message}`); }
-  const [tmsUp, botUp] = await Promise.all([answers(TMS_URL), answers(BOT_STATUS_URL)]);
+  const [tmsUp, posting] = await Promise.all([answers(TMS_URL), postingBotState()]);
   maybeRestart('tms', tmsUp, launchTms, 'The TMS dev server');
   if (!readBotControl()) return;
   const postingEnabled = JSON.parse(fs.readFileSync(path.join(BOT_DIR, 'automation-policy.json'), 'utf8')).automaticPostingEnabled !== false;
-  if (postingEnabled) maybeRestart('bot', botUp, () => launch('Start Landstar Bot.bat', 'Landstar Bot'), 'The upload bot');
+  if (posting.heldBy) {
+    // Another program holds the posting bot's address: a new posting bot could not take it, so
+    // starting one would only pile up copies. Say so once; the System check tells Daniel.
+    if (heldByLogged !== posting.heldBy) log(`The posting bot's address is held by ${posting.heldBy}. Close it and the posting bot is started again.`);
+    heldByLogged = posting.heldBy;
+    downSince.bot = 0;
+  } else {
+    heldByLogged = '';
+    if (postingEnabled) maybeRestart('bot', posting.up, () => launch('Start Landstar Bot.bat', 'Landstar Bot'), 'The upload bot');
+  }
   maybeRestart('helper', helperRunning(), () => launch('Start Helper Bot.bat', 'Landstar Helper Bot'), 'The helper bot');
   maybeRestart('removal', removalActive(), () => launch('Start Removal Bot.bat', 'Landstar Removal Bot'), 'The removal bot');
   const rates = readRatesStatus();

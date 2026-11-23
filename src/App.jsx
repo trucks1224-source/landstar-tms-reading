@@ -4847,6 +4847,9 @@ const assignSeenKey = 'landstar_assignSeenAt';
 
 // ---------- Rate raises from the bot's board-rate watch (bot/hazmat-watch.js) ----------
 const rateRaiseSeenKey = 'landstar_rateRaiseSeenAt';
+// One export at a time (see handleExportToLandstar). Outside the App so it never shifts App state.
+const exportGuard = { running: false, finishedAt: 0 };
+const EXPORT_REPEAT_MS = 15 * 1000;
 const sameZip = (a, b) => String(a || '').trim().padStart(5, '0') === String(b || '').trim().padStart(5, '0');
 // The TMS load a raise belongs to: its saved Landstar posting has the same origin ZIP,
 // destination ZIP, pickup end and weight as the raised posting.
@@ -9137,7 +9140,22 @@ export default function App({ sharing = null, userId = null } = {}) {
     }
   };
 
+  // Export button: a second click while an export is running is ignored, and another export
+  // within 15 seconds asks first (2026-11-23: a double click exported RXO ATZ V twice, 34+34 files).
   const handleExportToLandstar = async () => {
+    if (exportGuard.running) return;
+    if (Date.now() - exportGuard.finishedAt < EXPORT_REPEAT_MS
+      && !window.confirm('You just exported. Export again? The bot would post these loads a second time.')) return;
+    exportGuard.running = true;
+    try {
+      await runExportToLandstar();
+    } finally {
+      exportGuard.running = false;
+      exportGuard.finishedAt = Date.now();
+    }
+  };
+
+  const runExportToLandstar = async () => {
     setExportErrorIds([]);
     const exportPhone = profile.phone.replace(/\D/g, '');
     const exportVisibilityGroup = profile.visibilityGroup.trim().toUpperCase();

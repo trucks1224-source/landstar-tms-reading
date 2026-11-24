@@ -308,9 +308,16 @@ function addBookingEntry(log, customer, load) {
   // Only removals you made (Remove capacity / status change) carry removedAt. An older TMS
   // marked bookings removed by itself when its load list was out of date: those come back
   // while the load is still booked with the same booking date.
-  const autoRemoved = existing?.removed && !existing.removedAt && load.bookedAt && load.bookedAt === existing.at
+  // A recovered load keeps its original booking week (Daniel's rule, 2026-11-24), so the
+  // entry's `at` can be older than the load's bookedAt: `bookedAt` remembers the booking it
+  // came from, so a stale copy of that same booking can't undo a later removal.
+  const entryBookedAt = existing?.bookedAt || existing?.at;
+  const autoRemoved = existing?.removed && !existing.removedAt && load.bookedAt && load.bookedAt === entryBookedAt
     && String(load.status || '').toUpperCase() === 'BOOKED';
-  if (existing?.removed && !autoRemoved && (!load.bookedAt || load.bookedAt === existing.at)) return entries;
+  if (existing?.removed && !autoRemoved && (!load.bookedAt || load.bookedAt === entryBookedAt)) return entries;
+  // Capacity was removed and the load is booked again (recovered): it counts in the week it
+  // was first booked, not the week it was recovered.
+  const recovered = existing?.removed && existing.removedAt && existing.at && load.bookedAt;
   const refresh = !existing || existing.removed
     || (lineHaul > 0 && existing.lineHaul !== lineHaul)
     || (miles > 0 && !(Number(existing.miles) > 0))
@@ -318,7 +325,9 @@ function addBookingEntry(log, customer, load) {
   if (!refresh) return entries;
   return [...entries.filter(entry => entry !== existing), {
     customer, loadId: String(load.id),
-    at: load.bookedAt || (existing?.removed && !autoRemoved ? '' : existing?.at) || new Date().toISOString(),
+    at: recovered || (existing?.recoveredAt && !existing.removed) ? existing.at : load.bookedAt || (existing?.removed && !autoRemoved ? '' : existing?.at) || new Date().toISOString(),
+    ...(recovered || existing?.bookedAt ? { bookedAt: load.bookedAt || existing.bookedAt } : {}),
+    ...(recovered ? { recoveredAt: load.bookedAt } : existing?.recoveredAt ? { recoveredAt: existing.recoveredAt } : {}),
     lineHaul: lineHaul || Number(existing?.lineHaul) || 0, miles, origSt,
     eCode: String(load.eCode || '').trim().toUpperCase(),
     origin: [load.origCity, load.origSt].filter(Boolean).join(', '),

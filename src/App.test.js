@@ -4334,6 +4334,23 @@ test('booking log: weekly totals per customer, monthly totals, and line haul sum
   assert.equal(policy.summarizeBookings(staleReAdd).weeks[0].loads, 2, 'same bookedAt: stays removed');
   const rebooked = policy.addBookingEntry(slimmed, 'R X O 2429200 - ATZ V', { id: '3', rateInput: '3000', bookedAt: '2026-11-13T15:00:00' });
   assert.equal(policy.summarizeBookings(rebooked).weeks[0].loads, 3, 'new booking date: back in the totals');
+  // Recovered a week later: it counts in the week it was first booked, not the recovery week.
+  const recovered = policy.addBookingEntry(slimmed, 'R X O 2429200 - ATZ V', { id: '3', rateInput: '3000', bookedAt: '2026-11-20T15:00:00' });
+  const recoveredEntry = recovered.find(entry => entry.loadId === '3');
+  assert.equal(recoveredEntry.at, '2026-11-13T10:00:00', 'original booking week kept');
+  assert.equal(recoveredEntry.recoveredAt, '2026-11-20T15:00:00');
+  assert.equal(policy.summarizeBookings(recovered).weeks.length, 2, 'no new week for the recovery');
+  assert.equal(policy.summarizeBookings(recovered).weeks[0].loads, 3);
+  // Later edits keep the original week and the recovery booking.
+  const edited = policy.addBookingEntry(recovered, 'R X O 2429200 - ATZ V', { id: '3', rateInput: '3200', bookedAt: '2026-11-20T15:00:00' });
+  assert.equal(edited.find(entry => entry.loadId === '3').at, '2026-11-13T10:00:00');
+  assert.equal(edited.find(entry => entry.loadId === '3').lineHaul, 3200);
+  // Capacity removed again: a stale copy of the recovered booking can't bring it back.
+  const removedAgain = policy.removeBookingEntry(edited, 'R X O 2429200 - ATZ V', '3');
+  assert.equal(policy.addBookingEntry(removedAgain, 'R X O 2429200 - ATZ V', { id: '3', rateInput: '3200', bookedAt: '2026-11-20T15:00:00' }), removedAgain,
+    'stale recovered booking stays removed');
+  assert.equal(policy.addBookingEntry(removedAgain, 'R X O 2429200 - ATZ V', { id: '3', rateInput: '3200', bookedAt: '2026-11-21T09:00:00' })
+    .find(entry => entry.loadId === '3').at, '2026-11-13T10:00:00', 'recovered twice: still the original week');
   // An older TMS's automatic "removed" (no removedAt) is undone while the load is still booked.
   const autoRemoved = slimmed.map(entry => (entry.loadId === '3' ? { ...entry, removedAt: undefined } : entry));
   const healed = policy.addBookingEntry(autoRemoved, 'R X O 2429200 - ATZ V', { id: '3', status: 'BOOKED', rateInput: '3000', bookedAt: '2026-11-13T10:00:00' });

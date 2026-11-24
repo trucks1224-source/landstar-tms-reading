@@ -99,8 +99,9 @@ export function getLoadedTimeWarning(info = {}) {
 }
 
 // Check-in / check-out emails (pickup arrived / loaded, delivery arrived / delivered) wait for
-// Daniel's Send when the truck's last GPS ping is under 10 miles from that stop (his rule,
-// 2026-11-23). No GPS from Clarity: the usual rules apply.
+// Daniel's Send when the truck's last GPS ping is more than 10 miles from that stop (his rule,
+// changed 2026-11-24; it was "under 10 miles" on 2026-11-23). No GPS from Clarity: the usual
+// rules apply.
 export const NEAR_STOP_HOLD_MILES = 10;
 
 export const checkInOutStops = { arrived: 'pickup', departed: 'pickup', arrivedDelivery: 'delivery', delivered: 'delivery' };
@@ -119,7 +120,7 @@ export function getNearStopWarning(kind, info = {}) {
   const stop = checkInOutStops[kind];
   if (!stop) return '';
   const miles = milesBetween(info.truckPoint, stop === 'pickup' ? info.pickupPoint : info.deliveryPoint);
-  if (miles === null || miles >= NEAR_STOP_HOLD_MILES) return '';
+  if (miles === null || miles <= NEAR_STOP_HOLD_MILES) return '';
   const place = stop === 'pickup' ? info.pickupCity : info.deliveryCity;
   const asOf = info.lastLocationAt ? ` (as of ${formatParamountTime(info.lastLocationAt, stop === 'pickup' ? info.pickupTimezone : info.deliveryTimezone)})` : '';
   return `The truck's last GPS ping is ${miles.toFixed(1)} mi from the ${stop === 'pickup' ? 'shipper' : 'receiver'}${place ? ` in ${place}` : ''}${asOf}. Is this ${kind === 'arrived' || kind === 'arrivedDelivery' ? 'check-in' : 'check-out'} correct?`;

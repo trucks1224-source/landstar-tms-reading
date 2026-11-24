@@ -8603,7 +8603,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         if (cancelled) return;
         const text = buildParamountEmail(kind, load, info, { greetingName: greetingNameFrom(thread.to?.[0]), phone: paramountLatest.phone });
         // Loaded: automatic, except a short stop at the shipper. Any check-in / check-out with
-        // the truck under 10 miles from the stop waits for Daniel's Send too.
+        // the truck more than 10 miles from the stop waits for Daniel's Send too.
         const warning = getTrackingEmailWarning(kind, info);
         const draft = { id, customer, loadId: String(load.id), kind, text, to: thread.to || [], cc: thread.cc || [], ...(warning ? { warning } : {}) };
         if (!warning && (kind === 'departed' || paramountMaySendItself(kind))) {

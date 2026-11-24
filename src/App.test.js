@@ -10,6 +10,7 @@ import * as ntgCards from './lib/ntgCards.js';
 import * as teamAdmin from './lib/teamAdmin.js';
 import * as textLoads from './lib/textLoads.js';
 import * as emailWorker from './lib/emailWorker.js';
+import * as gmailRetry from './lib/gmailRetry.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
 
@@ -90,6 +91,7 @@ const context = {
     if (name === './lib/teamAdmin.js') return teamAdmin;
     if (name === './lib/textLoads.js') return textLoads;
     if (name === './lib/trackingEmails.js') return trackingEmails;
+    if (name === './lib/gmailRetry.js') return gmailRetry;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
     throw new Error(`Unexpected dependency: ${name}`);
@@ -1398,6 +1400,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
     if (name === './lib/teamAdmin.js') return teamAdmin;
       if (name === './lib/textLoads.js') return textLoads;
       if (name === './lib/trackingEmails.js') return trackingEmails;
+      if (name === './lib/gmailRetry.js') return gmailRetry;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === 'react') return react;
@@ -1608,6 +1611,7 @@ function createSyncContext(storage) {
     if (name === './lib/teamAdmin.js') return teamAdmin;
       if (name === './lib/textLoads.js') return textLoads;
       if (name === './lib/trackingEmails.js') return trackingEmails;
+      if (name === './lib/gmailRetry.js') return gmailRetry;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
       throw new Error(`Unexpected dependency: ${name}`);
@@ -4110,26 +4114,27 @@ test('loaded email: automatic unless the truck was at the shipper under 15 minut
   assert.equal(policy.getLoadedTimeWarning({ arrivedShipperAt: info.arrivedShipperAt }), '', 'not loaded yet');
 });
 
-test('check-in / check-out emails wait for Send when the truck is under 10 miles from the stop', () => {
+test('check-in / check-out emails wait for Send when the truck is more than 10 miles from the stop', () => {
   const baxter = { lat: 36.1367, lng: -85.6206 };
   const tulsa = { lat: 36.2148, lng: -95.8445 };
   const near = { lat: 36.15, lng: -85.65 }; // about 2 miles from Baxter
   const info = { pickupPoint: baxter, deliveryPoint: tulsa, pickupCity: 'Baxter, TN', deliveryCity: 'Tulsa, OK' };
   assert.ok(Math.abs(policy.milesBetween(baxter, tulsa) - 570) < 15, 'Baxter to Tulsa is about 570 straight-line miles');
   assert.equal(policy.milesBetween(baxter, null), null);
-  assert.match(policy.getNearStopWarning('arrived', { ...info, truckPoint: near }), /is [12]\.\d mi from the shipper in Baxter, TN\. Is this check-in correct\?/);
-  assert.match(policy.getNearStopWarning('departed', { ...info, truckPoint: near }), /Is this check-out correct\?/);
-  assert.equal(policy.getNearStopWarning('arrived', { ...info, truckPoint: tulsa }), '', 'far from the shipper: usual rules');
-  assert.match(policy.getNearStopWarning('arrivedDelivery', { ...info, truckPoint: tulsa }), /0\.0 mi from the receiver in Tulsa, OK\. Is this check-in correct\?/);
-  assert.match(policy.getNearStopWarning('delivered', { ...info, truckPoint: tulsa }), /check-out/);
-  assert.equal(policy.getNearStopWarning('delivered', { ...info, truckPoint: near }), '');
+  assert.match(policy.getNearStopWarning('arrived', { ...info, truckPoint: tulsa }), /is \d{3}\.\d mi from the shipper in Baxter, TN\. Is this check-in correct\?/);
+  assert.match(policy.getNearStopWarning('departed', { ...info, truckPoint: tulsa }), /Is this check-out correct\?/);
+  assert.equal(policy.getNearStopWarning('arrived', { ...info, truckPoint: near }), '', 'within 10 miles of the shipper: usual rules');
+  assert.match(policy.getNearStopWarning('arrivedDelivery', { ...info, truckPoint: near }), /mi from the receiver in Tulsa, OK\. Is this check-in correct\?/);
+  assert.match(policy.getNearStopWarning('delivered', { ...info, truckPoint: near }), /check-out/);
+  assert.equal(policy.getNearStopWarning('delivered', { ...info, truckPoint: tulsa }), '');
+  assert.equal(policy.getNearStopWarning('arrived', { ...info, truckPoint: { lat: 36.1367 + 9.5 / 69, lng: -85.6206 } }), '', 'about 9.5 miles: usual rules');
   assert.equal(policy.getNearStopWarning('arrived', info), '', 'no GPS ping: usual rules');
-  assert.equal(policy.getNearStopWarning('location', { ...info, truckPoint: near }), '', 'only check-in / check-out emails');
-  const loaded = { ...info, truckPoint: near, arrivedShipperAt: '2026-11-07T18:33:00Z', leftShipperAt: '2026-11-07T18:39:00Z' };
+  assert.equal(policy.getNearStopWarning('location', { ...info, truckPoint: tulsa }), '', 'only check-in / check-out emails');
+  const loaded = { ...info, truckPoint: tulsa, arrivedShipperAt: '2026-11-07T18:33:00Z', leftShipperAt: '2026-11-07T18:39:00Z' };
   const both = policy.getTrackingEmailWarning('departed', loaded);
   assert.match(both, /only 6 min/);
   assert.match(both, /mi from the shipper/);
-  assert.equal(policy.getTrackingEmailWarning('departed', { ...loaded, truckPoint: tulsa, leftShipperAt: '2026-11-07T19:39:00Z' }), '');
+  assert.equal(policy.getTrackingEmailWarning('departed', { ...loaded, truckPoint: near, leftShipperAt: '2026-11-07T19:39:00Z' }), '');
 });
 
 test('delivery check-in and delivered emails', () => {

@@ -29,10 +29,11 @@ function setup(appData, { maxValueLength = Infinity } = {}) {
   const localStorage = new Storage();
   const events = [];
   const handlers = [];
+  const timers = [];
   const window = {
     localStorage,
     dispatchEvent: event => events.push(event.type),
-    setTimeout: () => 0,
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
     clearTimeout: () => {}
   };
   const query = rows => {
@@ -82,7 +83,7 @@ function setup(appData, { maxValueLength = Infinity } = {}) {
     vm.runInContext(code, ctx);
     return ctx.module.exports;
   };
-  return { sync: ctx.module.exports, localStorage, events, handlers, appData, reload };
+  return { sync: ctx.module.exports, localStorage, events, handlers, appData, reload, timers };
 }
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -148,4 +149,23 @@ test('phone storage full (about 5 MB): the workspace still loads, the app reads 
   assert.equal(localStorage.getItem(ordersKey), '{"RXO":[]}', 'small again: back in browser storage');
   localStorage.removeItem(ordersKey);
   assert.equal(localStorage.getItem(ordersKey), null);
+});
+
+test('the big load list saves at most once a minute; small items still save right away', async () => {
+  const appData = [{ user_id: 'u1', key: ordersKey, value: '{}' }, { user_id: 'u1', key: 'landstar_brokers', value: '[]' }];
+  const { sync, localStorage, timers } = setup(appData);
+  await sync.startCloudSync('u1');
+  const bigList = n => JSON.stringify({ RXO: [{ id: String(n), note: 'x'.repeat(300 * 1024) }] });
+  const runTimer = async () => { const timer = timers.pop(); timers.length = 0; await timer.fn(); await settle(); return timer; };
+  localStorage.setItem(ordersKey, bigList(1));
+  await runTimer();
+  assert.equal(JSON.parse(appData[0].value).RXO[0].id, '1', 'the first big save goes out');
+  localStorage.setItem(ordersKey, bigList(2));
+  localStorage.setItem('landstar_brokers', '["Para"]');
+  await runTimer();
+  assert.equal(appData[1].value, '["Para"]', 'the customer list saves right away');
+  assert.equal(JSON.parse(appData[0].value).RXO[0].id, '1', 'the second big save waits');
+  assert.ok(timers.at(-1).ms > 50 * 1000, 'retried when its minute is up');
+  await sync.flushCloudSyncNow();
+  assert.equal(JSON.parse(appData[0].value).RXO[0].id, '2', 'closing or hiding the tab saves it at once');
 });

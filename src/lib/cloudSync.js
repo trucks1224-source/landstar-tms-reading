@@ -20,6 +20,13 @@ const mergedKeys = [brokersKey, ordersKey, ratesKey];
 export const dataChangedEvent = 'landstar-data-changed';
 
 const pushDelayMs = 800;
+// The load list is several MB; rewriting it on every edit (hundreds of times an hour)
+// used up the database's disk speed on 11/23 and stalled sign-in. Big values save at
+// most once a minute; small ones still save right away, and a hidden or closed tab or a
+// sign-out saves everything at once.
+const bigValueChars = 256 * 1024;
+const bigFlushIntervalMs = 60 * 1000;
+let lastBigFlushAt = 0;
 const pageSize = 1000;
 // The browser's own setItem, even when an earlier copy of this module already patched it.
 const nativeSetItem = Storage.prototype.setItem.__native || Storage.prototype.setItem;
@@ -364,17 +371,24 @@ async function flushShared(map, table, idColumn, valueColumn, idField, valueFiel
   }
 }
 
-async function doFlush() {
+async function doFlush(force = false) {
   window.clearTimeout(pushTimer);
   pushTimer = null;
   if (!currentUserId || !hasPending()) return;
   setStatus('saving');
+  let deferredBig = false;
   try {
     // One request per key, smallest first: a slow save of the big load list (it can time
     // out) must not take the customer list, booking log or settings down with it.
     const keys = Object.keys(pending).sort((a, b) => String(pending[a]).length - String(pending[b]).length);
     let firstError = null;
     for (const key of keys) {
+      const big = String(pending[key]).length > bigValueChars;
+      if (big && !force && Date.now() - lastBigFlushAt < bigFlushIntervalMs) {
+        deferredBig = true;
+        continue;
+      }
+      if (big) lastBigFlushAt = Date.now();
       const row = { user_id: currentUserId, key, value: pending[key], updated_at: new Date().toISOString() };
       const { error } = await supabase.from('app_data').upsert([row], { onConflict: 'user_id,key' });
       if (error) {
@@ -405,7 +419,14 @@ async function doFlush() {
     return;
   }
   setStatus(hasPending() ? 'saving' : 'synced');
-  if (hasPending()) scheduleFlush();
+  if (!hasPending()) return;
+  if (deferredBig) {
+    // Only the big load list is waiting: save it when its minute is up.
+    const wait = Math.max(pushDelayMs, lastBigFlushAt + bigFlushIntervalMs - Date.now());
+    pushTimer = window.setTimeout(() => enqueue(doFlush), wait);
+  } else {
+    scheduleFlush();
+  }
 }
 
 async function selectAll(table, columns) {
@@ -563,7 +584,7 @@ export function subscribeToRemoteChanges(userId) {
 }
 
 export function flushCloudSyncNow() {
-  return enqueue(doFlush);
+  return enqueue(() => doFlush(true));
 }
 
 export function stopCloudSync() {

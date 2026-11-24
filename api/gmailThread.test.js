@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { findCustomerUpdateRequests, isRxoRateConSubject, buildDriverRecipients, buildReplyAll, buildReplyMessage, findDriverReplies, findDriverStatus, buildDriverStatusEmail, handleParamountEmail, findNewReplies, findOpenRxoRequests, findRxoForwardRequests, parseBcoSubject, parseTruckerToolsSubject, isRateConfirmationSubject, parseRxoRequestSubject, pickRxoPaperworkThread, splitAddresses } from './_lib/gmailThread.js';
+import { findCustomerUpdateRequests, isRxoRateConSubject, buildDriverRecipients, buildReplyAll, buildReplyMessage, buildReplyWithAttachments, withRxoTrackingCopy, RXO_TRACKING_COPY, findDriverReplies, findDriverStatus, buildDriverStatusEmail, handleParamountEmail, findNewReplies, findOpenRxoRequests, findRxoForwardRequests, parseBcoSubject, parseTruckerToolsSubject, isRateConfirmationSubject, parseRxoRequestSubject, pickRxoPaperworkThread, splitAddresses } from './_lib/gmailThread.js';
 
 const msg = (id, internalDate, headers) => ({
   id, internalDate: String(internalDate), snippet: `text ${id}`,
@@ -33,7 +33,7 @@ test('RXO updates create an order-specific Dashawn chain only when no chain exis
       const request = JSON.parse(options.body);
       const raw = Buffer.from(request.raw, 'base64url').toString('utf8');
       assert.match(raw, /To: Dashawn.Cook@rxo.com/);
-      assert.doesNotMatch(raw, /Cc:/);
+      assert.match(raw, /^Cc: chatracking2@rxo\.com\r$/m, 'only the RXO tracking desk is copied');
       sent.push(request);
       existing = { id: 'fallback', messages: [msg('sent-fallback', Date.now(), {
         From: me, To: 'Dashawn.Cook@rxo.com',
@@ -790,4 +790,18 @@ test('not update requests: rate cons, thanks, drivers, Landstar, answered thread
   for (const thread of [rateCon, thanks, driver, landstar, answered, otherLoad, rxoRequest]) {
     assert.deepEqual(findCustomerUpdateRequests([thread], me, orders), [], thread.id);
   }
+});
+
+test('every email to RXO also copies chatracking2@rxo.com', () => {
+  assert.equal(RXO_TRACKING_COPY, 'chatracking2@rxo.com');
+  const rxo = withRxoTrackingCopy({ to: ['Dashawn Cook <Dashawn.Cook@rxo.com>'], cc: ['daniel.gomez@landstarmail.com'] });
+  assert.deepEqual(rxo.cc, ['daniel.gomez@landstarmail.com', 'chatracking2@rxo.com']);
+  const already = withRxoTrackingCopy({ to: ['a@rxo.com'], cc: ['CHATracking2 <ChaTracking2@RXO.com>'] });
+  assert.equal(already.cc.length, 1, 'not added twice');
+  const paramount = withRxoTrackingCopy({ to: ['x@paramount.com'], cc: [] });
+  assert.deepEqual(paramount.cc, [], 'non-RXO emails unchanged');
+  const decode = raw => raw.match(/^Cc: (.*)$/m)?.[1] || '';
+  assert.match(decode(buildReplyMessage({ to: ['a@rxo.com'], cc: [], subject: 'Load 1', text: 'hi' })), /chatracking2@rxo\.com/);
+  assert.doesNotMatch(buildReplyMessage({ to: ['x@paramount.com'], cc: [], subject: 'Load 1', text: 'hi' }), /chatracking2/);
+  assert.match(decode(buildReplyWithAttachments({ to: ['a@rxo.com'], cc: [], subject: 'POD', text: 'hi', files: [] })), /chatracking2@rxo\.com/);
 });

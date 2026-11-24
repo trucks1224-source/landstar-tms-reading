@@ -84,7 +84,16 @@ export function findNewReplies(messages, myEmail, sinceMs = 0) {
     }));
 }
 
-export function buildReplyMessage({ to, cc, subject, inReplyTo, references, text, from }) {
+// Every email that goes to RXO also copies RXO's tracking desk (Daniel's rule, 2026-11-24).
+export const RXO_TRACKING_COPY = 'chatracking2@rxo.com';
+export function withRxoTrackingCopy({ to = [], cc = [], ...rest }) {
+  const all = [...to, ...cc].map(emailOf);
+  if (!all.some(email => /@rxo\.com$/i.test(email)) || all.includes(RXO_TRACKING_COPY)) return { to, cc, ...rest };
+  return { to, cc: [...cc, RXO_TRACKING_COPY], ...rest };
+}
+
+export function buildReplyMessage(message) {
+  const { to, cc, subject, inReplyTo, references, text, from } = withRxoTrackingCopy(message);
   const replySubject = /^re:/i.test(subject) ? subject : `RE: ${subject}`;
   const encodedSubject = `=?UTF-8?B?${Buffer.from(oneLine(replySubject), 'utf8').toString('base64')}?=`;
   const headers = [
@@ -509,7 +518,8 @@ async function findDriverPaperwork(accessToken, myEmail, freightBill, since) {
 }
 
 // A reply-all with files attached (multipart/mixed); files: [{ filename, mimeType, data (base64) }].
-export function buildReplyWithAttachments({ to, cc, subject, inReplyTo, references, text, files = [] }) {
+export function buildReplyWithAttachments(message) {
+  const { to, cc, subject, inReplyTo, references, text, files = [] } = withRxoTrackingCopy(message);
   const boundary = `pod_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
   const replySubject = /^re:/i.test(subject) ? subject : `RE: ${subject}`;
   const encodeName = name => `=?UTF-8?B?${Buffer.from(oneLine(name), 'utf8').toString('base64')}?=`;
@@ -1054,7 +1064,7 @@ export async function handleParamountEmail(request = {}) {
   }
   const { threadId, messages } = found;
   const replyAll = withLoadIvanCopy(buildReplyAll(messages, myEmail), request.postingCode);
-  const recipients = rxo ? replyAll : withParamountCopies(replyAll);
+  const recipients = withRxoTrackingCopy(rxo ? replyAll : withParamountCopies(replyAll));
   const subject = header(messages[0], 'Subject');
   if (action === 'rateConPdf') {
     // The newest PDF attached in the thread (Paramount's "has been Accepted" email: semail.pdf).

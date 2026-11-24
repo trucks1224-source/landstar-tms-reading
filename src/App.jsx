@@ -9,7 +9,7 @@ import { createEmailWorker, describeEmailWorker } from './lib/emailWorker.js';
 import { createSendSpacer, withGmailQuotaRetry } from './lib/gmailRetry.js';
 import {
   splitScheduleRange, rxoCustomerName, rxoPayerCustomerName, ntgCustomerName, normalizeCustomerName, formatPhone, trackingStages, parseScheduleStart, hasPickupDayStarted, getBookedLoads, formatCheckTime, paramountTrackingCustomers, PARAMOUNT_AUTO_SEND_AFTER, paramountAlwaysAskKinds, MIN_LOADING_MINUTES, getLoadedTimeWarning, NEAR_STOP_HOLD_MILES, checkInOutStops, milesBetween, getNearStopWarning, getTrackingEmailWarning, LOCATION_EMAIL_HOUR, PICKUP_ETA_EMAIL_HOUR, paramountEmailKinds, paramountSignatureName, isParamountTrackingCustomer, isTrackedBookedLoad, trackingWatchEntry, getParamountWatchList, formatParamountTime, titleCase, paramountSignature, buildParamountEmail, getDueParamountEmails, isDailyCustomerUpdateDue, markParamountEmail, applyParamountTrackingInfo, DRIVER_EMAIL_HOUR, TRACKING_WATCH_DAYS, driverEmailLabels, PAPERWORK_DUE_HOURS, PAPERWORK_REMINDER_DAYS, getDeliveredAt, getPaperworkTarget, getPaperworkSince, getTrackingWatchList, atHourOf, sameLocalDay, getDueDriverEmails, getTrackingAppName, trackingAppNotice, buildDriverEmail, buildPaperworkEmail, markDriverEmail, TRACKING_REMINDER_FIRST_MINUTES, TRACKING_REMINDER_EVERY_MINUTES, TRACKING_REMINDER_START_HOUR, TRACKING_REMINDER_END_HOUR, TRACKING_REMINDER_MAX, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getPendingDriverStatusReply, findDriverEta, buildParamountEtaEmail, rxoTrackingCustomers, RXO_ETA_BLANK, isRxoTrackingCustomer, isRxoAccount, getTrackingEmailBroker, getRxoWatchList, getEmailPostingCode, getRxoEmailPostingCodes, findRxoLoadForRequest, buildRxoUpdateEmail, getCustomerRequestOrders, greetingNameFrom,
-  trackingEmailId, driverEmailId, dailyCustomerEmailId
+  trackingEmailId, driverEmailId, dailyCustomerEmailId, manualUpdateKinds, buildManualUpdateEmail
 } from './lib/trackingEmails.js';
 import Prospects from './Prospects.jsx';
 import automationPolicy from '../bot/automation-policy.json';
@@ -4327,6 +4327,11 @@ function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, o
                       ↩ Remove capacity
                     </button>
                   )}
+                  {emails?.onCompose && (
+                    <button type="button" onClick={() => emails.onCompose(customer, load)} title="Write your own update to the customer (with the real time) and send it reply-all on their email thread" className="bg-sky-700 hover:bg-sky-600 text-white text-[11px] px-2 py-0.5 rounded font-semibold cursor-pointer">
+                      ✉ Customer update
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -4335,6 +4340,7 @@ function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, o
                 drafts={emails.drafts.filter(draft => draft.customer === customer && String(draft.loadId) === String(load.id))}
                 replies={emails.replies.filter(reply => reply.customer === customer && String(reply.loadId) === String(load.id))}
                 onChangeText={emails.onChangeText}
+                onChangeManual={emails.onChangeManual}
                 onSend={emails.onSend}
                 onSkip={emails.onSkip}
                 onDismissReply={emails.onDismissReply}
@@ -4759,13 +4765,18 @@ function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
 
 // Tracking emails for one load (Paramount / RXO), shown inside its Booked Loads card:
 // a warning badge while an email waits for Send, which opens the email to review.
-function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip, onDismissReply }) {
+function LoadEmailBox({ drafts = [], replies = [], onChangeText, onChangeManual, onSend, onSkip, onDismissReply }) {
   const [open, setOpen] = useState(false);
+  // "✉ Customer update" opens its email right away.
+  const manualCount = drafts.filter(draft => draft.kind === 'manualUpdate').length;
+  useEffect(() => {
+    if (manualCount) setOpen(true);
+  }, [manualCount]);
   if (!drafts.length && !replies.length) return null;
-  const kindLabel = { customerUpdate: 'Reply to customer update request', initial: 'Tracking link + pickup ETA', pickupEta: 'Morning pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', arrivedDelivery: 'Arrived at receiver', delivered: 'Delivered', rxo: 'Reply to update request', rxoForward: 'Forward RXO request to Ivan', driverEta: 'Driver ETA update', driverStatus: 'Driver status update', paperwork: 'POD / paperwork (files attached)', location: 'Daily location update', dailyCustomer: 'Daily customer update', checkCall: 'Logged check call update' };
+  const kindLabel = { manualUpdate: 'Your update', customerUpdate: 'Reply to customer update request', initial: 'Tracking link + pickup ETA', pickupEta: 'Morning pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', arrivedDelivery: 'Arrived at receiver', delivered: 'Delivered', rxo: 'Reply to update request', rxoForward: 'Forward RXO request to Ivan', driverEta: 'Driver ETA update', driverStatus: 'Driver status update', paperwork: 'POD / paperwork (files attached)', location: 'Daily location update', dailyCustomer: 'Daily customer update', checkCall: 'Logged check call update' };
   const approvalsLeft = draft => Math.max(0, PARAMOUNT_AUTO_SEND_AFTER
     - readApprovedCount(draft.kind === 'paperwork' ? paperworkApprovedKey : draft.kind === 'driver' ? driverApprovedKey : ['rxo', 'customerUpdate'].includes(draft.kind) ? rxoApprovedKey : paramountApprovedKey));
-  const who = draft => (draft.kind === 'driver' ? 'Driver' : draft.kind === 'checkCall' ? draft.customer : draft.kind === 'rxoForward' ? 'Ivan' : draft.kind === 'customerUpdate' ? draft.customer : draft.kind === 'rxo' || draft.target === 'rxo' || isRxoAccount(draft.customer) ? 'RXO' : 'Paramount');
+  const who = draft => (draft.kind === 'driver' ? 'Driver' : ['checkCall', 'manualUpdate'].includes(draft.kind) ? draft.customer : draft.kind === 'rxoForward' ? 'Ivan' : draft.kind === 'customerUpdate' ? draft.customer : draft.kind === 'rxo' || draft.target === 'rxo' || isRxoAccount(draft.customer) ? 'RXO' : 'Paramount');
   // Paperwork drafts carry no addresses: the send replies on the customer's email thread.
   const recipients = draft => [...(draft.to || []), ...(draft.cc || [])];
   return (
@@ -4808,9 +4819,38 @@ function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip,
           {draft.request && <p className="text-amber-100 mt-0.5">They asked: “{draft.request}”</p>}
           {draft.warning && <p role="alert" className="mt-1 bg-red-600 text-white font-bold rounded px-2 py-1">⚠ {draft.warning} Send only if it is; otherwise click Don&apos;t send.</p>}
           {['rxo', 'customerUpdate'].includes(draft.kind) && !draft.complete && <p className="text-amber-300 mt-0.5">Fill in the blanks (like the pickup ETA) before sending.</p>}
+          {draft.kind === 'manualUpdate' && (
+            <div className="flex flex-wrap gap-2 mt-1 items-center">
+              <label className="flex items-center gap-1">
+                <span className="text-gray-300">Update:</span>
+                <select
+                  value={draft.updateKind}
+                  disabled={draft.sending}
+                  onChange={event => onChangeManual(draft, { updateKind: event.target.value })}
+                  className="bg-[#0b1020] border border-[#1c2541] rounded px-1 py-0.5 text-xs text-white"
+                >
+                  {manualUpdateKinds.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </label>
+              <label className="flex items-center gap-1">
+                <span className="text-gray-300">Time:</span>
+                <input
+                  value={draft.updateTime}
+                  disabled={draft.sending}
+                  onChange={event => onChangeManual(draft, { updateTime: event.target.value })}
+                  placeholder="11/24 14:30 CST"
+                  className="bg-[#0b1020] border border-[#1c2541] rounded px-1 py-0.5 text-xs text-white w-36"
+                  aria-label={`Update time for order ${draft.loadId}`}
+                />
+              </label>
+              <span className="text-gray-400">Changing these rewrites the email below.</span>
+            </div>
+          )}
           <p className="text-gray-300">{recipients(draft).length
             ? `Reply all to: ${recipients(draft).join(', ')}`
-            : `Sends with the files on the ${who(draft)} email thread`}</p>
+            : draft.kind === 'manualUpdate'
+              ? `Reply all on the ${draft.customer} email thread for order ${draft.loadId}`
+              : `Sends with the files on the ${who(draft)} email thread`}</p>
           <textarea
             value={draft.text}
             onChange={event => onChangeText(draft, event.target.value)}
@@ -4823,7 +4863,7 @@ function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip,
           <div className="flex flex-wrap gap-2 mt-1 items-center">
             <button type="button" disabled={draft.sending} onClick={() => onSend(draft)} className="bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white px-3 py-0.5 rounded font-semibold cursor-pointer">{draft.sending ? 'Sending…' : 'Send'}</button>
             <button type="button" disabled={draft.sending} onClick={() => onSkip(draft)} className="bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded cursor-pointer">Don&apos;t send</button>
-            <span className="text-gray-400">{draft.warning ? 'Waits for your Send' : paramountAlwaysAskKinds.has(draft.kind) ? 'Always waits for your Send' : approvalsLeft(draft) ? `${approvalsLeft(draft)} more approval${approvalsLeft(draft) === 1 ? '' : 's'}, then these send automatically` : 'Sending automatically'}</span>
+            <span className="text-gray-400">{draft.warning || draft.kind === 'manualUpdate' ? 'Waits for your Send' : paramountAlwaysAskKinds.has(draft.kind) ? 'Always waits for your Send' : approvalsLeft(draft) ? `${approvalsLeft(draft)} more approval${approvalsLeft(draft) === 1 ? '' : 's'}, then these send automatically` : 'Sending automatically'}</span>
           </div>
         </div>
       ))}
@@ -8391,7 +8431,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         || !getDueDriverEmails(currentLoad, currentLoad.paramountTracking || {}).includes('dispatch'))) {
         throw new Error('The load, freight bill, or initial confirmation changed. Driver email was not sent.');
       }
-      if (!['initial', 'paperwork', 'customerUpdate'].includes(draft.kind) && !initialDriverConfirmation && (!currentLoad || !hasPickupDayStarted(currentLoad))) {
+      if (!['initial', 'paperwork', 'customerUpdate', 'manualUpdate'].includes(draft.kind) && !initialDriverConfirmation && (!currentLoad || !hasPickupDayStarted(currentLoad))) {
         throw new Error('Tracking emails start on pickup day. This email was not sent.');
       }
       const postingCode = draft.kind === 'rxoForward'
@@ -8438,6 +8478,20 @@ export default function App({ sharing = null, userId = null } = {}) {
           day: draft.day, text: draft.text, postingCode
         });
         patchParamountLoad(draft.customer, draft.loadId, load => markParamountEmail(load, 'location'));
+      } else if (draft.kind === 'manualUpdate') {
+        // Same customer-thread send as a check call (Paramount rate con, RXO threads, or the
+        // customer's own chain); a fresh time makes each update its own email.
+        await sendEmail({
+          action: 'checkCallSend', customer: draft.customer, orderNumber: draft.loadId,
+          checkCallAt: new Date(Number(draft.id.split('|').pop()) || Date.now()).toISOString(), text: draft.text, postingCode
+        });
+        const label = (manualUpdateKinds.find(([value]) => value === draft.updateKind) || [])[1] || 'Update';
+        patchParamountLoad(draft.customer, draft.loadId, load => {
+          const noted = { ...load, notes: [load.notes, `Customer update sent by hand: ${label}${draft.updateTime ? ` (${draft.updateTime})` : ''}`].filter(Boolean).join('\n') };
+          // Sent by hand: the automatic email for the same step doesn't go out again.
+          return ['arrived', 'departed', 'arrivedDelivery', 'delivered'].includes(draft.updateKind) && getTrackingEmailBroker(draft.customer)
+            ? markParamountEmail(noted, draft.updateKind) : noted;
+        });
       } else if (draft.kind === 'checkCall') {
         await sendEmail({
           action: 'checkCallSend', customer: draft.customer, orderNumber: draft.loadId,
@@ -8489,7 +8543,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         });
         patchParamountLoad(draft.customer, draft.loadId, load => markParamountEmail(load, draft.kind));
       }
-      if (!auto) {
+      if (!auto && draft.kind !== 'manualUpdate') {
         const key = isPaperwork ? paperworkApprovedKey : isDriver ? driverApprovedKey : isRxo || draft.kind === 'customerUpdate' ? rxoApprovedKey : paramountApprovedKey;
         try { localStorage.setItem(key, String(readApprovedCount(key) + 1)); } catch { /* counts again next time */ }
       }
@@ -8510,7 +8564,24 @@ export default function App({ sharing = null, userId = null } = {}) {
     }
   };
 
+  // "✉ Customer update" on a booked load: an email Daniel writes himself (with the real time),
+  // sent reply-all on the customer's thread. Only one open at a time per load.
+  const composeCustomerUpdate = (customer, load) => {
+    setParamountDrafts(current => {
+      if (current.some(item => item.kind === 'manualUpdate' && item.customer === customer && item.loadId === String(load.id))) return current;
+      const updateKind = 'departed';
+      return [...current, {
+        id: `manual|${customer}|${load.id}|${Date.now()}`, kind: 'manualUpdate', customer, loadId: String(load.id),
+        updateKind, updateTime: '', text: buildManualUpdateEmail(updateKind, load, { phone: paramountLatest.phone })
+      }];
+    });
+  };
+
   const skipParamountDraft = draft => {
+    if (draft.kind === 'manualUpdate') {
+      setParamountDrafts(current => current.filter(item => item.id !== draft.id));
+      return;
+    }
     recordSkippedEmail(draft);
     settleDraftOnLoad(draft);
   };
@@ -11129,6 +11200,13 @@ export default function App({ sharing = null, userId = null } = {}) {
               drafts: paramountDrafts,
               replies: paramountReplies,
               onChangeText: (draft, text) => setParamountDrafts(current => current.map(item => (item.id === draft.id ? { ...item, text } : item))),
+              onCompose: composeCustomerUpdate,
+              onChangeManual: (draft, change) => setParamountDrafts(current => current.map(item => {
+                if (item.id !== draft.id) return item;
+                const next = { ...item, ...change, error: '' };
+                const load = findParamountLoad(item.customer, item.loadId) || { id: item.loadId };
+                return { ...next, text: buildManualUpdateEmail(next.updateKind, load, { time: next.updateTime, phone: paramountLatest.phone }) };
+              })),
               onSend: draft => { void sendParamountDraft(draft); },
               onSkip: skipParamountDraft,
               onDismissReply: reply => setParamountReplies(current => current.filter(item => item.id !== reply.id))

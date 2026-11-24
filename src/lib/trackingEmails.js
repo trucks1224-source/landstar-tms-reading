@@ -256,6 +256,37 @@ export function buildParamountEmail(kind, load, info = {}, { greetingName = '', 
     + `${info.trackingLink ? `\n\nLive tracking: ${info.trackingLink}` : ''}\n\nThank you for working with us, and please reach out if you need anything!${sign}`;
 }
 
+// "✉ Customer update" on a booked load (Daniel's request, 2026-11-24): an update Daniel sends
+// himself, with the time he types, when Clarity is wrong (e.g. "loaded" but the driver isn't).
+export const manualUpdateKinds = [
+  ['departed', 'Loaded, left shipper'],
+  ['arrived', 'Arrived at shipper'],
+  ['arrivedDelivery', 'Arrived at receiver'],
+  ['delivered', 'Delivered'],
+  ['correction', 'Correction: not loaded yet'],
+  ['custom', 'My own message']
+];
+
+export function buildManualUpdateEmail(kind, load, { time = '', phone = '' } = {}) {
+  const order = String(load?.id || '');
+  const driver = titleCase(load?.driver || '') || 'our driver';
+  const pickupPlace = [titleCase(load?.origCity), load?.origSt].filter(Boolean).join(', ') || 'the shipper';
+  const deliveryPlace = [titleCase(load?.destCity), load?.destSt].filter(Boolean).join(', ') || 'the receiver';
+  const at = String(time || '').trim();
+  const when = at ? ` (${at})` : '';
+  const sign = `\n\n${paramountSignature(phone)}`;
+  const body = {
+    arrived: `Quick update on order ${order}: ${driver} has arrived at the shipper in ${pickupPlace}${when}. We'll let you know as soon as the truck is loaded and on the way.`,
+    departed: `Great news on order ${order}: the truck is loaded and has left the shipper in ${pickupPlace}${when}, heading to ${deliveryPlace}.`,
+    arrivedDelivery: `Quick update on order ${order}: ${driver} has arrived at the receiver in ${deliveryPlace}${when}. We'll let you know as soon as the truck is unloaded.`,
+    delivered: `Great news on order ${order}: the load has been delivered in ${deliveryPlace}${when}. We'll send the signed POD as soon as we have it.`,
+    correction: `Correction on order ${order}: please disregard our earlier update. ${driver} has not loaded yet at the shipper in ${pickupPlace}`
+      + `${at ? ` and is expected to be loaded by ${at}` : ''}. We'll confirm as soon as the truck is loaded and on the way.`,
+    custom: `Quick update on order ${order}: `
+  }[kind] ?? `Quick update on order ${order}: `;
+  return `Hello team,\n\n${body}\n\nThank you!${sign}`;
+}
+
 // Which tracking emails are due for a load, given the bot's latest Clarity result.
 // The first email needs the tracking link; once the truck has left the shipper, a
 // not-yet-sent "arrived" email is skipped (the "left" one covers it).

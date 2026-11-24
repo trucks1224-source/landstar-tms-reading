@@ -6,6 +6,7 @@ import { detectScreenshotGrid, readScreenshotGrid } from './lib/screenshotTable.
 import { findNtgCardRegions } from './lib/ntgCards.js';
 import { parseTextLoadList } from './lib/textLoads.js';
 import { createEmailWorker, describeEmailWorker } from './lib/emailWorker.js';
+import { createSendSpacer, withGmailQuotaRetry } from './lib/gmailRetry.js';
 import {
   splitScheduleRange, rxoCustomerName, rxoPayerCustomerName, ntgCustomerName, normalizeCustomerName, formatPhone, trackingStages, parseScheduleStart, hasPickupDayStarted, getBookedLoads, formatCheckTime, paramountTrackingCustomers, PARAMOUNT_AUTO_SEND_AFTER, paramountAlwaysAskKinds, MIN_LOADING_MINUTES, getLoadedTimeWarning, NEAR_STOP_HOLD_MILES, checkInOutStops, milesBetween, getNearStopWarning, getTrackingEmailWarning, LOCATION_EMAIL_HOUR, PICKUP_ETA_EMAIL_HOUR, paramountEmailKinds, paramountSignatureName, isParamountTrackingCustomer, isTrackedBookedLoad, trackingWatchEntry, getParamountWatchList, formatParamountTime, titleCase, paramountSignature, buildParamountEmail, getDueParamountEmails, isDailyCustomerUpdateDue, markParamountEmail, applyParamountTrackingInfo, DRIVER_EMAIL_HOUR, TRACKING_WATCH_DAYS, driverEmailLabels, PAPERWORK_DUE_HOURS, PAPERWORK_REMINDER_DAYS, getDeliveredAt, getPaperworkTarget, getPaperworkSince, getTrackingWatchList, atHourOf, sameLocalDay, getDueDriverEmails, getTrackingAppName, trackingAppNotice, buildDriverEmail, buildPaperworkEmail, markDriverEmail, TRACKING_REMINDER_FIRST_MINUTES, TRACKING_REMINDER_EVERY_MINUTES, TRACKING_REMINDER_START_HOUR, TRACKING_REMINDER_END_HOUR, TRACKING_REMINDER_MAX, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getPendingDriverStatusReply, findDriverEta, buildParamountEtaEmail, rxoTrackingCustomers, RXO_ETA_BLANK, isRxoTrackingCustomer, isRxoAccount, getTrackingEmailBroker, getRxoWatchList, getEmailPostingCode, getRxoEmailPostingCodes, findRxoLoadForRequest, buildRxoUpdateEmail, getCustomerRequestOrders, greetingNameFrom,
   trackingEmailId, driverEmailId, dailyCustomerEmailId
@@ -4809,6 +4810,7 @@ function LoadEmailBox({ drafts = [], replies = [], onChangeText, onSend, onSkip,
             aria-label={`Email text for order ${draft.loadId}`}
           />
           {draft.error && <p className="text-red-300 mt-1">Not sent: {draft.error}</p>}
+          {draft.sending && draft.retryNote && <p className="text-amber-300 mt-1">{draft.retryNote}</p>}
           <div className="flex flex-wrap gap-2 mt-1 items-center">
             <button type="button" disabled={draft.sending} onClick={() => onSend(draft)} className="bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white px-3 py-0.5 rounded font-semibold cursor-pointer">{draft.sending ? 'Sending…' : 'Send'}</button>
             <button type="button" disabled={draft.sending} onClick={() => onSkip(draft)} className="bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded cursor-pointer">Don&apos;t send</button>
@@ -5157,6 +5159,9 @@ async function callParamountEmail(body) {
   }
   return result;
 }
+
+// Outgoing tracking emails go a few seconds apart so a batch doesn't hit Gmail's per-minute limit.
+const spacedEmailSend = createSendSpacer();
 
 // Tells the email record that Daniel chose "Don't send", so no sender sends it later.
 function recordSkippedEmail(draft) {
@@ -8352,10 +8357,20 @@ export default function App({ sharing = null, userId = null } = {}) {
 
   // Sends one draft (reply-all on the rate confirmation thread) and records it on the load.
   const sendParamountDraft = async (draft, { auto = false } = {}) => {
-    setParamountDrafts(current => current.map(item => (item.id === draft.id ? { ...item, sending: true, error: '' } : item)));
+    setParamountDrafts(current => current.map(item => (item.id === draft.id ? { ...item, sending: true, error: '', retryNote: '' } : item)));
     // Every send carries its draft id: the email record (bot/email-record.js) refuses an
     // email that was already sent, skipped, or is being sent by another sender.
-    const sendEmail = body => callParamountEmail({ ...body, emailKey: draft.id, emailMeta: emailRecordMeta(draft) });
+    // Gmail's per-minute limit: wait a minute and try again (shown on the card) instead of failing.
+    const showGmailWait = seconds => {
+      const retryNote = `Gmail busy (too many requests this minute) — retrying in ${seconds} s`;
+      setParamountDrafts(current => (current.some(item => item.id === draft.id)
+        ? current.map(item => (item.id === draft.id ? { ...item, sending: true, error: '', retryNote } : item))
+        : [...current, { ...draft, sending: true, error: '', retryNote }]));
+    };
+    const sendEmail = body => withGmailQuotaRetry(
+      () => spacedEmailSend(() => callParamountEmail({ ...body, emailKey: draft.id, emailMeta: emailRecordMeta(draft) })),
+      { onWait: showGmailWait }
+    );
     const isRxo = draft.kind === 'rxo';
     const isDriver = draft.kind === 'driver';
     const isPaperwork = draft.kind === 'paperwork';
@@ -8480,8 +8495,8 @@ export default function App({ sharing = null, userId = null } = {}) {
       }
       // Shown in the panel so nothing goes missing silently.
       setParamountDrafts(current => (current.some(item => item.id === draft.id)
-        ? current.map(item => (item.id === draft.id ? { ...item, sending: false, error: error.message } : item))
-        : [...current, { ...draft, sending: false, error: error.message }]));
+        ? current.map(item => (item.id === draft.id ? { ...item, sending: false, retryNote: '', error: error.message } : item))
+        : [...current, { ...draft, sending: false, retryNote: '', error: error.message }]));
       if (auto) throw error;
     }
   };

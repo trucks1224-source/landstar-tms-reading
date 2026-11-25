@@ -162,6 +162,18 @@ async function removeRows(filePath, rowNumbers) {
 // on the board (same pickup day, origin and destination), your copy is not posted.
 const SKIP_IF_POSTED_BY = ['ATZ'];
 
+// AMERI 18347- ATZ (Daniel, 2026-11-25): posts even when ATZ already has the load on the board,
+// always at the contract rate from the TMS: never raised over ATZ, AAZ or any other agent.
+// The export file name carries the exact account (not "..._ATZ_H"); Bulk Postings drafts only
+// carry Landstar's customer number.
+// Export files: Landstar_Bulk_AMERI_18347__ATZ.xlsx, ..._3of9.xlsx, "... (1).xlsx", "..._1.xlsx".
+const CONTRACT_RATE_FILE = /^Landstar_Bulk_AMERI_18347__ATZ(?:_\d+of\d+)?(?:_\d+)?(?: \(\d+\))?\.xlsx$/i;
+const POSTS_OVER_ATZ_CUSTOMER_NUMBERS = ['18347'];
+
+function isContractRateFile(fileName) {
+  return CONTRACT_RATE_FILE.test(fileName);
+}
+
 // R X O 2429200 - ATZ (not ATZ P) exports its DAT-priced van loads under the DAT rate. When
 // another agent has the load on the board, that discount does not apply: the bot posts
 // exactly their rate + $25, even when that is lower than the exported rate.
@@ -499,6 +511,10 @@ async function checkFiles(page, files, { apply, log = console.log }) {
       }
 
       // A load ATZ already has posted on the board is never posted again by you.
+      if (isContractRateFile(fileName)) {
+        log(`  row ${load.rowNumber}: ${lane}  $${load.rate}  (AMERI: contract rate, posted even if ATZ has it)`);
+        continue;
+      }
       const atzPosting = boardLoads.find(b => isSkipAgencyPosting(b, load));
       if (atzPosting) {
         skips.push(load.rowNumber);
@@ -572,6 +588,7 @@ async function checkFiles(page, files, { apply, log = console.log }) {
 module.exports = {
   getWorkPage, openBoard, showLoggedIn, searchBoard, boardForLoad, checkFiles, sameCity, abbreviates, OWN_POSTING_CODES, isSameLoadNearby,
   getTrailerGroups, boardPickupDate, OUTBID_BY, isSkipAgencyPosting, removeRowsFromSheetXml, SKIP_IF_POSTED_BY,
+  isContractRateFile, POSTS_OVER_ATZ_CUSTOMER_NUMBERS,
   matchesTopCompetitor, isNolanFile, MATCH_AGENCY_FOR_NOLAN, getChPostingRate
 };
 

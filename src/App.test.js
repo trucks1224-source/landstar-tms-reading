@@ -57,7 +57,7 @@ export {
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
-  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
+  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
@@ -600,8 +600,10 @@ test('AMERI 18347- ATZ: Colony and York lanes are priced, brokerable, $0 Carrier
   assert.equal(policy.isAmeriCustomer(ameri), true);
   assert.equal(policy.isAmeriCustomer('AMERI 18347 - ATZ'), true);
   assert.equal(policy.isAmeriCustomer('AMERI 18347- ATZ P'), false);
-  assert.equal(policy.getLandstarBrokerable(ameri, { brokerable: 'false' }), 'Y');
-  assert.equal(policy.getLandstarCarrierAmount(ameri, 4800), 0);
+  assert.equal(policy.getLandstarBrokerable(ameri, { brokerable: 'false' }), 'Y', 'AMERI: always brokerable');
+  assert.equal(policy.getLandstarCarrierAmount(ameri, 4800), undefined, 'blank Carrier Amt cell (Landstar refused Y with 0)');
+  assert.equal(policy.getLandstarCarrierLoadAlerts(ameri), 'N', 'alerts off: brokerable with no Carrier Amt');
+  assert.equal(policy.getLandstarCarrierLoadAlerts(customers[0]), '', 'other customers unchanged');
   assert.equal(policy.getLandstarBrokerable(customers[0], { brokerable: 'false' }), 'N');
   assert.equal(policy.getLandstarBrokerable(customers[0], { brokerable: 'true' }), 'Y');
   assert.equal(policy.getLandstarCarrierAmount(customers[0], 4800), 4800);

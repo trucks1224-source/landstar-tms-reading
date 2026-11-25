@@ -17,7 +17,8 @@ function fakePage(text, { button = true, backdrop = true } = {}) {
       const value = vm.runInNewContext(`(${callback.toString()})()`, { document });
       if (!value) throw new Error('Timeout 180000ms exceeded.');
       return { jsonValue: async () => value };
-    }
+    },
+    evaluate: async callback => vm.runInNewContext(`(${callback.toString()})()`, { document, Array, Set })
   };
 }
 
@@ -53,4 +54,16 @@ test('missing Done button and other overlays do not count as success', async () 
 
 test('no result window yet is not success (11/23: 224 loads left as drafts)', async () => {
   await assert.rejects(closeSuccessfulUploadConfirmation(fakePage('', { backdrop: false })), /never showed the upload result/);
+});
+
+test('a timed-out upload says what Landstar showed instead (AMERI, 2026-11-25)', async () => {
+  await assert.rejects(closeSuccessfulUploadConfirmation(fakePage('Upload Failed\n  Customer   18347 is not valid')),
+    /never showed the upload result.*Landstar showed: Upload Failed Customer 18347 is not valid/);
+  await assert.rejects(closeSuccessfulUploadConfirmation(fakePage('', { backdrop: false })), /No Landstar message was on screen/);
+});
+
+test('"TMS Loads Upload Unsuccessful" is a rejection, reported at once and left on screen', async () => {
+  const page = fakePage('TMS Loads Upload Unsuccessful We found issues with your 1 loads. CORRECT POSTING ERRORS');
+  await assert.rejects(closeSuccessfulUploadConfirmation(page), /Landstar rejected the upload: TMS Loads Upload Unsuccessful We found issues with your 1 loads/);
+  assert.equal(page.clicked, 0, 'Correct Posting Errors is not clicked');
 });

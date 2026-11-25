@@ -256,6 +256,20 @@ async function uploadOne(page, filePath) {
     throw error;
   }
 
+  // Record Landstar's replies to the upload (its reasons for rejecting loads are in them; the
+  // "Upload Unsuccessful" window gives none and leaves no error drafts - AMERI, 2026-11-25).
+  const replies = [];
+  const onResponse = async response => {
+    try {
+      const request = response.request();
+      if (request.method() === 'GET' || !/landstaronline\.com\/(loadboards|api)\//i.test(response.url())) return;
+      const body = (await response.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 3000);
+      replies.push(`${request.method()} ${response.url().replace(/^https?:\/\/[^/]+/, '').split('?')[0]} -> ${response.status()}${body ? `: ${body}` : ''}`);
+    } catch { /* never let recording break an upload */ }
+  };
+  page.on('response', onResponse);
+  try {
+
   // Attach the file.
   await fileInput.setInputFiles(filePath);
   await page.waitForTimeout(1500);
@@ -281,6 +295,16 @@ async function uploadOne(page, filePath) {
 
   await waitForUploadToFinish(page);
   console.log(`  Done: ${fileName}`);
+  } catch (error) {
+    if (replies.length) {
+      error.message += ` Landstar replied: ${replies.join(' || ')}`;
+      // Also kept next to the file in the review folder, in full.
+      try { fs.writeFileSync(`${filePath.replace(/\.xlsx$/i, '')} - Landstar reply.txt`, replies.join('\n\n')); } catch { /* best effort */ }
+    }
+    throw error;
+  } finally {
+    page.off('response', onResponse);
+  }
 }
 
 // Watch mode: stay logged in and upload every new export automatically.
@@ -403,6 +427,13 @@ async function processFiles(context, page, files, { waitForever = false } = {}) 
     } catch (error) {
       if (!error.uncertainUpload) throw error;
       console.error(`  ! ${error.message}`);
+      // A picture of what Landstar showed, saved next to the file before the page is reloaded.
+      if (error.file) {
+        const shot = `${error.file.replace(/\.xlsx$/i, '')} - Landstar screen.png`;
+        await page.screenshot({ path: shot, fullPage: true })
+          .then(() => console.error(`    Landstar screen saved: ${shot}`))
+          .catch(shotError => console.error(`    Could not save the Landstar screen: ${shotError.message}`));
+      }
       needsReview.push(file);
       uploadProgress.waiting = Math.max(0, uploadProgress.waiting - 1);
       setProgress(uploadProgress);

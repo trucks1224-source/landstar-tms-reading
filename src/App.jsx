@@ -3787,15 +3787,26 @@ function getFixedLaneRate(customer, order) {
   return match ? match.rate : '';
 }
 
-// Landstar export columns that depend on the account. AMERI 18347- ATZ loads are always
-// brokerable and go out with a $0 Carrier Amt (the Rate column keeps the rate).
+// Landstar export columns that depend on the account. AMERI 18347- ATZ loads are brokerable
+// with no Carrier Amt (the Rate column keeps the rate). Landstar validated but refused to post
+// Brokerable Y + Carrier Amt 0 ("postingErrors":1, five uploads, 2026-11-25); Brokerable N + 0
+// posted. Testing Brokerable Y with the Carrier Amt cell left blank instead of 0.
+const AMERI_BROKERABLE = 'Y';
+
 function getLandstarBrokerable(customer, ord) {
-  if (isAmeriCustomer(customer)) return 'Y';
+  if (isAmeriCustomer(customer)) return AMERI_BROKERABLE;
   return ['true', 'y'].includes(String(ord?.brokerable || '').trim().toLowerCase()) ? 'Y' : 'N';
 }
 
+// undefined leaves the spreadsheet cell empty (not 0).
 function getLandstarCarrierAmount(customer, rate) {
-  return isAmeriCustomer(customer) ? 0 : rate;
+  return isAmeriCustomer(customer) ? undefined : rate;
+}
+
+// Brokerable with no Carrier Amt posts only with Carrier Load Alerts off (Daniel, Landstar's
+// Edit Posting form, 2026-11-25); a blank cell left a validation error, so AMERI sends N.
+function getLandstarCarrierLoadAlerts(customer) {
+  return isAmeriCustomer(customer) ? 'N' : '';
 }
 
 // What a truck gets paid on a load (Daniel, 2026-11-25): a Landstar driver (BCO) gets the full
@@ -10054,14 +10065,16 @@ export default function App({ sharing = null, userId = null } = {}) {
         'BRENTWOOD|MO': { zip: '63144', city: 'Brentwood', state: 'MO' },
         'BRENTWOOD|PA': { zip: '15227', city: 'Brentwood', state: 'PA' },
         'BRENTWOOD|NH': { zip: '03833', city: 'Brentwood', state: 'NH' },
-        // Colony, WY (AMERI's bentonite plants) has no ZIP of its own in the offline data; the
-        // plant's address is Colony, WY 82710 (filed under nearby Aladdin).
-        'COLONY|WY': { zip: '82710', city: 'Colony', state: 'WY' },
-        // More AMERI stops whose ZIPs are filed under a neighboring town in the offline data.
-        'HOLIDAY CITY|OH': { zip: '43543', city: 'Holiday City', state: 'OH' },
-        'FIFE|WA': { zip: '98424', city: 'Fife', state: 'WA' },
+        // Colony, WY (AMERI's bentonite plants) shares ZIP 82710 with Aladdin. Landstar never
+        // finished a "Colony, WY 82710" upload (2026-11-25), so the posting goes out as the
+        // ZIP's own post office, Aladdin, WY 82710; the TMS still shows Colony.
+        'COLONY|WY': { zip: '82710', city: 'Aladdin', state: 'WY' },
+        // More AMERI stops whose ZIPs belong to a neighboring post office: posted as that post
+        // office (like Colony above) so Landstar's city/ZIP check matches.
+        'HOLIDAY CITY|OH': { zip: '43543', city: 'Montpelier', state: 'OH' },
+        'FIFE|WA': { zip: '98424', city: 'Tacoma', state: 'WA' },
         // McKenzie, ND (the town in Burleigh County) shares Sterling's ZIP.
-        'MCKENZIE|ND': { zip: '58572', city: 'McKenzie', state: 'ND' }
+        'MCKENZIE|ND': { zip: '58572', city: 'Sterling', state: 'ND' }
       };
       const extraKey = `${String(city || '').trim().toUpperCase()}|${String(state || '').trim().toUpperCase()}`;
       if (extraCities[extraKey]) return extraCities[extraKey];
@@ -10265,7 +10278,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         "Commodity": getLandstarCommodityValue(commodity),
         "Brokerable": brokerable,
         "Carrier Amt": getLandstarCarrierAmount(selectedBroker, rate),
-        "Carrier Load Alerts": "",
+        "Carrier Load Alerts": getLandstarCarrierLoadAlerts(selectedBroker),
         // The Landstar template has no Team column; team is set through this attribute.
         "Load Attributes": [isHazmatLoad(ord) && 'Hazmat', isTeamLoad(ord) && 'Team Required'].filter(Boolean).join(', '),
         "Comments": getLandstarExportComment(ord),
@@ -12117,7 +12130,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">Brokerable (true / false)</label>
                   {isAmeriCustomer(selectedBroker) ? (
-                    <input type="text" value="true (always for AMERI)" readOnly title="AMERI 18347- ATZ loads always export as brokerable with a $0 Carrier Amt" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-gray-400 font-mono" />
+                    <input type="text" value={AMERI_BROKERABLE === 'Y' ? 'true (always for AMERI)' : 'false (always for AMERI)'} readOnly title={`AMERI 18347- ATZ loads always export with Brokerable ${AMERI_BROKERABLE} and no Carrier Amt`} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-gray-400 font-mono" />
                   ) : (
                     <input type="text" value={selectedOrder.brokerable || 'false'} onChange={(e) => handleFieldChange('brokerable', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono" placeholder="false" />
                   )}

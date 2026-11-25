@@ -9,6 +9,7 @@ export const syncedKeys = [
   'landstar_exportedLoads',
   'landstar_dailyCheckins',
   'landstar_bookingLog',
+  'landstar_hotLanes',
   'landstar_profile',
   'landstar_dataVersion'
 ];

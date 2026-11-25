@@ -262,7 +262,8 @@ body {
     radial-gradient(ellipse at 95% 110%, rgba(167, 139, 250, 0.14), transparent 55%),
     linear-gradient(rgba(56, 189, 248, 0.035) 1px, transparent 1px),
     linear-gradient(90deg, rgba(56, 189, 248, 0.035) 1px, transparent 1px),
-    linear-gradient(rgba(5, 11, 23, 0.3), rgba(5, 11, 23, 0.3)),
+    /* ⚙ My Settings → Background brightness sets this shade (default is the original 0.3 navy) */
+    linear-gradient(var(--tms-bg-shade, rgba(5, 11, 23, 0.3)), var(--tms-bg-shade, rgba(5, 11, 23, 0.3))),
     /* Fades the photo's gray table edges and shadows into the background */
     radial-gradient(ellipse 31% 50% at 51% 52%, transparent 52%, var(--fx-bg) 100%),
     url('/broski-background.png');

@@ -7,6 +7,8 @@ import { findNtgCardRegions } from './lib/ntgCards.js';
 import { parseTextLoadList } from './lib/textLoads.js';
 import { createEmailWorker, describeEmailWorker } from './lib/emailWorker.js';
 import { createSendSpacer, withGmailQuotaRetry } from './lib/gmailRetry.js';
+import { buildHotLanes, describeHotLane, getHotLane, hotLaneRate, hotLanesKey } from './lib/hotLanes.js';
+import { applyBackgroundBrightness, readBackgroundBrightness } from './lib/backgroundBrightness.js';
 import {
   splitScheduleRange, rxoCustomerName, rxoPayerCustomerName, ntgCustomerName, normalizeCustomerName, formatPhone, trackingStages, parseScheduleStart, hasPickupDayStarted, getBookedLoads, formatCheckTime, paramountTrackingCustomers, PARAMOUNT_AUTO_SEND_AFTER, paramountAlwaysAskKinds, MIN_LOADING_MINUTES, getLoadedTimeWarning, NEAR_STOP_HOLD_MILES, checkInOutStops, milesBetween, getNearStopWarning, getTrackingEmailWarning, LOCATION_EMAIL_HOUR, PICKUP_ETA_EMAIL_HOUR, paramountEmailKinds, paramountSignatureName, isParamountTrackingCustomer, isTrackedBookedLoad, trackingWatchEntry, getParamountWatchList, formatParamountTime, titleCase, paramountSignature, buildParamountEmail, getDueParamountEmails, isDailyCustomerUpdateDue, markParamountEmail, applyParamountTrackingInfo, DRIVER_EMAIL_HOUR, TRACKING_WATCH_DAYS, driverEmailLabels, PAPERWORK_DUE_HOURS, PAPERWORK_REMINDER_DAYS, getDeliveredAt, getPaperworkTarget, getPaperworkSince, getTrackingWatchList, atHourOf, sameLocalDay, getDueDriverEmails, getTrackingAppName, trackingAppNotice, buildDriverEmail, buildPaperworkEmail, markDriverEmail, TRACKING_REMINDER_FIRST_MINUTES, TRACKING_REMINDER_EVERY_MINUTES, TRACKING_REMINDER_START_HOUR, TRACKING_REMINDER_END_HOUR, TRACKING_REMINDER_MAX, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getPendingDriverStatusReply, findDriverEta, buildParamountEtaEmail, rxoTrackingCustomers, RXO_ETA_BLANK, isRxoTrackingCustomer, isRxoAccount, getTrackingEmailBroker, getRxoWatchList, getEmailPostingCode, getRxoEmailPostingCodes, findRxoLoadForRequest, buildRxoUpdateEmail, getCustomerRequestOrders, greetingNameFrom,
   trackingEmailId, driverEmailId, dailyCustomerEmailId, manualUpdateKinds, buildManualUpdateEmail
@@ -6034,6 +6036,9 @@ function SystemCheck({ emailStore }) {
 // Load cards drawn at a time in the load list (more appear as you scroll).
 const LOAD_LIST_PAGE = 100;
 
+// ⚙ My Settings → Background brightness, saved on this computer.
+applyBackgroundBrightness(readBackgroundBrightness());
+
 export default function App({ sharing = null, userId = null } = {}) {
   const [brokers, setBrokers] = useState(() => {
     try {
@@ -6107,6 +6112,33 @@ export default function App({ sharing = null, userId = null } = {}) {
   const [searchQuery, setSearchQuery] = useState('');
   const [loadFilters, setLoadFilters] = useState({ rate: '', minMiles: '', maxMiles: '', pickupState: '', deliveryState: '', pickupDate: '' });
   const [laneSort, setLaneSort] = useState('');
+  // An RXO order export (loads other agents booked: it has the carrier's line haul pay) is not a
+  // load list. 📂 Import Excel sends it here and it becomes the 🔥 hot lanes instead.
+  const readOrderExportRows = async file => {
+    const workbook = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array', cellDates: false });
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { raw: false, defval: '' });
+    const columns = rows[0] || {};
+    return ['Origin - City', 'Destination - City', 'Carrier Line Haul Pay Current'].every(name => name in columns) ? rows : null;
+  };
+  const importHotLanes = (rows, file) => {
+    try {
+      const built = buildHotLanes(rows);
+      const laneCount = Object.keys(built.lanes).length;
+      if (!laneCount) {
+        alert('No lanes found in this file.');
+        return;
+      }
+      const saved = { ...built, file: file.name, importedAt: new Date().toISOString() };
+      localStorage.setItem(hotLanesKey, JSON.stringify(saved));
+      setHotLanes(saved);
+      const loads = Object.values(customerOrdersMap || {}).flat().filter(load => getHotLane(load, saved));
+      alert(`🔥 ${laneCount} hot lanes saved from ${built.rows} loads booked by other agents.\n\n`
+        + `${loads.length} of your loads are on a hot lane right now. They show a 🔥 HOT LANE badge and sit at the top of the list (under ⭐ IMPORTANT loads).\n\n`
+        + 'Importing a newer export with 📂 Import Excel replaces these lanes.');
+    } catch (error) {
+      alert(`Could not read the hot lanes file: ${error.message}`);
+    }
+  };
   const [showTools, setShowTools] = useState(true);
   const [showCustomers, setShowCustomers] = useState(true);
   const [showHeader, setShowHeader] = useState(true);
@@ -6118,6 +6150,11 @@ export default function App({ sharing = null, userId = null } = {}) {
   const [editBrokerInput, setEditBrokerInput] = useState('');
 
   const [selectedIds, setSelectedIds] = useState([]);
+  // 🔥 Hot lanes: lanes other agents are booking (from an RXO order export). Synced across computers.
+  const readHotLanes = () => {
+    try { return JSON.parse(localStorage.getItem(hotLanesKey) || 'null'); } catch { return null; }
+  };
+  const [hotLanes, setHotLanes] = useState(readHotLanes);
   const [exportErrorIds, setExportErrorIds] = useState([]);
   const [isImportingScreenshot, setIsImportingScreenshot] = useState(false);
   const [screenshotImportMode, setScreenshotImportMode] = useState('');
@@ -6805,6 +6842,8 @@ export default function App({ sharing = null, userId = null } = {}) {
     if (typeof window === 'undefined') return undefined;
     const reloadSavedData = event => {
       const fromCloud = event?.type === 'landstar-data-changed';
+      // 🔥 Hot lanes imported on another computer arrive with the cloud sync too.
+      if (fromCloud) setHotLanes(readHotLanes());
       let values;
       try {
         values = {
@@ -7280,12 +7319,21 @@ export default function App({ sharing = null, userId = null } = {}) {
   // flatbed and reefer lists can be uploaded one at a time — an import only replaces the
   // equipment categories in the file (see replaceImportedCustomerLoads).
   const handleExcelImport = (e) => {
-    const files = Array.from(e.target.files || []);
+    let files = Array.from(e.target.files || []);
     e.target.value = '';
     if (!files.length) return;
 
     const runImport = async () => {
       try {
+        // 🔥 Order exports of other agents' bookings become hot lanes, not loads.
+        const loadFiles = [];
+        for (const file of files) {
+          const orderRows = await readOrderExportRows(file);
+          if (orderRows) importHotLanes(orderRows, file);
+          else loadFiles.push(file);
+        }
+        if (!loadFiles.length) return;
+        files = loadFiles;
         const isRxoPayerImport = normalizeCustomerName(selectedBroker) === rxoPayerCustomerName;
         const isRxoImport = isRxoCustomer(selectedBroker);
         // Every data row of every load tab, with that tab's column positions.
@@ -10045,6 +10093,9 @@ export default function App({ sharing = null, userId = null } = {}) {
     const priority = Number(Boolean(String(right.needsCapacity || '').trim()))
       - Number(Boolean(String(left.needsCapacity || '').trim()));
     if (priority) return priority;
+    // 🔥 Hot lanes (other agents booking them) come next, so we stay on top of them.
+    const hot = Number(Boolean(getHotLane(right, hotLanes))) - Number(Boolean(getHotLane(left, hotLanes)));
+    if (hot) return hot;
     if (!laneSort || laneSort === 'pickup-asc' || laneSort === 'pickup-desc') {
       const difference = getPickupSortValue(left) - getPickupSortValue(right);
       return (laneSort === 'pickup-desc' ? -difference : difference)
@@ -10070,7 +10121,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     return (descending ? -comparison : comparison) || String(left.id).localeCompare(String(right.id));
   });
   return { rateCountOrders, withRateCount, noRateCount, visibleOrderEntries };
-  }, [customerOrdersMap, selectedBroker, searchQuery, filter, loadFilters, laneSort, isGlobalSearch]);
+  }, [customerOrdersMap, selectedBroker, searchQuery, filter, loadFilters, laneSort, isGlobalSearch, hotLanes]);
   // Load cards are drawn a page at a time; more appear as you scroll to the bottom.
   const [listLimit, setListLimit] = useState(LOAD_LIST_PAGE);
   const listEndRef = useRef(null);
@@ -10245,7 +10296,11 @@ export default function App({ sharing = null, userId = null } = {}) {
                   >
                     {isImportingScreenshot && screenshotImportMode === 'dat' ? screenshotImportProgress : 'Paste DAT Screenshot'}
                   </button>
-                  <label className="tms-tool cursor-pointer" data-accent="sky" title="Import Excel Spreadsheet">
+                  <label
+                    className="tms-tool cursor-pointer"
+                    data-accent="sky"
+                    title={`Import Excel Spreadsheet. An RXO order export (orderSearch_Export) of loads other agents booked becomes 🔥 hot lanes instead${hotLanes?.lanes ? ` (now ${Object.keys(hotLanes.lanes).length} from ${hotLanes.file || 'an order export'}, ${new Date(hotLanes.importedAt).toLocaleDateString('en-US')})` : ''}.`}
+                  >
                     <span>📂 Import Excel</span>
                     <input type="file" accept=".xlsx, .xls, .csv" multiple onChange={handleExcelImport} className="hidden" />
                   </label>
@@ -10816,6 +10871,12 @@ export default function App({ sharing = null, userId = null } = {}) {
                                             {String(ord.needsCapacity || '').trim() && (
                                               <span aria-label={`Load ${ord.id} needs capacity`} title="Important: protected from missing-list removal; refresh requested every 15 minutes" className="bg-amber-400 text-black text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">⭐ IMPORTANT / NEEDS CAPACITY</span>
                                             )}
+                                            {(() => {
+                                              const hotLane = getHotLane(ord, hotLanes);
+                                              return hotLane && (
+                                                <span aria-label={`Load ${ord.id} is on a hot lane`} title={describeHotLane(hotLane)} className="bg-red-600 text-white text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">🔥 HOT LANE ×{hotLane.count}{hotLaneRate(hotLane) ? ` · booked ${hotLaneRate(hotLane)}` : ''}</span>
+                                              );
+                                            })()}
                                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ord.status === 'ENT' ? 'tms-ent' : ord.status === 'ON HOLD' ? 'bg-red-900/60 text-red-300' : ord.status === 'OPEN' ? 'tms-open' : ord.status === 'BOOKED' ? 'bg-purple-900/60 text-purple-200' : 'bg-blue-900/60 text-blue-300'}`}>{ord.status}</span>
                     </div>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'tms-ent' : ord.tag === 'HOLD' ? 'bg-red-600 text-white' : ord.tag === 'OPEN' ? 'tms-open' : ord.tag === 'BOOKED' ? 'bg-purple-600 text-white' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
@@ -11029,6 +11090,36 @@ export default function App({ sharing = null, userId = null } = {}) {
                   />
                 </label>
               ))}
+              {/* Changes right away and is saved on this computer (not part of Save). */}
+              <div className="block text-xs text-gray-400">
+                Background brightness
+                <div className="mt-1 flex items-center gap-2">
+                  <span aria-hidden="true">🌑 Darker</span>
+                  <input
+                    type="range"
+                    min="-100"
+                    max="100"
+                    step="5"
+                    defaultValue={readBackgroundBrightness()}
+                    onChange={(e) => applyBackgroundBrightness(e.target.value, true)}
+                    aria-label="Background brightness"
+                    className="flex-1 accent-cyan-400"
+                  />
+                  <span aria-hidden="true">Brighter ☀</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      const slider = e.currentTarget.parentElement.querySelector('input[type="range"]');
+                      if (slider) slider.value = '0';
+                      applyBackgroundBrightness(0, true);
+                    }}
+                    className="px-2 py-0.5 rounded border border-[#1c2541] text-gray-300 hover:text-white"
+                    title="Back to the original background"
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
               <label className="block text-xs text-gray-400">
                 Flag next to your phone
                 <div className="mt-1 flex items-center gap-2">

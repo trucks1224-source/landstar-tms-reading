@@ -7,7 +7,11 @@ them to Landstar under YOUR login and YOUR posting code. It never touches
 anyone else's postings.
 
 Install (about 5 minutes, once):
-1. Right-click the zip file -> Extract All... -> Extract.
+1. Right-click the zip file -> Properties. At the bottom, tick Unblock -> OK
+   (if there is no Unblock box, skip this). Without it, Windows "Smart App
+   Control" may block Setup with no way to run it.
+   Then right-click the zip file -> Extract All... -> Extract.
+   Delete any older copy of Setup.bat, setup.ps1 and the bot folder first.
 2. Open the extracted folder and double-click Setup.
    - If Windows says "Windows protected your PC", click More info -> Run anyway.
    - If it asks to install Node.js, say Yes.

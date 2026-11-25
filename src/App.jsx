@@ -1243,6 +1243,186 @@ function correctDatCities(loads, zipData) {
   return loads;
 }
 
+// ==========================================
+// CITY/STATE GRID SCREENSHOTS (AMERI 18347- ATZ and other shipper-portal lists)
+// ==========================================
+// Columns: Origin city | Origin state | Dest city | Dest st | Early P/U dt | Early del dt.
+// No load numbers. OCR of these grids is noisy (2026-11-25, AMERI screenshots): cell borders
+// read as "[" or "|", spaces vanish ("SANTJAMES"), states garble ("hz" = AZ, "JL" = IL,
+// "|A" = IA, "Wv" = WY) and highlighted rows lose their slashes ("1124120260600" =
+// 11/24/2026 0600). Each city is matched to a real place: the customer's rate-sheet lanes
+// first, then the ZIP database's cities in that state (or nearby state codes).
+function isCityGridScreenshot(lineTexts) {
+  return lineTexts.some(text => /origin\s*c\w*/i.test(text) && /dest/i.test(text));
+}
+
+const ocrStateLookalikes = { I: 'TLJ', J: 'I', L: 'I', T: 'I', V: 'Y', Y: 'V', H: 'A', '|': 'I', 1: 'I' };
+
+// OCR date like 11/30/2026 0600, 12/0412026 0600, 1112412026 0600 or 1124120260600.
+function readCityGridDates(text) {
+  const dates = [];
+  const pattern = /(\d{1,2})[/1Il|]?(\d{2})[/1Il|](20\d{2})\s*(\d{4})?/g;
+  let match;
+  while ((match = pattern.exec(text))) {
+    const [, month, day, year, time] = match;
+    if (Number(day) < 1 || Number(day) > 31) continue;
+    dates.push({ month: Number(month), day: Number(day), year: Number(year), time: time || '', index: match.index });
+  }
+  return dates;
+}
+
+function parseCityGridScreenshotText(lineTexts, zipData, customer) {
+  const letters = value => String(value || '').toUpperCase().replace(/[^A-Z]/g, '');
+  const known = [];
+  fixedLaneRates.filter(lane => lane.customer && normalizeCustomerName(lane.customer) === normalizeCustomerName(customer))
+    .forEach(lane => {
+      known.push({ city: lane.origCity, state: lane.origSt });
+      known.push({ city: lane.destCity, state: lane.destSt });
+    });
+  if (isAmeriCustomer(customer)) {
+    [...Object.keys(ameriPickupHours), ...ameriMenardsStops].forEach(key => {
+      const [city, state] = key.split('|');
+      known.push({ city, state });
+    });
+  }
+  const cityCache = new Map();
+  const citiesIn = state => {
+    if (!cityCache.has(state)) {
+      const names = new Set((zipData?.lookupByState?.(state) || []).map(item => String(item.city || '').toUpperCase()));
+      known.filter(place => place.state === state).forEach(place => names.add(place.city));
+      cityCache.set(state, [...names].map(name => ({ name, key: letters(name), known: known.some(place => place.state === state && place.city === name) })));
+    }
+    return cityCache.get(state);
+  };
+  const stateCandidates = raw => {
+    let code = String(raw || '').toUpperCase().replace(/[^A-Z|1]/g, '');
+    if (code.length === 3 && /^[LIJ|]/.test(code)) code = code.slice(1);
+    const out = new Map();
+    if (stateCodes.has(code)) out.set(code, 0);
+    const lookalike = code.split('').map(char => [char, ...(ocrStateLookalikes[char] || '')]);
+    if (code.length === 2) {
+      lookalike[0].forEach(a => lookalike[1].forEach(b => { if (stateCodes.has(a + b) && !out.has(a + b)) out.set(a + b, 0.02); }));
+    }
+    stateCodes.forEach(state => {
+      if (!out.has(state) && code && editDistance(code, state) <= 1) out.set(state, 0.05);
+    });
+    return out;
+  };
+  // Best real place for an OCR city (letters, possibly truncated with "..") in the given states.
+  const matchCity = (ocrText, states) => {
+    const truncated = /\.\s*\.?\s*$|…/.test(String(ocrText).trim());
+    const raw = letters(ocrText);
+    if (raw.length < 3) return null;
+    const variants = [raw];
+    if (/^[IJL]/.test(raw) && raw.length > 4) variants.push(raw.slice(1));
+    let best = null;
+    states.forEach((penalty, state) => {
+      citiesIn(state).forEach(city => {
+        variants.forEach((variant, variantIndex) => {
+          if (truncated && city.key.length < variant.length) return;
+          const target = truncated ? city.key.slice(0, variant.length) : city.key;
+          const distance = editDistance(variant, target);
+          const limit = variant.length >= 6 ? 2 : 1;
+          if (distance > limit) return;
+          const score = 1 - distance / Math.max(variant.length, target.length) - penalty
+            + (city.known ? 0.05 : 0) - (variantIndex ? 0.03 : 0);
+          if (score >= 0.72 && (!best || score > best.score)) best = { city: city.name, state, score };
+        });
+      });
+    });
+    return best;
+  };
+  const allStates = new Map([...stateCodes].map(state => [state, 0.08]));
+  const pad = value => String(value).padStart(2, '0');
+  const loads = [];
+  const skippedRows = [];
+  const laneDayCounts = new Map();
+  lineTexts.forEach(rawText => {
+    const text = String(rawText || '').replace(/[[\]{}~_¥—–“”"'’`]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!text || /origin\s*c/i.test(text)) return;
+    let dates = readCityGridDates(text);
+    if (!/^[A-Za-z|]/.test(text)) return;
+    if (dates.length < 2) {
+      skippedRows.push(`${text} (pickup or delivery date not readable)`);
+      return;
+    }
+    dates = dates.slice(0, 2);
+    // A lost leading "1" (2/02 for 12/02) shows up as a month far before the other date's.
+    const [pickup, delivery] = dates;
+    [[pickup, delivery], [delivery, pickup]].forEach(([date, other]) => {
+      if (date.month <= 2 && other.month >= 11 && date.month + 10 <= 12) date.month += 10;
+    });
+    if (dates.some(date => date.month < 1 || date.month > 12)) {
+      skippedRows.push(`${text} (date not readable)`);
+      return;
+    }
+    const words = text.slice(0, pickup.index).replace(/[|]/g, ' ').split(/\s+/).filter(token => /[A-Za-z]/.test(token));
+    // A state is a short token; a border read in front of it can add a letter ("liz" = AZ).
+    const isStateToken = token => !/\.\./.test(token)
+      && (letters(token).length <= 2 || letters(token).length === 3 && /^[LIJ|]/i.test(token));
+    // Origin: the first place on the row; destination: the rest. States are the short tokens.
+    let origin = null;
+    let destWords = [];
+    let destStateRaw = '';
+    const originStateIndex = words.findIndex((token, index) => index > 0 && isStateToken(token));
+    if (originStateIndex > 0) {
+      origin = matchCity(words.slice(0, originStateIndex).join(' '), stateCandidates(words[originStateIndex]));
+      const rest = words.slice(originStateIndex + 1);
+      if (rest.length > 1 && isStateToken(rest[rest.length - 1])) {
+        destStateRaw = rest[rest.length - 1];
+        destWords = rest.slice(0, -1);
+      } else {
+        destWords = rest;
+      }
+    } else {
+      // No readable origin state: try the first word as the origin city anywhere.
+      origin = matchCity(words[0] || '', allStates);
+      destWords = words.slice(1);
+      if (destWords.length > 1 && isStateToken(destWords[destWords.length - 1])) destStateRaw = destWords.pop();
+    }
+    const destination = destWords.length
+      ? matchCity(destWords.join(' '), destStateRaw ? stateCandidates(destStateRaw) : allStates)
+        || (destStateRaw ? matchCity(destWords.join(' '), allStates) : null)
+      : null;
+    if (!origin || !destination) {
+      skippedRows.push(`${text} (${!origin ? 'origin' : 'destination'} city not readable)`);
+      return;
+    }
+    const dateText = date => `${pad(date.month)}/${pad(date.day)}/${date.year}${date.time ? ` ${date.time}` : ''}`;
+    const laneDay = `${pad(pickup.month)}${pad(pickup.day)}${letters(destination.city).slice(0, 3)}`;
+    const count = (laneDayCounts.get(laneDay) || 0) + 1;
+    laneDayCounts.set(laneDay, count);
+    loads.push(applyAmeriLoadDefaults(customer, {
+      id: `${laneDay}${count}`,
+      eCode: isAmeriCustomer(customer) ? 'VR' : 'V',
+      status: 'OPEN',
+      tag: 'OPEN',
+      route: `${origin.city}, ${origin.state} → ${destination.city}, ${destination.state}`,
+      puDate: `PU: ${dateText(pickup)}`,
+      delDate: `DFL: ${dateText(delivery)}`,
+      pickupTime: dateText(pickup),
+      origCity: origin.city,
+      origSt: origin.state,
+      origZip: '',
+      weight: '',
+      deliveryTime: dateText(delivery),
+      destCity: destination.city,
+      destSt: destination.state,
+      destZip: '',
+      miles: '',
+      planningComment: '',
+      carrier: '',
+      driver: '',
+      truck: '',
+      trailer: '',
+      rateInput: '',
+      brokerable: 'false',
+      notes: ''
+    }));
+  });
+  return { loads, skippedRows };
+}
+
 function correctCitiesFromZip(loads, zipData) {
   const normalize = value => String(value || '').toUpperCase().replace(/[^A-Z]/g, '');
   const fix = (load, cityKey, stateKey, zipKey) => {
@@ -3493,8 +3673,9 @@ function assignImportedLoadIdentity(importedLoad, existingLoads, stagedLoads) {
 }
 
 // AMERI 18347- ATZ (exact account; Daniel 2026-11-25): every load ships from Colony, WY.
-// Contractor rates from "americo rates.xlsx"; where Daniel already got more on a lane
-// (the sheet's "Got $X on 11/xx" notes) that amount is used. Flatbed-only rates
+// Contractor rates from "americo rates.xlsx": the Rate column, never the Notes column. A lane's
+// "Got $X on 11/xx" note (an amount already approved) goes on imported loads as a Planning
+// Comment, not into the rate (Daniel, 2026-11-25). Flatbed-only rates
 // (Tacoma $2,800, Lovell $1,400) are left out: the list doesn't say the equipment.
 const ameriCustomerKey = 'AMERI18347ATZ';
 
@@ -3504,19 +3685,20 @@ function isAmeriCustomer(name) {
 
 const ameriColonyRates = [
   ['BENTONVILLE', 'AR', 3000], ['BUCKEYE', 'AZ', 4100], ['APPLE VALLEY', 'CA', 4000],
-  ['RED BLUFF', 'CA', 4800], ['PORTERVILLE', 'CA', 4000], ['LOVELAND', 'CO', 1800],
+  ['RED BLUFF', 'CA', 4500, 'Got $4,800 approved on 11/19'], ['PORTERVILLE', 'CA', 4000], ['LOVELAND', 'CO', 1800],
   ['MOUNT PLEASANT', 'IA', 2600], ['SHELL ROCK', 'IA', 2000], ['PLANO', 'IL', 2200],
   ['GRANITE CITY', 'IL', 2150], ['SPRING VALLEY', 'IL', 2800], ['TERRE HAUTE', 'IN', 2850],
-  ['SEYMOUR', 'IN', 3800], ['OTTAWA', 'KS', 2400], ['SAGINAW', 'MI', 3400],
+  ['SEYMOUR', 'IN', 3000, 'Got $3,800 approved on 11/18'], ['OTTAWA', 'KS', 2400], ['SAGINAW', 'MI', 3400],
   ['SAINT JAMES', 'MO', 3000], ['SULLIVAN', 'MO', 2700], ['MCKENZIE', 'ND', 1000],
   ['VALLEY', 'NE', 1600], ['WASHINGTON COURT HOUSE', 'OH', 3400], ['HOLIDAY CITY', 'OH', 3000],
-  ['HERMISTON', 'OR', 4100], ['SEALY', 'TX', 3700], ['PALESTINE', 'TX', 4300],
-  ['PLAINVIEW', 'TX', 2900], ['NEW BRAUNFELS', 'TX', 4400], ['SANGER', 'TX', 3500],
-  ['GRANTSVILLE', 'UT', 3000], ['EAU CLAIRE', 'WI', 1650], ['IRON RIDGE', 'WI', 2100],
+  ['HERMISTON', 'OR', 3500, 'Got $4,100 approved on 11/16'], ['SEALY', 'TX', 3700], ['PALESTINE', 'TX', 4000, 'Got $4,300 approved on 11/18'],
+  ['PLAINVIEW', 'TX', 2900], ['NEW BRAUNFELS', 'TX', 4000, 'Got $4,400 approved on 11/18'], ['SANGER', 'TX', 3500, 'Got $3,500 approved on 11/18'],
+  ['GRANTSVILLE', 'UT', 2700, 'Got $3,000 approved on 11/23'], ['EAU CLAIRE', 'WI', 1650], ['IRON RIDGE', 'WI', 2100],
   ['MENOMONIE', 'WI', 1900], ['BEAVER DAM', 'WI', 2500], ['SEATTLE', 'WA', 2400],
   ['FIFE', 'WA', 2500], ['LOVELL', 'WY', 1200]
-].map(([destCity, destSt, rate]) => ({
-  customer: 'AMERI 18347- ATZ', origCity: 'COLONY', origSt: 'WY', destCity, destSt, rate: String(rate)
+].map(([destCity, destSt, rate, approved]) => ({
+  customer: 'AMERI 18347- ATZ', origCity: 'COLONY', origSt: 'WY', destCity, destSt, rate: String(rate),
+  ...(approved ? { approved } : {})
 }));
 
 // AMERI 18347- ATZ loads picking up in York, PA (the sheet's "York PA" tab).
@@ -3534,6 +3716,57 @@ const fixedLaneRates = [
   ...ameriColonyRates,
   ...ameriYorkRates
 ];
+
+// AMERI 18347- ATZ load details its list doesn't show (Daniel, 2026-11-25):
+// - Menards loads weigh 43,500 lbs and deliver 7 AM to 9 PM; every other load is 41,500 lbs.
+//   Menards stops are the rate sheet's "Menards 7am - 9pm FCFS" destinations.
+// - Pickups use the shipping location's hours ("americo rates - Colony WY" pickup list);
+//   Colony is the West Plant, 6 AM to 11 PM. Tilden, TX is by appointment only.
+const ameriMenardsStops = new Set([
+  'SHELL ROCK|IA', 'TERRE HAUTE|IN', 'SAGINAW|MI', 'SULLIVAN|MO', 'MCKENZIE|ND', 'VALLEY|NE',
+  'WASHINGTON COURT HOUSE|OH', 'HOLIDAY CITY|OH', 'EAU CLAIRE|WI', 'IRON RIDGE|WI'
+]);
+const ameriPickupHours = {
+  'LOVELL|WY': ['0700', '1400'], 'COLONY|WY': ['0600', '2300'], 'DILLON|MT': ['0800', '1800'],
+  'GREEN RIVER|WY': ['0700', '1700'], 'CHEYENNE|WY': ['0700', '1400'], 'TILDEN|TX': ['0700', '1400'],
+  'MILWAUKEE|WI': ['0700', '1430'], 'YORK|PA': ['0600', '2000'], 'CEDARBURG|WI': ['0700', '1400'],
+  'PHOENIX|AZ': ['0700', '1500'], 'ROCKFORD|IL': ['0730', '1500'], 'CARTERSVILLE|GA': ['0700', '1400'],
+  'EATON|CO': ['0700', '1500'], 'EVANSVILLE|IN': ['0700', '1500'], 'SCOTT CITY|MO': ['0800', '1600'],
+  'SEATTLE|WA': ['0700', '1500'], 'NEENAH|WI': ['0700', '1400'], 'WINCHESTER|KY': ['0730', '1430'],
+  'GREYBULL|WY': ['0800', '2100'], 'VALLEY|NE': ['0700', '2100'], 'SCRANTON|ND': ['0700', '1400'],
+  'GRANITE CITY|IL': ['0800', '1530']
+};
+const AMERI_MENARDS_WEIGHT = '43500 lbs';
+const AMERI_WEIGHT = '41500 lbs';
+
+function ameriPlaceKey(city, state) {
+  return `${String(city || '').trim().toUpperCase().replace(/\s+/g, ' ')}|${String(state || '').trim().toUpperCase()}`;
+}
+
+function isAmeriMenardsLoad(load) {
+  return ameriMenardsStops.has(ameriPlaceKey(load?.destCity, load?.destSt));
+}
+
+// Fills weight and pickup/delivery windows on an imported AMERI load (other customers unchanged).
+function applyAmeriLoadDefaults(customer, load) {
+  if (!isAmeriCustomer(customer)) return load;
+  const dateOf = value => String(value || '').match(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/)?.[0] || '';
+  const menards = isAmeriMenardsLoad(load);
+  const next = { ...load, weight: menards ? AMERI_MENARDS_WEIGHT : AMERI_WEIGHT };
+  // The amount already approved on this lane (rate sheet note), shown on the load.
+  const lane = fixedLaneRates.find(entry => entry.approved && entry.customer === 'AMERI 18347- ATZ'
+    && normalizeFixedLaneCity(entry.origCity) === normalizeFixedLaneCity(load.origCity) && entry.origSt === String(load.origSt || '').toUpperCase()
+    && normalizeFixedLaneCity(entry.destCity) === normalizeFixedLaneCity(load.destCity) && entry.destSt === String(load.destSt || '').toUpperCase());
+  if (lane && !String(load.planningComment || '').includes(lane.approved)) {
+    next.planningComment = load.planningComment ? `${lane.approved}; ${load.planningComment}` : lane.approved;
+  }
+  const hours = ameriPickupHours[ameriPlaceKey(load.origCity, load.origSt)];
+  const pickupDate = dateOf(load.pickupTime);
+  if (hours && pickupDate) next.pickupTime = `${pickupDate} ${hours[0]} - ${hours[1]}`;
+  const deliveryDate = dateOf(load.deliveryTime);
+  if (menards && deliveryDate) next.deliveryTime = `${deliveryDate} 0700 - 2100`;
+  return next;
+}
 
 // City names compare without spaces/punctuation, and "Mt"/"St"/"Ft" match "Mount"/"Saint"/"Fort".
 function normalizeFixedLaneCity(value) {
@@ -3564,6 +3797,27 @@ function getLandstarBrokerable(customer, ord) {
 function getLandstarCarrierAmount(customer, rate) {
   return isAmeriCustomer(customer) ? 0 : rate;
 }
+
+// What a truck gets paid on a load (Daniel, 2026-11-25): a Landstar driver (BCO) gets the full
+// posted rate; an approved carrier gets 78% to 85% of it. The posted rate is the rate the
+// Landstar export sends (the RXO ATZ DAT van discount already taken off).
+// Shown for AMERI 18347- ATZ loads only (Daniel, 2026-11-25).
+const CARRIER_PAY_LOW = 0.78;
+const CARRIER_PAY_HIGH = 0.85;
+
+function getTruckPay(customer, load) {
+  if (!isAmeriCustomer(customer)) return null;
+  const quoted = Number(String(load?.rateInput || '').replace(/[$,]/g, ''));
+  if (!(quoted > 0)) return null;
+  const posted = quoted - getRxoAtzDatVanDiscount(customer, load, quoted);
+  return {
+    posted,
+    carrierLow: Math.round(posted * CARRIER_PAY_LOW),
+    carrierHigh: Math.round(posted * CARRIER_PAY_HIGH)
+  };
+}
+
+const formatDollars = value => `$${Math.round(value).toLocaleString('en-US')}`;
 
 // ==========================================
 // DAT LOAD BOARD POSTING
@@ -7756,15 +8010,19 @@ export default function App({ sharing = null, userId = null } = {}) {
     return runImport();
   };
 
+  // ✨ Customer Screenshot takes several pictures at once (Daniel, 2026-11-25): they are read
+  // one by one and imported together as one list, so a later picture never replaces the
+  // loads read from an earlier one. Other screenshot imports take one picture.
   const handleScreenshotImport = async (event, importMode = 'ai') => {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files || []);
     event.target.value = '';
     if (isImportingScreenshot) return;
-    await importScreenshotFile(file, importMode);
+    await importScreenshotFile(importMode === 'ai' ? files : files[0], importMode);
   };
 
-  const importScreenshotFile = async (file, importMode, customerOverride = '') => {
-    if (!file) return;
+  const importScreenshotFile = async (fileInput, importMode, customerOverride = '') => {
+    const files = (Array.isArray(fileInput) ? fileInput : [fileInput]).filter(Boolean);
+    if (!files.length) return;
     const brokerName = customerOverride || selectedBroker;
     let worker;
     let imageUrl;
@@ -7773,8 +8031,8 @@ export default function App({ sharing = null, userId = null } = {}) {
     setIsImportingScreenshot(true);
     setScreenshotImportProgress(importMode === 'dat' ? 'Preparing DAT screenshot...' : importMode === 'ntg' ? 'Preparing NTG screenshot...' : importMode === 'ch' ? 'Preparing CH screenshot...' : 'Preparing customer screenshot...');
     try {
-      if (!file.type.startsWith('image/')) {
-        throw new Error('Please choose an image file.');
+      if (files.some(file => !String(file.type || '').startsWith('image/'))) {
+        throw new Error(files.length > 1 ? 'Please choose only image files.' : 'Please choose an image file.');
       }
 
       setScreenshotImportProgress('Loading OCR module...');
@@ -7783,8 +8041,11 @@ export default function App({ sharing = null, userId = null } = {}) {
       if (typeof createWorker !== 'function') {
         throw new Error('The OCR engine could not be loaded.');
       }
-      setScreenshotImportProgress('Opening screenshot...');
+      // Reads one picture into load rows; the import below runs once on all of them.
+      const readScreenshotImage = async (file, label = '') => {
+      setScreenshotImportProgress(label ? `${label}: opening...` : 'Opening screenshot...');
       const image = new Image();
+      if (imageUrl) URL.revokeObjectURL(imageUrl);
       imageUrl = URL.createObjectURL(file);
       await new Promise((resolve, reject) => {
         image.onload = resolve;
@@ -7801,7 +8062,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       if (!context) throw new Error('Could not prepare the image for text recognition.');
       context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
-      worker = await createWorker('eng', 1, {
+      if (!worker) worker = await createWorker('eng', 1, {
         logger: message => {
           if (message.status === 'recognizing text' && Number.isFinite(message.progress)) {
             setScreenshotImportProgress(`Recognizing ${Math.round(message.progress * 100)}%`);
@@ -7812,12 +8073,25 @@ export default function App({ sharing = null, userId = null } = {}) {
       });
       setScreenshotImportProgress('Recognizing text...');
       await worker.setParameters({
-        tessedit_pageseg_mode: importMode === 'dat' || importMode === 'ntg' ? '3' : '6'
+        tessedit_pageseg_mode: importMode === 'dat' || importMode === 'ntg' ? '3' : '6',
+        // An earlier picture may have left the digits-only setting on.
+        tessedit_char_whitelist: ''
       });
       const { data } = await worker.recognize(canvas, {}, { blocks: true });
       let lines = (data.blocks || []).flatMap(block =>
         block.paragraphs.flatMap(paragraph => paragraph.lines)
       );
+      // Shipper-portal lists with Origin city / state / Dest city / Dest st columns and no load
+      // numbers (AMERI 18347- ATZ) have their own reader; rows it cannot read are listed, not guessed.
+      if (importMode === 'ai' && isCityGridScreenshot(lines.map(line => line.text))) {
+        setScreenshotImportProgress('Reading cities and dates...');
+        const zipModule = await import('zipcodes');
+        const cityGrid = parseCityGridScreenshotText(lines.map(line => line.text), zipModule.default || zipModule, brokerName);
+        if (!cityGrid.loads.length) {
+          throw new Error(`No rows could be read from this list. Existing loads were not changed.${cityGrid.skippedRows.length ? `\n${cityGrid.skippedRows.slice(0, 10).join('\n')}` : ''}`);
+        }
+        return { recognizedLoads: cityGrid.loads, gridSkippedRows: cityGrid.skippedRows, chSkipNote: '', canvas };
+      }
       const tableGrid = importMode === 'ai' ? detectScreenshotGrid(canvas) : null;
       let gridSkippedRows = [];
       if (tableGrid) {
@@ -8040,6 +8314,30 @@ export default function App({ sharing = null, userId = null } = {}) {
       if (tableGrid && recognizedLoads.length !== tableGrid.rows.length - gridSkippedRows.length) {
         throw new Error(`Read ${recognizedLoads.length} of ${tableGrid.rows.length - gridSkippedRows.length} screenshot load rows. Existing loads were not deleted. Use a clearer image with every origin and destination visible.`);
       }
+      return { recognizedLoads, gridSkippedRows, chSkipNote, canvas };
+      };
+
+      let recognizedLoads = [];
+      const gridSkippedRows = [];
+      let chSkipNote = '';
+      let canvas;
+      for (const [fileIndex, file] of files.entries()) {
+        const label = files.length > 1 ? `Picture ${fileIndex + 1} of ${files.length}` : '';
+        let picture;
+        try {
+          picture = await readScreenshotImage(file, label);
+        } catch (error) {
+          if (label) error.message = `${label} (${file.name}): ${error.message} Nothing was imported.`;
+          throw error;
+        }
+        recognizedLoads.push(...picture.recognizedLoads);
+        gridSkippedRows.push(...picture.gridSkippedRows.map(row => label ? `${label}: ${row}` : row));
+        chSkipNote += picture.chSkipNote;
+        canvas = picture.canvas;
+      }
+      const isDatImport = importMode === 'dat';
+      const isNtgImport = importMode === 'ntg';
+      const isChImport = importMode === 'ch';
       
       // Run ZIP Code Auto-fill on Screenshot loads
       recognizedLoads = autoFillLoadZipCodes(recognizedLoads);
@@ -8291,6 +8589,7 @@ export default function App({ sharing = null, userId = null } = {}) {
 
       alert(
         `📸 ${isDatImport ? 'DAT' : isNtgImport ? 'NTG' : isChImport ? 'CH' : 'Customer'} Screenshot Import Complete for ${brokerName}:\n` +
+        (files.length > 1 ? `• Pictures read: ${files.length}\n` : '') +
         `• Recognized rows: ${recognizedLoads.length}\n` +
         `• New loads added: ${newLoadCount}\n` +
         `• Existing loads updated: ${updatedLoads}\n` +
@@ -9754,7 +10053,15 @@ export default function App({ sharing = null, userId = null } = {}) {
         // Brentwood's ZIPs outside NY/MD/TN/CA are filed under neighboring cities in the offline data.
         'BRENTWOOD|MO': { zip: '63144', city: 'Brentwood', state: 'MO' },
         'BRENTWOOD|PA': { zip: '15227', city: 'Brentwood', state: 'PA' },
-        'BRENTWOOD|NH': { zip: '03833', city: 'Brentwood', state: 'NH' }
+        'BRENTWOOD|NH': { zip: '03833', city: 'Brentwood', state: 'NH' },
+        // Colony, WY (AMERI's bentonite plants) has no ZIP of its own in the offline data; the
+        // plant's address is Colony, WY 82710 (filed under nearby Aladdin).
+        'COLONY|WY': { zip: '82710', city: 'Colony', state: 'WY' },
+        // More AMERI stops whose ZIPs are filed under a neighboring town in the offline data.
+        'HOLIDAY CITY|OH': { zip: '43543', city: 'Holiday City', state: 'OH' },
+        'FIFE|WA': { zip: '98424', city: 'Fife', state: 'WA' },
+        // McKenzie, ND (the town in Burleigh County) shares Sterling's ZIP.
+        'MCKENZIE|ND': { zip: '58572', city: 'McKenzie', state: 'ND' }
       };
       const extraKey = `${String(city || '').trim().toUpperCase()}|${String(state || '').trim().toUpperCase()}`;
       if (extraCities[extraKey]) return extraCities[extraKey];
@@ -10548,9 +10855,9 @@ export default function App({ sharing = null, userId = null } = {}) {
                   >
                     ＋ Add Load
                   </button>
-                  <label className={`tms-tool cursor-pointer ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} data-accent="emerald" title="AI Screenshot Import">
+                  <label className={`tms-tool cursor-pointer ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} data-accent="emerald" title="Import the customer's list from one or more screenshots. Pick several pictures at once (Ctrl+click) when the list is longer than one screen; they are imported together as one list.">
                     <span>{isImportingScreenshot && screenshotImportMode === 'ai' ? screenshotImportProgress : '✨ Customer Screenshot'}</span>
-                    <input type="file" accept="image/*" onChange={handleScreenshotImport} className="hidden" disabled={isImportingScreenshot} />
+                    <input type="file" accept="image/*" multiple onChange={handleScreenshotImport} className="hidden" disabled={isImportingScreenshot} />
                   </label>
                   <button
                     type="button"
@@ -11177,6 +11484,14 @@ export default function App({ sharing = null, userId = null } = {}) {
                   <div aria-label={`Rate for load ${ord.id}`} className="tms-card-rate mt-1 text-xs text-emerald-400 font-bold">
                     Rate: ${(Number(String(ord.rateInput || '').replace(/[$,]/g, '')) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                   </div>
+                  {(() => {
+                    const pay = getTruckPay(customer, ord);
+                    return pay && (
+                      <div aria-label={`Truck pay for load ${ord.id}`} title="Landstar driver (BCO) gets the full posted rate; an approved carrier gets 78%–85% of it" className="tms-card-pay text-[10px] text-sky-300 font-semibold">
+                        BCO {formatDollars(pay.posted)} · Carrier {formatDollars(pay.carrierLow)}–{formatDollars(pay.carrierHigh)}
+                      </div>
+                    );
+                  })()}
                   </div>
                   {ord.planningComment && <div className="tms-card-comment mt-1 text-[11px] text-amber-300 font-semibold truncate">{ord.planningComment}</div>}
                 </div>
@@ -11931,6 +12246,18 @@ export default function App({ sharing = null, userId = null } = {}) {
                         );
                       })()}
                     </div>
+                    {(() => {
+                      const pay = getTruckPay(selectedBroker, selectedOrder);
+                      if (!pay) return null;
+                      return (
+                        <div aria-label="Truck pay" className="mt-2">
+                          <div className="bg-violet-950/60 border border-violet-500/50 rounded px-2 py-1" title="Approved carriers get 78% to 85% of the posted rate">
+                            <div className="text-[10px] text-violet-300 font-bold uppercase">🤝 Approved carrier (78–85%)</div>
+                            <div className="text-sm text-white font-mono font-extrabold">{formatDollars(pay.carrierLow)} – {formatDollars(pay.carrierHigh)}</div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                     <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. After you type a rate or any other load detail, it moves to the next load about 5 seconds after you stop editing (or press Enter).</p>
                     {(() => {
                       const laneHistory = getLaneRateHistory(rateHistory, selectedBroker, selectedOrder);

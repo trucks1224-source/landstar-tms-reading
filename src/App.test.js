@@ -1436,7 +1436,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
   }
   function findExcelInput(node) {
     if (!node || typeof node !== 'object') return null;
-    if (node.type === 'input' && node.props.accept === '.xlsx, .xls, .csv') return node;
+    if (node.type === 'input' && node.props.accept === '.xlsx, .xls, .ods, .csv') return node;
     for (const child of (node.props?.children || []).flat(Infinity)) {
       const found = findExcelInput(child);
       if (found) return found;
@@ -1469,12 +1469,12 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       await this.importExcelFiles([rows]);
     },
     // Several files picked together in the file dialog (one list per file).
-    async importExcelFiles(fileRows) {
+    async importExcelFiles(fileRows, bookType = 'xlsx') {
       const files = fileRows.map((rows, index) => {
         const workbook = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), 'Loads');
-        const buffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
-        return { name: `loads-${index + 1}.xlsx`, arrayBuffer: async () => buffer };
+        const buffer = XLSX.write(workbook, { type: 'array', bookType });
+        return { name: `loads-${index + 1}.${bookType}`, arrayBuffer: async () => buffer };
       });
       const input = findExcelInput(tree);
       assert.ok(input, 'Excel import control exists');
@@ -2053,6 +2053,23 @@ test('Phalanx list (Pha 882255 - ATZ) imports equipment, times, weight and rate 
   assert.equal(second.deliveryTime, '12/01/2026 0700 - 1400');
   assert.equal(second.weight, '42000 lbs');
   assert.equal(second.rateInput, '2100');
+  assert.equal(app.errors.length, 0);
+});
+
+test('an OpenOffice .ods list imports like an Excel file', async () => {
+  const phalanx = 'Pha 882255 - ATZ';
+  const app = createAppHarness(phalanx, []);
+  await app.importExcelFiles([[
+    ['Load ID', 'Brokerage status', 'Equip type', 'Stops', 'Order type', 'Origin city', 'Origin state', 'Early P/U dt',
+      'Late P/U dt', 'Dest city', 'Dest state', 'Early del dt', 'Late del dt', 'Commodity', 'Weight', 'Distance', 'Rate'],
+    [169932, 'AVAIL', 'V', 0, 'FTL', 'BELLEVUE', 'NE', '11/30/2026 1200', '11/30/2026 1200', 'BRILLION', 'WI',
+      '12/01/2026 1000', '12/01/2026 1000', 'METAL CRATES', '40000.0 LB', 537, 1600]
+  ]], 'ods');
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[phalanx];
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].id, '169932');
+  assert.equal(saved[0].rateInput, '1600');
+  assert.equal(saved[0].pickupTime, '11/30/2026 1200');
   assert.equal(app.errors.length, 0);
 });
 

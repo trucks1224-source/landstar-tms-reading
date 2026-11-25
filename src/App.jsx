@@ -7619,7 +7619,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         if (!saved) alert('Saving failed; keep this page open and check browser storage.');
       } catch (err) {
         console.error(err);
-        alert(`Excel import failed: ${err.message || "Please make sure it's a valid .xlsx or .xls file."}`);
+        alert(`Excel import failed: ${err.message || "Please make sure it's a valid .xlsx, .xls or OpenOffice .ods file."}`);
       }
     };
     return runImport();
@@ -10335,10 +10335,10 @@ export default function App({ sharing = null, userId = null } = {}) {
                   <label
                     className="tms-tool cursor-pointer"
                     data-accent="sky"
-                    title={`Import Excel Spreadsheet. An RXO order export (orderSearch_Export) of loads other agents booked becomes 🔥 hot lanes instead${hotLanes?.lanes ? ` (now ${Object.keys(hotLanes.lanes).length} from ${hotLanes.file || 'an order export'}, ${new Date(hotLanes.importedAt).toLocaleDateString('en-US')})` : ''}.`}
+                    title={`Import an Excel or OpenOffice (.ods) spreadsheet. An RXO order export (orderSearch_Export) of loads other agents booked becomes 🔥 hot lanes instead${hotLanes?.lanes ? ` (now ${Object.keys(hotLanes.lanes).length} from ${hotLanes.file || 'an order export'}, ${new Date(hotLanes.importedAt).toLocaleDateString('en-US')})` : ''}.`}
                   >
                     <span>📂 Import Excel</span>
-                    <input type="file" accept=".xlsx, .xls, .csv" multiple onChange={handleExcelImport} className="hidden" />
+                    <input type="file" accept=".xlsx, .xls, .ods, .csv" multiple onChange={handleExcelImport} className="hidden" />
                   </label>
                   <button
                     type="button"

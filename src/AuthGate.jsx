@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import App, { BotStatusLight } from './App.jsx';
 import { supabase } from './lib/supabase.js';
+import { startTeamData } from './lib/teamData.js';
+import { isTmsOwner } from './lib/teamAdmin.js';
 import {
   addSharedMembers,
   clearLocalWorkspace,
@@ -15,6 +17,7 @@ import {
   startCloudSync,
   stopCloudSync,
   stopSharingCustomer,
+  dataChangedEvent,
   subscribeToRemoteChanges
 } from './lib/cloudSync.js';
 
@@ -213,7 +216,15 @@ export default function AuthGate() {
     startCloudSync(userId)
       .then(() => {
         if (cancelled) return;
-        unsubscribe = subscribeToRemoteChanges(userId);
+        const stopRemote = subscribeToRemoteChanges(userId);
+        // 🔥 Hot lanes and ⬆ RAISED badges are shared with the whole team (src/lib/teamData.js).
+        const team = startTeamData({
+          supabase,
+          userId,
+          isOwner: isTmsOwner(userId),
+          onChange: () => window.dispatchEvent(new Event(dataChangedEvent))
+        });
+        unsubscribe = () => { stopRemote(); team.stop(); };
         setPhase('ready');
       })
       .catch(error => {

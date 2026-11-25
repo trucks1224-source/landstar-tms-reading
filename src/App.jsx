@@ -10,6 +10,7 @@ import { createSendSpacer, withGmailQuotaRetry } from './lib/gmailRetry.js';
 import { buildHotLanes, describeHotLane, getHotLane, hotLaneRate, hotLanesKey } from './lib/hotLanes.js';
 import { applyBackgroundBrightness, readBackgroundBrightness } from './lib/backgroundBrightness.js';
 import { isUploadedLogo, nflTeams, normalizeTeamLogo, teamLogoName, teamLogoSrc } from './lib/teamLogos.js';
+import { getTeamRateRaise, newerHotLanes, teamHotLanesKey } from './lib/teamData.js';
 import {
   splitScheduleRange, rxoCustomerName, rxoPayerCustomerName, ntgCustomerName, normalizeCustomerName, formatPhone, trackingStages, parseScheduleStart, hasPickupDayStarted, getBookedLoads, formatCheckTime, paramountTrackingCustomers, PARAMOUNT_AUTO_SEND_AFTER, paramountAlwaysAskKinds, MIN_LOADING_MINUTES, getLoadedTimeWarning, NEAR_STOP_HOLD_MILES, checkInOutStops, milesBetween, getNearStopWarning, getTrackingEmailWarning, LOCATION_EMAIL_HOUR, PICKUP_ETA_EMAIL_HOUR, paramountEmailKinds, paramountSignatureName, isParamountTrackingCustomer, isTrackedBookedLoad, trackingWatchEntry, getParamountWatchList, formatParamountTime, titleCase, paramountSignature, buildParamountEmail, getDueParamountEmails, isDailyCustomerUpdateDue, markParamountEmail, applyParamountTrackingInfo, DRIVER_EMAIL_HOUR, TRACKING_WATCH_DAYS, driverEmailLabels, PAPERWORK_DUE_HOURS, PAPERWORK_REMINDER_DAYS, getDeliveredAt, getPaperworkTarget, getPaperworkSince, getTrackingWatchList, atHourOf, sameLocalDay, getDueDriverEmails, getTrackingAppName, trackingAppNotice, buildDriverEmail, buildPaperworkEmail, markDriverEmail, TRACKING_REMINDER_FIRST_MINUTES, TRACKING_REMINDER_EVERY_MINUTES, TRACKING_REMINDER_START_HOUR, TRACKING_REMINDER_END_HOUR, TRACKING_REMINDER_MAX, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getPendingDriverStatusReply, findDriverEta, buildParamountEtaEmail, rxoTrackingCustomers, RXO_ETA_BLANK, isRxoTrackingCustomer, isRxoAccount, getTrackingEmailBroker, getRxoWatchList, getEmailPostingCode, getRxoEmailPostingCodes, findRxoLoadForRequest, buildRxoUpdateEmail, getCustomerRequestOrders, greetingNameFrom,
   trackingEmailId, driverEmailId, dailyCustomerEmailId, manualUpdateKinds, buildManualUpdateEmail
@@ -6155,8 +6156,10 @@ export default function App({ sharing = null, userId = null } = {}) {
 
   const [selectedIds, setSelectedIds] = useState([]);
   // 🔥 Hot lanes: lanes other agents are booking (from an RXO order export). Synced across computers.
+  // Your own import or the team's (shared by the owner, src/lib/teamData.js), whichever is newer.
   const readHotLanes = () => {
-    try { return JSON.parse(localStorage.getItem(hotLanesKey) || 'null'); } catch { return null; }
+    const read = key => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; } };
+    return newerHotLanes(read(hotLanesKey), read(teamHotLanesKey));
   };
   const [hotLanes, setHotLanes] = useState(readHotLanes);
   const [exportErrorIds, setExportErrorIds] = useState([]);
@@ -10858,14 +10861,19 @@ export default function App({ sharing = null, userId = null } = {}) {
                           {getRemovalBadge(ord).text}
                         </span>
                       )}
-                      {ord.rateRaise && (
-                        <span
-                          title={`The bot raised this load on Landstar from ${formatRaiseMoney(ord.rateRaise.from)} to ${formatRaiseMoney(ord.rateRaise.to)}${ord.rateRaise.competitor ? ` because ${ord.rateRaise.competitor} was paying ${formatRaiseMoney(ord.rateRaise.competitorRate)}` : ''}`}
-                          className="bg-amber-400 text-black text-[9px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap"
-                        >
-                          ⬆ RAISED {formatRaiseMoney(ord.rateRaise.to)}
-                        </span>
-                      )}
+                      {(() => {
+                        // Your bot's raise, or the team's (the owner's bot raised it; src/lib/teamData.js).
+                        const raise = ord.rateRaise || getTeamRateRaise(ord.id);
+                        if (!raise) return null;
+                        return (
+                          <span
+                            title={`${ord.rateRaise ? 'The bot' : "The team's bot"} raised this load on Landstar from ${formatRaiseMoney(raise.from)} to ${formatRaiseMoney(raise.to)}${raise.competitor ? ` because ${raise.competitor} was paying ${formatRaiseMoney(raise.competitorRate)}` : ''}`}
+                            className="bg-amber-400 text-black text-[9px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap"
+                          >
+                            ⬆ RAISED {formatRaiseMoney(raise.to)}
+                          </span>
+                        );
+                      })()}
                       <span className="bg-blue-900/60 text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{getDisplayEquipmentCode(ord.eCode)}</span>
                                             {isHazmatLoad(ord) && (
                                               <span aria-label={`Hazmat load ${ord.id}`} title="Hazmat load" className="bg-orange-500 text-black text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">☢ HAZ</span>
@@ -11665,14 +11673,18 @@ export default function App({ sharing = null, userId = null } = {}) {
                         {selectedOrder.landstarError.reasons.join('; ') || 'no reason given'}. Fix the load and export it again.
                       </div>
                     )}
-                    {selectedOrder.rateRaise && (
-                      <div role="status" className="mt-2 rounded border-2 border-amber-400 bg-amber-950/60 px-3 py-2 text-xs text-amber-200">
-                        <span className="font-extrabold text-amber-300">⬆ Rate raised by the bot on Landstar: </span>
-                        {formatRaiseMoney(selectedOrder.rateRaise.from)} → <span className="font-extrabold text-white">{formatRaiseMoney(selectedOrder.rateRaise.to)}</span>
-                        {selectedOrder.rateRaise.competitor ? ` because ${selectedOrder.rateRaise.competitor} was paying ${formatRaiseMoney(selectedOrder.rateRaise.competitorRate)}` : ''}
-                        {selectedOrder.rateRaise.at ? ` · ${new Date(selectedOrder.rateRaise.at).toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}
-                      </div>
-                    )}
+                    {(() => {
+                      const raise = selectedOrder.rateRaise || getTeamRateRaise(selectedOrder.id);
+                      if (!raise) return null;
+                      return (
+                        <div role="status" className="mt-2 rounded border-2 border-amber-400 bg-amber-950/60 px-3 py-2 text-xs text-amber-200">
+                          <span className="font-extrabold text-amber-300">⬆ Rate raised by {selectedOrder.rateRaise ? 'the bot' : "the team's bot"} on Landstar: </span>
+                          {formatRaiseMoney(raise.from)} → <span className="font-extrabold text-white">{formatRaiseMoney(raise.to)}</span>
+                          {raise.competitor ? ` because ${raise.competitor} was paying ${formatRaiseMoney(raise.competitorRate)}` : ''}
+                          {raise.at ? ` · ${new Date(raise.at).toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}
+                        </div>
+                      );
+                    })()}
                     {(() => {
                       const fscRate = getFuelSurchargeRate(profile.fuelSurcharge, selectedOrder.origSt);
                       if (!fscRate) return null;

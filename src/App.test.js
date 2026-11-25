@@ -2026,6 +2026,36 @@ test('Excel import replaces spreadsheet miles with Google driving miles', async 
   assert.equal(app.errors.length, 0);
 });
 
+test('Phalanx list (Pha 882255 - ATZ) imports equipment, times, weight and rate from its own columns', async () => {
+  const phalanx = 'Pha 882255 - ATZ';
+  const app = createAppHarness(phalanx, []);
+  await app.importExcel([
+    ['Load ID', 'Brokerage status', 'Equip type', 'Stops', 'Order type', 'Origin city', 'Origin state', 'Early P/U dt',
+      'Late P/U dt', 'Dest city', 'Dest state', 'Early del dt', 'Late del dt', 'Commodity', 'Weight', 'Distance', 'Rate'],
+    [169932, 'AVAIL', 'V', 0, 'FTL', 'BELLEVUE', 'NE', '11/30/2026 1200', '11/30/2026 1200', 'BRILLION', 'WI',
+      '12/01/2026 1000', '12/01/2026 1000', 'METAL CRATES', '40000.0 LB', 537, 1600],
+    [169933, 'AVAIL', 'R', 0, 'FTL', 'OMAHA', 'NE', '11/30/2026 0800', '11/30/2026 1500', 'DENVER', 'CO',
+      '12/01/2026 0700', '12/01/2026 1400', 'FOOD', '42,000 LB', 540, '$2,100']
+  ]);
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[phalanx];
+  const first = saved.find(order => order.id === '169932');
+  assert.equal(first.eCode, 'V', 'equipment comes from "Equip type", not "Brokerage status"');
+  assert.equal(first.origCity, 'BELLEVUE');
+  assert.equal(first.destSt, 'WI');
+  assert.notEqual(first.origZip, '11/30/2026 1200', 'no ZIP column: the pickup date is not read as a ZIP');
+  assert.notEqual(first.destZip, 'METAL CRATES');
+  assert.equal(first.pickupTime, '11/30/2026 1200');
+  assert.equal(first.deliveryTime, '12/01/2026 1000');
+  assert.equal(first.weight, '40000 lbs');
+  assert.equal(first.rateInput, '1600');
+  const second = saved.find(order => order.id === '169933');
+  assert.equal(second.pickupTime, '11/30/2026 0800 - 1500', 'early and late times become one window');
+  assert.equal(second.deliveryTime, '12/01/2026 0700 - 1400');
+  assert.equal(second.weight, '42000 lbs');
+  assert.equal(second.rateInput, '2100');
+  assert.equal(app.errors.length, 0);
+});
+
 test('RXO allLoadsSearch export imports pickup and delivery times from its own columns', async () => {
   const app = createAppHarness(customers[1], []);
   await app.importExcel([

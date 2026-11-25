@@ -7365,23 +7365,34 @@ export default function App({ sharing = null, userId = null } = {}) {
               }
               return defaultIdx;
             };
-            const pickupTimeCol = findColIndex(['Pickup Date (From)', 'Pickup Time', 'PU Time'], -1);
-            const deliveryTimeCol = findColIndex(['Delivery Date (From)', 'Delivery Time', 'Del Time'], -1);
+            // "Early P/U dt" / "Late P/U dt" / "Early del dt" / "Late del dt": the Phalanx list
+            // (Pha 882255 - ATZ, Daniel 2026-11-25), dates like "11/30/2026 1200".
+            const pickupTimeCol = findColIndex(['Pickup Date (From)', 'Pickup Time', 'PU Time', 'Early P/U dt'], -1);
+            const deliveryTimeCol = findColIndex(['Delivery Date (From)', 'Delivery Time', 'Del Time', 'Early del dt'], -1);
+            const pickupLateCol = findColIndex(['Late P/U dt'], -1);
+            const deliveryLateCol = findColIndex(['Late del dt'], -1);
             const hasRxoTimeColumns = pickupTimeCol >= 0 && deliveryTimeCol >= 0;
+            // A list with named city columns but no ZIP columns has no ZIPs: don't read whatever
+            // sits in the usual ZIP position (Phalanx has pickup and commodity there).
+            const hasNamedCities = findColIndex(['Origin City', 'Orig City', 'Origin - City'], -1) >= 0;
+            const rateCol = findColIndex(['Early P/U dt'], -1) >= 0 ? findColIndex(['Rate'], -1) : -1;
             const columns = {
               colA: findColIndex(['Order #', 'Load ID', 'Order Number', 'Load Posting Code'], 0),
-              colB: findColIndex(['Equipment', 'Equipment Type', 'Equipment 1', 'Equip'], 1),
+              colB: findColIndex(['Equipment', 'Equipment Type', 'Equipment 1', 'Equip', 'Equip type'], 1),
               colG: findColIndex(['Origin City', 'Orig City', 'Origin', 'Origin - City'], 6),
               colH: findColIndex(['Origin State', 'Origin St', 'Orig State', 'Origin - State'], 7),
-              colI: findColIndex(['Origin Zipcode', 'Origin Zip', 'Orig Zip', 'Origin - Zip'], 8),
+              colI: findColIndex(['Origin Zipcode', 'Origin Zip', 'Orig Zip', 'Origin - Zip'], hasNamedCities ? -1 : 8),
               colL: findColIndex(['Destination City', 'Dest City', 'Destination', 'Destination - City'], 11),
               colM: findColIndex(['Destination State', 'Destination St', 'Dest State', 'Destination - State'], 12),
-              colN: findColIndex(['Destination Zipcode', 'Destination Zip', 'Dest Zip', 'Destination - Zip'], 13),
+              colN: findColIndex(['Destination Zipcode', 'Destination Zip', 'Dest Zip', 'Destination - Zip'], hasNamedCities ? -1 : 13),
               colO: findColIndex(['Weight', 'Wgt', 'Weight (lbs)'], 14),
               useRxoDateTimeFormat: isRxoImport || hasRxoTimeColumns,
               colQ: isRxoImport && !hasRxoTimeColumns ? 16 : pickupTimeCol >= 0 ? pickupTimeCol : 16,
               colR: isRxoImport && !hasRxoTimeColumns ? 17 : deliveryTimeCol >= 0 ? deliveryTimeCol : 17,
               colS: findColIndex(['Bill as Miles', 'Miles', 'Distance', 'Loaded Miles'], 18),
+              pickupLateCol,
+              deliveryLateCol,
+              rateCol,
               // Only real column names here (no position fallback): other files put weight or
               // dates where an RXO list has its commodity.
               commodityCols: ['Commodity', 'Commodity Description']
@@ -7412,7 +7423,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         for (let idx = 0; idx < sheetRows.length; idx++) {
           const {
             row, colA, colB, colG, colH, colI, colL, colM, colN, colO, colQ, colR, colS,
-            commodityCols, useRxoDateTimeFormat, getRxoDateTime
+            commodityCols, useRxoDateTimeFormat, getRxoDateTime, pickupLateCol = -1, deliveryLateCol = -1, rateCol = -1
           } = sheetRows[idx];
           if (!row || row.length === 0) continue;
 
@@ -7429,13 +7440,27 @@ export default function App({ sharing = null, userId = null } = {}) {
           const destC = String(row[colL] || 'UNKNOWN').toUpperCase().trim();
           const destS = String(row[colM] || '').toUpperCase().trim();
           const destZ = String(row[colN] || '00000').trim();
-          const weightVal = isRxoPayerImport ? '42000 lbs' : String(row[colO] || '40000 lbs').trim();
-          
+          // "40000.0 LB" -> "40000 lbs"
+          const rawWeight = String(row[colO] || '').trim();
+          const weightVal = isRxoPayerImport ? '42000 lbs'
+            : /^[\d,.]+\s*(?:LB|LBS)?$/i.test(rawWeight) && rawWeight
+              ? `${Math.round(Number(rawWeight.replace(/[^\d.]/g, '')))} lbs`
+              : rawWeight || '40000 lbs';
+
+          // Early and late times on the same day become one window ("11/30/2026 0800 - 1500").
+          const withLateTime = (early, lateCol) => {
+            if (lateCol < 0 || !early) return early;
+            const late = getRxoDateTime(lateCol);
+            const [earlyDate, earlyTime] = early.split(' ');
+            const [lateDate, lateTime] = String(late || '').split(' ');
+            return earlyDate === lateDate && /^\d{4}$/.test(earlyTime || '') && /^\d{4}$/.test(lateTime || '') && lateTime !== earlyTime
+              ? `${earlyDate} ${earlyTime} - ${lateTime}` : early;
+          };
           const puTimeVal = useRxoDateTimeFormat
-            ? getRxoDateTime(colQ)
+            ? withLateTime(getRxoDateTime(colQ), pickupLateCol)
             : formatExcelDateTime(row[colQ]);
           const delTimeVal = useRxoDateTimeFormat
-            ? getRxoDateTime(colR)
+            ? withLateTime(getRxoDateTime(colR), deliveryLateCol)
             : formatExcelDateTime(row[colR]);
           // Broker exports append a unit to miles, e.g. '396.3 miles'; store the number only.
           const milesVal = String(row[colS] || '500').replace(/,/g, '').match(/\d+(?:\.\d+)?/)?.[0] || '500';
@@ -7455,7 +7480,9 @@ export default function App({ sharing = null, userId = null } = {}) {
             eCode: eCodeVal
           };
 
-          const rateVal = getSavedLaneRate(laneRates, selectedBroker, tempOrder);
+          // The Phalanx list carries its own rate; a rate you saved for the lane still wins.
+          const listRate = rateCol >= 0 ? Number(String(row[rateCol] ?? '').replace(/[$,]/g, '')) : 0;
+          const rateVal = getSavedLaneRate(laneRates, selectedBroker, tempOrder) || (listRate > 0 ? String(Math.round(listRate)) : '');
           const rateSrc = rateVal ? 'user-entered' : undefined;
 
           const hazmatTanker = getImportedHazmatTanker(rawEquip, commodityCols.map(index => row[index]));

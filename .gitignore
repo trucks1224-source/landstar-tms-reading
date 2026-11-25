@@ -62,3 +62,5 @@ bot/error-drafts-seen.json
 bot/error-drafts-seen.json.*.tmp
 bot/removal-results.json
 bot/removal-results.json.*.tmp
+bot/dat-postings.json
+bot/dat-postings.json.*.tmp

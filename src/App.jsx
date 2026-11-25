@@ -3565,6 +3565,80 @@ function getLandstarCarrierAmount(customer, rate) {
   return isAmeriCustomer(customer) ? 0 : rate;
 }
 
+// ==========================================
+// DAT LOAD BOARD POSTING
+// ==========================================
+// The local TMS server posts to DAT and reposts every load every 5 minutes (new posting,
+// then the old one deleted, so its age starts over)
+// (api/_lib/datPosting.js). Pickup times on the list are the shipper's local time; the
+// state picks the time zone (most of a state's area; Eastern when not listed).
+const datStateTimezones = {
+  AL: 'America/Chicago', AR: 'America/Chicago', IA: 'America/Chicago', IL: 'America/Chicago', KS: 'America/Chicago',
+  LA: 'America/Chicago', MN: 'America/Chicago', MO: 'America/Chicago', MS: 'America/Chicago', ND: 'America/Chicago',
+  NE: 'America/Chicago', OK: 'America/Chicago', SD: 'America/Chicago', TN: 'America/Chicago', TX: 'America/Chicago',
+  WI: 'America/Chicago', MB: 'America/Winnipeg',
+  CO: 'America/Denver', MT: 'America/Denver', NM: 'America/Denver', UT: 'America/Denver', WY: 'America/Denver',
+  ID: 'America/Boise', AB: 'America/Edmonton', AZ: 'America/Phoenix',
+  CA: 'America/Los_Angeles', NV: 'America/Los_Angeles', OR: 'America/Los_Angeles', WA: 'America/Los_Angeles',
+  BC: 'America/Vancouver'
+};
+
+// Excel serial date (wall-clock time) in an IANA time zone -> ISO instant.
+function excelSerialToZonedIso(serial, timeZone) {
+  const wall = Math.round(serial * 86400000) + Date.UTC(1899, 11, 30);
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+      timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+    }).formatToParts(new Date(wall)).map(part => [part.type, part.value]));
+    const shown = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour) % 24, Number(parts.minute));
+    return new Date(wall - (shown - wall)).toISOString();
+  } catch {
+    return new Date(wall).toISOString();
+  }
+}
+
+// TMS equipment -> DAT equipment type and trailer length. Straight trucks and other
+// equipment DAT has no plain type for are not posted.
+function getDatEquipment(eCode) {
+  const raw = String(eCode || '').trim().toUpperCase().replace(/\s/g, '');
+  if (raw === 'VR' || raw === 'V,R') return { equipmentType: 'VR', lengthFeet: 53 };
+  const code = getLandstarEquipmentCode(eCode);
+  const length = Number(code.match(/^(\d{2})/)?.[1]) || 0;
+  if (['VAN', '24VN', '28VN', '48VN', '53VN'].includes(code)) return { equipmentType: 'V', lengthFeet: length || 53 };
+  if (code === 'REFR') return { equipmentType: 'R', lengthFeet: 53 };
+  if (['FLAT', '48FL', '53FL', 'FH', 'FLCS'].includes(code)) return { equipmentType: 'F', lengthFeet: length || 48 };
+  if (['STEP', '53SD', 'SD'].includes(code)) return { equipmentType: 'SD', lengthFeet: length || 48 };
+  return null;
+}
+
+// Builds what the local server sends to DAT for one load: { posting } or { error }.
+// The posted rate is the load's rate (like the Landstar Carrier Amt); AMERI 18347- ATZ
+// posts with no rate, the same as its $0 Carrier Amt.
+function buildDatPosting(customer, ord) {
+  const equipment = getDatEquipment(ord.eCode);
+  if (!equipment) return { error: `DAT posting needs van, reefer, flatbed or step deck equipment (this load is "${ord.eCode || 'blank'}")` };
+  const puParts = splitScheduleRange(ord.pickupTime);
+  const from = toExcelDateTime(puParts[0]);
+  const thru = toExcelDateTime(puParts[1] || puParts[0], puParts[0]);
+  if (from === null || thru === null) return { error: 'pickup date/time' };
+  const timeZone = datStateTimezones[String(ord.origSt || '').trim().toUpperCase()] || 'America/New_York';
+  const quotedRate = Number(String(ord.rateInput || '').replace(/[$,]/g, ''));
+  const rate = quotedRate - getRxoAtzDatVanDiscount(customer, ord, quotedRate);
+  const comments = [isHazmatLoad(ord) && 'HAZMAT', isTeamLoad(ord) && 'TEAM REQUIRED'].filter(Boolean);
+  return { posting: {
+    customer: String(customer || ''),
+    referenceId: String(ord.id || ''),
+    origin: { city: ord.origCity, state: ord.origSt, zip: ord.origZip },
+    destination: { city: ord.destCity, state: ord.destSt, zip: ord.destZip },
+    ...equipment,
+    weightPounds: parseWeightPounds(ord.weight) || 0,
+    earliestAvailabilityWhen: excelSerialToZonedIso(from, timeZone),
+    latestAvailabilityWhen: excelSerialToZonedIso(Math.max(thru, from), timeZone),
+    rateUsd: isAmeriCustomer(customer) || !(rate > 0) ? 0 : Math.round(rate),
+    comments: comments.length ? [comments.join(' - ')] : []
+  } };
+}
+
 function createLaneRateKey(customer, order) {
   const normalize = value => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
   const origin = normalize(order.origCity);
@@ -9454,6 +9528,115 @@ export default function App({ sharing = null, userId = null } = {}) {
     }
   };
 
+  // DAT load board: the local server keeps the list of live DAT postings and reposts them
+  // (api/_lib/datPosting.js). The TMS reads that list every minute and takes a posting down
+  // when its load is booked, covered (🚫) or no longer on the customer's list.
+  const [datPostings, setDatPostings] = useState([]);
+  const [datAvailable, setDatAvailable] = useState(true);
+  const [datBusy, setDatBusy] = useState(false);
+  const datPostingFor = (customer, load) => datPostings.find(posting =>
+    posting.customer === String(customer || '') && posting.referenceId === String(load?.id || ''));
+  const callDat = async body => {
+    const response = await fetch('/api/dat-post', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `DAT request failed (${response.status})`);
+    return result.results || [];
+  };
+  const loadDatPostings = async () => {
+    try {
+      const response = await fetch('/api/dat-post', { cache: 'no-store' });
+      if (!response.ok) { setDatAvailable(false); return null; }
+      const result = await response.json();
+      const postings = Array.isArray(result.postings) ? result.postings : [];
+      setDatAvailable(true);
+      setDatPostings(postings);
+      return postings;
+    } catch {
+      setDatAvailable(false);
+      return null;
+    }
+  };
+  const customerOrdersMapRef = useRef(customerOrdersMap);
+  customerOrdersMapRef.current = customerOrdersMap;
+  useEffect(() => {
+    let stopped = false;
+    const sync = async () => {
+      const postings = await loadDatPostings();
+      if (stopped || !postings?.length) return;
+      const ordersMap = customerOrdersMapRef.current || {};
+      const stale = postings.filter(posting => {
+        const list = ordersMap[posting.customer];
+        // An account that isn't loaded here is left alone.
+        if (!Array.isArray(list) || !list.length) return false;
+        const load = list.find(order => String(order.id) === posting.referenceId);
+        return !load || load.status === 'BOOKED' || Boolean(load.landstarRemoval);
+      });
+      if (!stale.length) return;
+      try {
+        await callDat({ action: 'remove', postingIds: stale.map(posting => posting.postingId) });
+      } catch (error) {
+        console.error('Could not take booked or dropped loads off DAT:', error);
+      }
+      if (!stopped) await loadDatPostings();
+    };
+    sync();
+    const timer = setInterval(sync, 60_000);
+    return () => { stopped = true; clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const postLoadsToDat = async loads => {
+    if (datBusy) return;
+    const built = loads.map(load => ({ load, ...buildDatPosting(selectedBroker, load) }));
+    const problems = built.filter(entry => entry.error).map(entry => `${entry.load.id}: ${entry.error}`);
+    const postings = built.filter(entry => entry.posting).map(entry => entry.posting);
+    if (!postings.length) {
+      alert(`Nothing was posted to DAT.\n\n${problems.slice(0, 10).join('\n')}`);
+      return;
+    }
+    setDatBusy(true);
+    try {
+      const results = await callDat({ action: 'post', postings });
+      results.filter(result => !result.ok).forEach(result => problems.push(`${result.referenceId}: ${result.error}`));
+      const posted = results.filter(result => result.ok).length;
+      alert(`📡 Posted ${posted} load${posted === 1 ? '' : 's'} to DAT. They are reposted every 5 minutes while the TMS server runs.${problems.length ? `\n\nNot posted (${problems.length}):\n${problems.slice(0, 10).join('\n')}${problems.length > 10 ? `\n…and ${problems.length - 10} more` : ''}` : ''}`);
+    } catch (error) {
+      alert(`Could not post to DAT: ${error.message}`);
+    } finally {
+      setDatBusy(false);
+      loadDatPostings();
+    }
+  };
+
+  // Same loads the Landstar export would take: selected (or shown), not booked, not covered,
+  // not Mexico, not intermodal/oversized.
+  const handlePostToDat = () => {
+    const candidates = (selectedIds.length > 0
+      ? orders.filter(o => selectedIds.includes(selectionKey(selectedBroker, o.id)))
+      : filteredOrders)
+      .filter(o => !o.landstarRemoval && o.status !== 'BOOKED' && !isMexicoLoad(o) && !isSkippableEquipment(o.eCode));
+    if (!candidates.length) { alert('No loads to post to DAT.'); return; }
+    if (!window.confirm(`Post ${candidates.length} load${candidates.length === 1 ? '' : 's'} from ${selectedBroker} to the DAT load board?`)) return;
+    postLoadsToDat(candidates);
+  };
+
+  const handleRemoveFromDat = async load => {
+    const posting = datPostingFor(selectedBroker, load);
+    if (!posting || datBusy) return;
+    setDatBusy(true);
+    try {
+      const [result] = await callDat({ action: 'remove', postingIds: [posting.postingId] });
+      if (result && !result.ok) alert(`DAT would not remove load ${load.id}: ${result.error}`);
+    } catch (error) {
+      alert(`Could not remove from DAT: ${error.message}`);
+    } finally {
+      setDatBusy(false);
+      loadDatPostings();
+    }
+  };
+
   // Export button: a second click while an export is running is ignored, and another export
   // within 15 seconds asks first (2026-11-23: a double click exported RXO ATZ V twice, 34+34 files).
   const handleExportToLandstar = async () => {
@@ -11061,6 +11244,17 @@ export default function App({ sharing = null, userId = null } = {}) {
             >
               🚀 Export to Landstar
             </button>
+            {datAvailable && (
+              <button
+                type="button"
+                onClick={handlePostToDat}
+                disabled={datBusy}
+                title="Post the selected (or shown) loads to the DAT load board. The TMS server reposts them every 5 minutes and takes them down when booked, covered or past pickup."
+                className="bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white text-xs px-2.5 py-1 rounded font-medium cursor-pointer normal-case tracking-normal"
+              >
+                📡 {datBusy ? 'Posting…' : 'Post to DAT'}{datPostings.length ? ` (${datPostings.length} live)` : ''}
+              </button>
+            )}
             {pastedImage && (
               <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 normal-case tracking-normal text-left" role="dialog" aria-label="Which list is this?">
                 <div className="bg-[#121829] border border-purple-500 rounded-lg shadow-2xl p-4 w-[24rem] max-w-full">
@@ -11505,6 +11699,31 @@ export default function App({ sharing = null, userId = null } = {}) {
                     🚫 Covered — Remove from Landstar
                   </button>
                 )}
+                {datAvailable && (() => {
+                  const datPosting = datPostingFor(selectedBroker, selectedOrder);
+                  const time = value => value ? new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+                  return datPosting ? (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveFromDat(selectedOrder)}
+                      disabled={datBusy}
+                      title={`On DAT since ${time(datPosting.firstPostedAt || datPosting.postedAt)}, last reposted ${time(datPosting.postedAt)}${datPosting.lastError ? `. Last repost failed: ${datPosting.lastError}` : ''}. Click to take it off DAT.`}
+                      className={`${datPosting.lastError ? 'bg-amber-600 hover:bg-amber-500' : 'bg-sky-700 hover:bg-sky-600'} disabled:opacity-50 text-white px-3 py-1 rounded text-xs font-semibold transition-colors cursor-pointer`}
+                    >
+                      📡 On DAT · reposted {time(datPosting.postedAt)} — Remove
+                    </button>
+                  ) : selectedOrder.status !== 'BOOKED' && (
+                    <button
+                      type="button"
+                      onClick={() => postLoadsToDat([selectedOrder])}
+                      disabled={datBusy}
+                      title="Post this load to the DAT load board; the TMS server reposts it every 5 minutes."
+                      className="bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white px-3 py-1 rounded text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      📡 Post to DAT
+                    </button>
+                  );
+                })()}
                 <button
                   type="button"
                   onClick={handleDelete}

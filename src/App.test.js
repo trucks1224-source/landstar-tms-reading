@@ -57,7 +57,7 @@ export {
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
-  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
+  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
@@ -605,6 +605,32 @@ test('AMERI 18347- ATZ: Colony and York lanes are priced, brokerable, $0 Carrier
   assert.equal(policy.getLandstarBrokerable(customers[0], { brokerable: 'false' }), 'N');
   assert.equal(policy.getLandstarBrokerable(customers[0], { brokerable: 'true' }), 'Y');
   assert.equal(policy.getLandstarCarrierAmount(customers[0], 4800), 4800);
+});
+
+test('DAT posting: shipper-local pickup time, equipment, AMERI posts with no rate', () => {
+  const ameri = 'AMERI 18347- ATZ';
+  const colony = { ...load, id: '5001', origCity: 'COLONY', origSt: 'WY', origZip: '', destCity: 'RED BLUFF', destSt: 'CA', destZip: '',
+    eCode: 'V', weight: '42000 lbs', pickupTime: '11/30/2026 0600', rateInput: '4800', rateSource: 'user-entered' };
+  const { posting, error } = policy.buildDatPosting(ameri, colony);
+  assert.equal(error, undefined);
+  assert.equal(posting.earliestAvailabilityWhen, '2026-11-30T13:00:00.000Z', '6 AM Mountain time in Wyoming');
+  assert.equal(posting.equipmentType, 'V');
+  assert.equal(posting.lengthFeet, 53);
+  assert.equal(posting.weightPounds, 42000);
+  assert.equal(posting.rateUsd, 0, 'AMERI: no rate, like its $0 Carrier Amt');
+  assert.equal(posting.referenceId, '5001');
+  assert.equal(posting.customer, ameri);
+  assert.equal(policy.buildDatPosting(customers[0], colony).posting.rateUsd, 4800);
+  const york = policy.buildDatPosting(customers[0], { ...colony, origCity: 'YORK', origSt: 'PA', pickupTime: '11/30/2026 0700 - 1500' }).posting;
+  assert.equal(york.earliestAvailabilityWhen, '2026-11-30T12:00:00.000Z', 'Eastern');
+  assert.equal(york.latestAvailabilityWhen, '2026-11-30T20:00:00.000Z');
+  assert.deepEqual({ ...policy.getDatEquipment('R') }, { equipmentType: 'R', lengthFeet: 53 });
+  assert.deepEqual({ ...policy.getDatEquipment('VR') }, { equipmentType: 'VR', lengthFeet: 53 });
+  assert.deepEqual({ ...policy.getDatEquipment('SD') }, { equipmentType: 'SD', lengthFeet: 48 });
+  assert.deepEqual({ ...policy.getDatEquipment('48VN') }, { equipmentType: 'V', lengthFeet: 48 });
+  assert.equal(policy.getDatEquipment('D-ST'), null);
+  assert.match(policy.buildDatPosting(ameri, { ...colony, eCode: 'D-ST' }).error, /equipment/);
+  assert.match(policy.buildDatPosting(ameri, { ...colony, pickupTime: '' }).error, /pickup/);
 });
 
 test('Idaho to Florida lane always pays the fixed $11,000 rate', () => {

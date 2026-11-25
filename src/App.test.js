@@ -57,7 +57,7 @@ export {
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
-  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
+  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
@@ -581,6 +581,30 @@ test('schedule picker parts round-trip pickup and delivery ranges', () => {
   const empty = policy.parseSchedulePickerParts('');
   assert.equal(empty.from, null);
   assert.equal(empty.to, null);
+});
+
+test('AMERI 18347- ATZ: Colony and York lanes are priced, brokerable, $0 Carrier Amt', () => {
+  const ameri = 'AMERI 18347- ATZ';
+  const colony = { ...load, origCity: 'COLONY', origSt: 'WY', destCity: 'RED BLUFF', destSt: 'CA' };
+  assert.equal(policy.getFixedLaneRate(ameri, colony), '4800', 'uses the higher "Got" amount');
+  assert.equal(policy.getFixedLaneRate(ameri, { ...colony, destCity: 'Mt Pleasant', destSt: 'IA' }), '2600');
+  assert.equal(policy.getFixedLaneRate(ameri, { ...colony, destCity: 'MOUNT PLEASANT', destSt: 'IA' }), '2600');
+  assert.equal(policy.getFixedLaneRate(ameri, { ...colony, destCity: 'Bentonville', destSt: 'AR' }), '3000');
+  assert.equal(policy.getFixedLaneRate(ameri, { ...colony, destCity: 'HOUSTON', destSt: 'TX' }), '', 'not on the sheet');
+  const york = { ...load, origCity: 'York', origSt: 'PA', destCity: 'Ft Pierce', destSt: 'FL' };
+  assert.equal(policy.getFixedLaneRate(ameri, york), '4100');
+  assert.equal(policy.getFixedLaneRate(ameri, { ...york, destCity: 'La Grange', destSt: 'GA' }), '2200');
+  assert.equal(policy.getFixedLaneRate('AMERI 18347- ATZ H', colony), '', 'exact account only');
+  assert.equal(policy.getFixedLaneRate(customers[0], colony), '');
+
+  assert.equal(policy.isAmeriCustomer(ameri), true);
+  assert.equal(policy.isAmeriCustomer('AMERI 18347 - ATZ'), true);
+  assert.equal(policy.isAmeriCustomer('AMERI 18347- ATZ P'), false);
+  assert.equal(policy.getLandstarBrokerable(ameri, { brokerable: 'false' }), 'Y');
+  assert.equal(policy.getLandstarCarrierAmount(ameri, 4800), 0);
+  assert.equal(policy.getLandstarBrokerable(customers[0], { brokerable: 'false' }), 'N');
+  assert.equal(policy.getLandstarBrokerable(customers[0], { brokerable: 'true' }), 'Y');
+  assert.equal(policy.getLandstarCarrierAmount(customers[0], 4800), 4800);
 });
 
 test('Idaho to Florida lane always pays the fixed $11,000 rate', () => {

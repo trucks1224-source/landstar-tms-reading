@@ -3492,20 +3492,77 @@ function assignImportedLoadIdentity(importedLoad, existingLoads, stagedLoads) {
   return { ...normalizedLoad, id: variantId };
 }
 
+// AMERI 18347- ATZ (exact account; Daniel 2026-11-25): every load ships from Colony, WY.
+// Contractor rates from "americo rates.xlsx"; where Daniel already got more on a lane
+// (the sheet's "Got $X on 11/xx" notes) that amount is used. Flatbed-only rates
+// (Tacoma $2,800, Lovell $1,400) are left out: the list doesn't say the equipment.
+const ameriCustomerKey = 'AMERI18347ATZ';
+
+function isAmeriCustomer(name) {
+  return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === ameriCustomerKey;
+}
+
+const ameriColonyRates = [
+  ['BENTONVILLE', 'AR', 3000], ['BUCKEYE', 'AZ', 4100], ['APPLE VALLEY', 'CA', 4000],
+  ['RED BLUFF', 'CA', 4800], ['PORTERVILLE', 'CA', 4000], ['LOVELAND', 'CO', 1800],
+  ['MOUNT PLEASANT', 'IA', 2600], ['SHELL ROCK', 'IA', 2000], ['PLANO', 'IL', 2200],
+  ['GRANITE CITY', 'IL', 2150], ['SPRING VALLEY', 'IL', 2800], ['TERRE HAUTE', 'IN', 2850],
+  ['SEYMOUR', 'IN', 3800], ['OTTAWA', 'KS', 2400], ['SAGINAW', 'MI', 3400],
+  ['SAINT JAMES', 'MO', 3000], ['SULLIVAN', 'MO', 2700], ['MCKENZIE', 'ND', 1000],
+  ['VALLEY', 'NE', 1600], ['WASHINGTON COURT HOUSE', 'OH', 3400], ['HOLIDAY CITY', 'OH', 3000],
+  ['HERMISTON', 'OR', 4100], ['SEALY', 'TX', 3700], ['PALESTINE', 'TX', 4300],
+  ['PLAINVIEW', 'TX', 2900], ['NEW BRAUNFELS', 'TX', 4400], ['SANGER', 'TX', 3500],
+  ['GRANTSVILLE', 'UT', 3000], ['EAU CLAIRE', 'WI', 1650], ['IRON RIDGE', 'WI', 2100],
+  ['MENOMONIE', 'WI', 1900], ['BEAVER DAM', 'WI', 2500], ['SEATTLE', 'WA', 2400],
+  ['FIFE', 'WA', 2500], ['LOVELL', 'WY', 1200]
+].map(([destCity, destSt, rate]) => ({
+  customer: 'AMERI 18347- ATZ', origCity: 'COLONY', origSt: 'WY', destCity, destSt, rate: String(rate)
+}));
+
+// AMERI 18347- ATZ loads picking up in York, PA (the sheet's "York PA" tab).
+const ameriYorkRates = [
+  ['RAYMOND', 'NH', 2200], ['SHELBY', 'NC', 1350], ['HOPE MILLS', 'NC', 1500],
+  ['FORT PIERCE', 'FL', 4100], ['ALACHUA', 'FL', 3400], ['LAGRANGE', 'GA', 2200],
+  ['DOUGLAS', 'GA', 2100], ['SUTHERLAND', 'VA', 1000], ['MIAMI', 'FL', 4100], ['SMYRNA', 'DE', 800]
+].map(([destCity, destSt, rate]) => ({
+  customer: 'AMERI 18347- ATZ', origCity: 'YORK', origSt: 'PA', destCity, destSt, rate: String(rate)
+}));
+
 // Fixed lane-rate overrides: these lanes always pay the listed amount.
 const fixedLaneRates = [
-  { origSt: 'ID', destSt: 'FL', rate: '11000' }
+  { origSt: 'ID', destSt: 'FL', rate: '11000' },
+  ...ameriColonyRates,
+  ...ameriYorkRates
 ];
+
+// City names compare without spaces/punctuation, and "Mt"/"St"/"Ft" match "Mount"/"Saint"/"Fort".
+function normalizeFixedLaneCity(value) {
+  return String(value || '').trim().toUpperCase()
+    .replace(/^MT\.?\s+/, 'MOUNT ').replace(/^ST\.?\s+/, 'SAINT ').replace(/^FT\.?\s+/, 'FORT ')
+    .replace(/[^A-Z0-9]/g, '');
+}
 
 function getFixedLaneRate(customer, order) {
   const text = value => String(value || '').trim().toUpperCase();
   const match = fixedLaneRates.find(lane =>
-    (!lane.customer || normalizeCustomerName(lane.customer) === normalizeCustomerName(customer))
+    (!lane.customer || normalizeCustomerName(lane.customer).toUpperCase().replace(/[^A-Z0-9]/g, '')
+      === normalizeCustomerName(customer).toUpperCase().replace(/[^A-Z0-9]/g, ''))
     && (!lane.origSt || text(order.origSt) === lane.origSt)
     && (!lane.destSt || text(order.destSt) === lane.destSt)
-    && (!lane.origCity || text(order.origCity) === lane.origCity)
-    && (!lane.destCity || text(order.destCity) === lane.destCity));
+    && (!lane.origCity || normalizeFixedLaneCity(order.origCity) === normalizeFixedLaneCity(lane.origCity))
+    && (!lane.destCity || normalizeFixedLaneCity(order.destCity) === normalizeFixedLaneCity(lane.destCity)));
   return match ? match.rate : '';
+}
+
+// Landstar export columns that depend on the account. AMERI 18347- ATZ loads are always
+// brokerable and go out with a $0 Carrier Amt (the Rate column keeps the rate).
+function getLandstarBrokerable(customer, ord) {
+  if (isAmeriCustomer(customer)) return 'Y';
+  return ['true', 'y'].includes(String(ord?.brokerable || '').trim().toLowerCase()) ? 'Y' : 'N';
+}
+
+function getLandstarCarrierAmount(customer, rate) {
+  return isAmeriCustomer(customer) ? 0 : rate;
 }
 
 function createLaneRateKey(customer, order) {
@@ -9647,7 +9704,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       const rate = quotedRate - getRxoAtzDatVanDiscount(selectedBroker, ord, quotedRate);
       const postingCode = String(ord.postingCode || profile.postingCode).trim().toUpperCase();
       const visibilityCode = exportVisibilityGroup;
-      const brokerable = ['true', 'y'].includes(String(ord.brokerable || '').trim().toLowerCase()) ? 'Y' : 'N';
+      const brokerable = getLandstarBrokerable(selectedBroker, ord);
       const today = new Date();
       const todaySerial = (Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - Date.UTC(1899, 11, 30)) / 86400000;
 
@@ -9717,7 +9774,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         "Rate(Required)": rate,
         "Commodity": getLandstarCommodityValue(commodity),
         "Brokerable": brokerable,
-        "Carrier Amt": rate,
+        "Carrier Amt": getLandstarCarrierAmount(selectedBroker, rate),
         "Carrier Load Alerts": "",
         // The Landstar template has no Team column; team is set through this attribute.
         "Load Attributes": [isHazmatLoad(ord) && 'Hazmat', isTeamLoad(ord) && 'Team Required'].filter(Boolean).join(', '),
@@ -11525,7 +11582,11 @@ export default function App({ sharing = null, userId = null } = {}) {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">Brokerable (true / false)</label>
-                  <input type="text" value={selectedOrder.brokerable || 'false'} onChange={(e) => handleFieldChange('brokerable', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono" placeholder="false" />
+                  {isAmeriCustomer(selectedBroker) ? (
+                    <input type="text" value="true (always for AMERI)" readOnly title="AMERI 18347- ATZ loads always export as brokerable with a $0 Carrier Amt" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-gray-400 font-mono" />
+                  ) : (
+                    <input type="text" value={selectedOrder.brokerable || 'false'} onChange={(e) => handleFieldChange('brokerable', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono" placeholder="false" />
+                  )}
                 </div>
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">POSTING CODE</label>

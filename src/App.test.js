@@ -13,6 +13,7 @@ import * as emailWorker from './lib/emailWorker.js';
 import * as gmailRetry from './lib/gmailRetry.js';
 import * as hotLanes from './lib/hotLanes.js';
 import * as backgroundBrightness from './lib/backgroundBrightness.js';
+import * as teamLogos from './lib/teamLogos.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
 
@@ -96,6 +97,7 @@ const context = {
     if (name === './lib/gmailRetry.js') return gmailRetry;
     if (name === './lib/hotLanes.js') return hotLanes;
     if (name === './lib/backgroundBrightness.js') return backgroundBrightness;
+    if (name === './lib/teamLogos.js') return teamLogos;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
     throw new Error(`Unexpected dependency: ${name}`);
@@ -1407,6 +1409,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/gmailRetry.js') return gmailRetry;
       if (name === './lib/hotLanes.js') return hotLanes;
       if (name === './lib/backgroundBrightness.js') return backgroundBrightness;
+      if (name === './lib/teamLogos.js') return teamLogos;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === 'react') return react;
@@ -1620,6 +1623,7 @@ function createSyncContext(storage) {
       if (name === './lib/gmailRetry.js') return gmailRetry;
       if (name === './lib/hotLanes.js') return hotLanes;
       if (name === './lib/backgroundBrightness.js') return backgroundBrightness;
+      if (name === './lib/teamLogos.js') return teamLogos;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
       throw new Error(`Unexpected dependency: ${name}`);

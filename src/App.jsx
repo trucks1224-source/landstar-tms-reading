@@ -9,6 +9,7 @@ import { createEmailWorker, describeEmailWorker } from './lib/emailWorker.js';
 import { createSendSpacer, withGmailQuotaRetry } from './lib/gmailRetry.js';
 import { buildHotLanes, describeHotLane, getHotLane, hotLaneRate, hotLanesKey } from './lib/hotLanes.js';
 import { applyBackgroundBrightness, readBackgroundBrightness } from './lib/backgroundBrightness.js';
+import { isUploadedLogo, nflTeams, normalizeTeamLogo, teamLogoName, teamLogoSrc } from './lib/teamLogos.js';
 import {
   splitScheduleRange, rxoCustomerName, rxoPayerCustomerName, ntgCustomerName, normalizeCustomerName, formatPhone, trackingStages, parseScheduleStart, hasPickupDayStarted, getBookedLoads, formatCheckTime, paramountTrackingCustomers, PARAMOUNT_AUTO_SEND_AFTER, paramountAlwaysAskKinds, MIN_LOADING_MINUTES, getLoadedTimeWarning, NEAR_STOP_HOLD_MILES, checkInOutStops, milesBetween, getNearStopWarning, getTrackingEmailWarning, LOCATION_EMAIL_HOUR, PICKUP_ETA_EMAIL_HOUR, paramountEmailKinds, paramountSignatureName, isParamountTrackingCustomer, isTrackedBookedLoad, trackingWatchEntry, getParamountWatchList, formatParamountTime, titleCase, paramountSignature, buildParamountEmail, getDueParamountEmails, isDailyCustomerUpdateDue, markParamountEmail, applyParamountTrackingInfo, DRIVER_EMAIL_HOUR, TRACKING_WATCH_DAYS, driverEmailLabels, PAPERWORK_DUE_HOURS, PAPERWORK_REMINDER_DAYS, getDeliveredAt, getPaperworkTarget, getPaperworkSince, getTrackingWatchList, atHourOf, sameLocalDay, getDueDriverEmails, getTrackingAppName, trackingAppNotice, buildDriverEmail, buildPaperworkEmail, markDriverEmail, TRACKING_REMINDER_FIRST_MINUTES, TRACKING_REMINDER_EVERY_MINUTES, TRACKING_REMINDER_START_HOUR, TRACKING_REMINDER_END_HOUR, TRACKING_REMINDER_MAX, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getPendingDriverStatusReply, findDriverEta, buildParamountEtaEmail, rxoTrackingCustomers, RXO_ETA_BLANK, isRxoTrackingCustomer, isRxoAccount, getTrackingEmailBroker, getRxoWatchList, getEmailPostingCode, getRxoEmailPostingCodes, findRxoLoadForRequest, buildRxoUpdateEmail, getCustomerRequestOrders, greetingNameFrom,
   trackingEmailId, driverEmailId, dailyCustomerEmailId, manualUpdateKinds, buildManualUpdateEmail
@@ -3935,7 +3936,7 @@ const isValidPostingCode = value => {
   const code = String(value || '').trim();
   return code.length > 0 && code.length <= 10;
 };
-const emptyProfile = { phone: '', postingCode: '', visibilityGroup: '', flag: 'CO', fuelSurcharge: { ...defaultFuelSurchargeRates } };
+const emptyProfile = { phone: '', postingCode: '', visibilityGroup: '', flag: 'CO', teamLogo: '', fuelSurcharge: { ...defaultFuelSurchargeRates } };
 
 function getUserProfile() {
   if (typeof localStorage === 'undefined') return { ...emptyProfile };
@@ -3947,6 +3948,7 @@ function getUserProfile() {
       postingCode: String(saved.postingCode || ''),
       visibilityGroup: String(saved.visibilityGroup || ''),
       flag: saved.flag === 'NONE' || countryFlags[saved.flag] ? saved.flag : 'CO',
+      teamLogo: normalizeTeamLogo(saved.teamLogo),
       fuelSurcharge: normalizeFuelSurchargeRates(saved.fuelSurcharge)
     };
   } catch (error) {
@@ -6947,6 +6949,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       postingCode: profileDraft.postingCode.trim().toUpperCase(),
       visibilityGroup: profileDraft.visibilityGroup.trim().toUpperCase(),
       flag: profileDraft.flag,
+      teamLogo: normalizeTeamLogo(profileDraft.teamLogo),
       fuelSurcharge: normalizeFuelSurchargeRates(profileDraft.fuelSurcharge)
     };
     const invalidFuelSurcharge = Object.entries(profileDraft.fuelSurcharge || {})
@@ -10928,7 +10931,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                   <path d="M12 1.8l3.05 6.55 7.15.86-5.27 4.93 1.38 7.1L12 17.75l-6.31 3.49 1.38-7.1L1.8 9.21l7.15-.86z" />
                 </svg>
               </div>
-              <img className="tms-eagles-logo" src="/eagles-sidebar.png" alt="Eagles artwork" width="474" height="475" />
+              <img className="tms-eagles-logo" src={teamLogoSrc(profile.teamLogo)} alt={teamLogoName(profile.teamLogo)} width="474" height="475" onError={(e) => { if (!e.currentTarget.src.endsWith('/eagles-sidebar.png')) e.currentTarget.src = '/eagles-sidebar.png'; }} />
           </div>
           <div className="tms-brand-name">
           <span className="tms-brand-title">Broski Transportation &amp; Logistics</span>
@@ -11121,6 +11124,54 @@ export default function App({ sharing = null, userId = null } = {}) {
                     Reset
                   </button>
                 </div>
+              </div>
+              {/* Top-bar team logo: Eagles artwork, any NFL team, or an uploaded picture of any team. */}
+              <div className="block text-xs text-gray-400">
+                Team logo (top bar)
+                <div className="mt-1 flex items-center gap-2">
+                  <select
+                    value={isUploadedLogo(profileDraft.teamLogo) ? 'upload' : normalizeTeamLogo(profileDraft.teamLogo)}
+                    onChange={(e) => {
+                      if (e.target.value !== 'upload') setProfileDraft(current => ({ ...current, teamLogo: e.target.value }));
+                    }}
+                    aria-label="Team logo"
+                    className="flex-1 min-w-0 bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
+                  >
+                    <option value="">Eagles artwork (original)</option>
+                    {nflTeams.map(team => <option key={team.code} value={team.code}>{team.name}</option>)}
+                    {isUploadedLogo(profileDraft.teamLogo) && <option value="upload">My uploaded logo</option>}
+                  </select>
+                  <img src={teamLogoSrc(profileDraft.teamLogo)} alt="" className="w-9 h-9 object-contain rounded" />
+                </div>
+                <label className="mt-1 inline-block cursor-pointer text-cyan-300 hover:text-cyan-200" title="Any team: college, soccer, high school. Pick a PNG or JPG picture of the logo.">
+                  ⬆ Upload another team's logo
+                  <input
+                    type="file"
+                    accept="image/png, image/jpeg, image/webp, image/gif"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = '';
+                      if (!file) return;
+                      const url = URL.createObjectURL(file);
+                      const picture = new Image();
+                      picture.onload = () => {
+                        // Shrink to 160px so the logo stays small enough to sync with My Settings.
+                        const scale = Math.min(1, 160 / Math.max(picture.width, picture.height));
+                        const canvas = document.createElement('canvas');
+                        canvas.width = Math.max(1, Math.round(picture.width * scale));
+                        canvas.height = Math.max(1, Math.round(picture.height * scale));
+                        canvas.getContext('2d').drawImage(picture, 0, 0, canvas.width, canvas.height);
+                        URL.revokeObjectURL(url);
+                        const logo = canvas.toDataURL('image/png');
+                        if (!isUploadedLogo(logo)) { alert('That picture could not be used as a logo. Try a smaller PNG or JPG.'); return; }
+                        setProfileDraft(current => ({ ...current, teamLogo: logo }));
+                      };
+                      picture.onerror = () => { URL.revokeObjectURL(url); alert('That file is not a picture the TMS can read. Try a PNG or JPG.'); };
+                      picture.src = url;
+                    }}
+                  />
+                </label>
               </div>
               <label className="block text-xs text-gray-400">
                 Flag next to your phone

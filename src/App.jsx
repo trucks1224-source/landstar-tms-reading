@@ -3926,7 +3926,9 @@ const countryFlags = {
   NG: { name: 'Nigeria', background: verticalFlag('#008751', '#fff', '#008751') },
   IT: { name: 'Italy', background: verticalFlag('#009246', '#fff', '#ce2b37') },
   FR: { name: 'France', background: verticalFlag('#0055a4', '#fff', '#ef4135') },
-  DE: { name: 'Germany', background: horizontalFlag('#000', '#dd0000', '#ffce00') }
+  DE: { name: 'Germany', background: horizontalFlag('#000', '#dd0000', '#ffce00') },
+  // Green 2/5, red 3/5, with a gold dot for the armillary sphere on the line between them.
+  PT: { name: 'Portugal', background: 'radial-gradient(circle at 40% 50%, #ffe000 0 18%, transparent 19%), linear-gradient(to right, #006600 0 40%, #ff0000 40% 100%)' }
 };
 
 const isValidPostingCode = value => {

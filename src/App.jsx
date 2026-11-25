@@ -2804,8 +2804,9 @@ function isRxoCustomer(name) {
 
 // R X O 2429200 - ATZ only (not ATZ P): van freight picking up in these states is
 // skipped on import and never exported. Reefer and other equipment, and hazmat or tanker
-// loads, are unaffected.
-const rxoSkippedVanOriginStates = new Set(['WI', 'IN', 'OH', 'MI', 'MN', 'SD', 'ND', 'UT', 'ID']);
+// loads, are unaffected. Empty since 2026-11-25 (Daniel: "Remove the skip"; it was WI, IN,
+// OH, MI, MN, SD, ND, UT and ID from 11/04), so every RXO van load imports and posts.
+const rxoSkippedVanOriginStates = new Set([]);
 const vanEquipmentCodes = new Set(['VAN', '24VN', '28VN', '48VN', '53VN']);
 
 function isRxoSkippedVanLoad(customer, load) {

@@ -3260,13 +3260,13 @@ test('posted loads missing from a list are handed to the bot once, Nolan include
   assert.equal(policy.findDroppedPostings(customers[1], [], existing).length, 0, 'an empty list never drops everything');
 });
 
-test('RXO ATZ van loads picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID are skipped; nothing else is', () => {
+test('RXO ATZ van loads picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID are no longer skipped', () => {
   const rxo = 'R X O 2429200 - ATZ';
   const van = (origSt, eCode = 'V') => ({ ...load, origSt, eCode });
   for (const state of ['WI', 'IN', 'OH', 'MI', 'MN', 'SD', 'ND', 'UT', 'ID']) {
-    assert.equal(policy.isRxoSkippedVanLoad(rxo, van(state)), true, state);
+    assert.equal(policy.isRxoSkippedVanLoad(rxo, van(state)), false, state);
   }
-  for (const eCode of ['V', 'VAN', 'VR', 'VT', '53 FT VAN']) assert.equal(policy.isRxoSkippedVanLoad(rxo, van('OH', eCode)), true, eCode);
+  for (const eCode of ['V', 'VAN', 'VR', 'VT', '53 FT VAN']) assert.equal(policy.isRxoSkippedVanLoad(rxo, van('OH', eCode)), false, eCode);
   // Hazmat and tanker freight is never skipped.
   assert.equal(policy.isRxoSkippedVanLoad(rxo, van('OH', 'VZ')), false, 'VZ is a hazmat van');
   assert.equal(policy.isRxoSkippedVanLoad(rxo, { ...van('OH', 'VAN:VAN'), hazmat: 'true' }), false, 'hazmat');
@@ -3278,7 +3278,7 @@ test('RXO ATZ van loads picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID are s
   assert.equal(policy.isRxoSkippedVanLoad(customers[0], van('OH')), false, 'other customers are not affected');
 });
 
-test('RXO ATZ imports leave out skipped-state van loads and clear older ones', () => {
+test('RXO ATZ imports keep van loads picking up in the formerly skipped states', () => {
   const rxo = 'R X O 2429200 - ATZ';
   const result = policy.replaceImportedCustomerLoads(rxo, [
     { ...load, id: '24590001', origCity: 'Columbus', origSt: 'OH', eCode: 'V' },
@@ -3290,8 +3290,9 @@ test('RXO ATZ imports leave out skipped-state van loads and clear older ones', (
     { ...load, id: '24580001', origCity: 'Detroit', origSt: 'MI', eCode: 'V', status: 'BOOKED', tag: 'BOOKED', driver: 'Alex' }
   ]);
   const ids = Array.from(result.loads, l => l.id).sort();
-  assert.deepEqual(ids, ['24580001', '24590002', '24590003', '24590004'], 'OH van skipped, OH reefer and OH hazmat van kept, old MI van cleared, booked kept');
-  assert.equal(result.skippedRxoVanCount, 1);
+  // 24590002 (OH reefer) is the same lane and pickup day as 24590001, so the same-lane rule keeps only the first.
+  assert.deepEqual(ids, ['24580001', '24590001', '24590003', '24590004'], 'OH van kept now; booked kept');
+  assert.equal(result.skippedRxoVanCount, 0);
 });
 
 test('RXO van, flatbed and reefer lists upload separately: each import replaces only its equipment', () => {
@@ -3529,7 +3530,7 @@ test('a customer rule only applies to its exact account, not one with the same n
   }
   assert.equal(policy.preservesImportedLoadStatus('Para 1522166'), false, 'not an account name');
   const vanInOhio = { origSt: 'OH', eCode: 'VAN:VAN' };
-  assert.equal(policy.isRxoSkippedVanLoad('R X O 2429200 - ATZ', vanInOhio), true);
+  assert.equal(policy.isRxoSkippedVanLoad('R X O 2429200 - ATZ', vanInOhio), false, 'no states are skipped any more');
   assert.equal(policy.isRxoSkippedVanLoad('R X O 2429200 - ATZ P', vanInOhio), false, 'the RXO van rule is ATZ only');
 });
 

@@ -189,8 +189,12 @@ function matchesTopCompetitor(fileName, load) {
   return RXO_ATZ_FILE.test(fileName) && VAN_EQUIPMENT.has(load.equipment) && !load.hazmat;
 }
 
-function isSkipAgencyPosting(board, load) {
-  return SKIP_IF_POSTED_BY.includes(String(board.Agency || '').trim().toUpperCase())
+// Never your own code: on a teammate whose posting code is ATZ (Jorge, 2026-11-25) the ATZ
+// postings on the board are his own, and re-exports replace those, so they never block a load.
+function isSkipAgencyPosting(board, load, ownCodes = OWN_POSTING_CODES) {
+  const agency = String(board.Agency || '').trim().toUpperCase();
+  if (ownCodes.includes(agency) || agency === String(load.postingCode || '').trim().toUpperCase()) return false;
+  return SKIP_IF_POSTED_BY.includes(agency)
     && boardPickupDate(board) === load.pickupDate
     && board.OriginState === load.originState && board.DestinationState === load.destState
     && (sameCity(board.OriginCity, load.originCity) || (board.OriginZipCode && board.OriginZipCode === load.originZip))

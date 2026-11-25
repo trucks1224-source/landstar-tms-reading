@@ -76,6 +76,12 @@ test('a load ATZ already posted (same day and lane) is skipped; others are not',
   assert.equal(isSkipAgencyPosting(board({ DestinationCity: 'MACON', DestinationZipCode: '31201' }), load), false, 'different lane');
 });
 
+test('an ATZ agent never skips loads because of ATZ postings: they are his own', () => {
+  assert.equal(isSkipAgencyPosting(board(), load, ['ATZ']), false, 'computer set up with posting code ATZ');
+  assert.equal(isSkipAgencyPosting(board(), { ...load, postingCode: 'ATZ' }), false, 'load exported under ATZ');
+  assert.equal(isSkipAgencyPosting(board(), load, ['ANQ']), true, 'an ANQ computer still skips ATZ postings');
+});
+
 test('removing rows deletes them and moves the rows below up', () => {
   const xml = '<worksheet><dimension ref="A1:B4"/><sheetData>'
     + '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1"><v>1</v></c></row>'

@@ -8094,7 +8094,8 @@ export default function App({ sharing = null, userId = null } = {}) {
       );
       // Shipper-portal lists with Origin city / state / Dest city / Dest st columns and no load
       // numbers (AMERI 18347- ATZ) have their own reader; rows it cannot read are listed, not guessed.
-      if (importMode === 'ai' && isCityGridScreenshot(lines.map(line => line.text))) {
+      // AMERI only: Paramount's list also has "Origin City" and "Dest" columns (2026-11-25).
+      if (importMode === 'ai' && isAmeriCustomer(brokerName) && isCityGridScreenshot(lines.map(line => line.text))) {
         setScreenshotImportProgress('Reading cities and dates...');
         const zipModule = await import('zipcodes');
         const cityGrid = parseCityGridScreenshotText(lines.map(line => line.text), zipModule.default || zipModule, brokerName);

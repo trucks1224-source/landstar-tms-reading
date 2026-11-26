@@ -4561,6 +4561,12 @@ test('truck pay (AMERI 18347- ATZ only): Landstar driver gets the full posted ra
   assert.equal(policy.getTruckPay('AMERI 18347- ATZ H', { rateInput: '4500' }), null, 'exact account only');
 });
 
+test('the AMERI city/state reader only runs for AMERI 18347- ATZ, never Paramount or others', () => {
+  // Paramount's screenshot header also has "Origin City" and "Dest" (2026-11-25 regression).
+  assert.equal(policy.isCityGridScreenshot(['Equip type Order # Early P/U Late P/U Origin City Origin State Origin Zip Dest City Dest State Dest Zip']), true);
+  assert.ok(source.includes("importMode === 'ai' && isAmeriCustomer(brokerName) && isCityGridScreenshot("), 'AMERI-only guard');
+});
+
 test('AMERI city/state grid screenshots: garbled OCR rows become real lanes with rates', () => {
   // Real OCR lines from AMERI's portal screenshots (2026-11-25).
   const lines = [

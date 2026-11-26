@@ -143,3 +143,44 @@ test('Nolan files follow their own rule: posting rate, or exactly agent RPP\'s r
   assert.equal(MATCH_AGENCY_FOR_NOLAN, 'RPP');
   assert.equal(matchesTopCompetitor('Landstar_Bulk_Nolan_965974___ATZ_H.xlsx', { equipment: 'VAN', hazmat: false }), false);
 });
+
+test('AMERI 18347- ATZ posts at its contract rate even when ATZ or AAZ has the load: no skip, no raise', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const XLSX = require('xlsx');
+  delete require.cache[require.resolve('./rate-check')];
+  const { checkFiles, isContractRateFile } = require('./rate-check');
+  for (const name of ['Landstar_Bulk_AMERI_18347__ATZ.xlsx', 'Landstar_Bulk_AMERI_18347__ATZ_2of3.xlsx',
+    'Landstar_Bulk_AMERI_18347__ATZ (1).xlsx', 'Landstar_Bulk_AMERI_18347__ATZ_1.xlsx']) {
+    assert.equal(isContractRateFile(name), true, name);
+  }
+  assert.equal(isContractRateFile('Landstar_Bulk_AMERI_18347__ATZ_H.xlsx'), false, 'exact account only');
+  assert.equal(isContractRateFile('Landstar_Bulk_Para_1522166___ATZ.xlsx'), false);
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'ameri-test-'));
+  try {
+    const now = new Date();
+    const serial = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() + 1, 8) / 86400000 + 25569;
+    const headers = ['Origin City', 'Origin Zipcode', 'Origin Country', 'Destination City', 'Destination Zipcode',
+      'Destination Country', 'Pickup Date (From)', 'Load Posting Code', 'Equipment 1', 'Rate', 'Carrier Amt'];
+    const file = path.join(folder, 'Landstar_Bulk_AMERI_18347__ATZ.xlsx');
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+      headers, ['Dayton', '45401', 'US', 'Tucker', '30084', 'US', serial, 'ANQ', 'VAN', 4500, 0]
+    ]), 'Loads');
+    XLSX.writeFile(workbook, file);
+    const page = { evaluate: async (_fn, options) => {
+      if (!options) return [{ text: 'Van', items: [{ text: 'VAN' }] }];
+      return [['ATZ', 4500], ['AAZ', 5000]].map(([Agency, TotalRevenue], index) => board({
+        Agency, TotalRevenue, TrailerTypes: ['VAN'], LoadId: index,
+        PickupFromDateForDisplay: `${options.body.PickupDate.replace(/\/\d{2}(\d{2})$/, '/$1')} 08:00`
+      }));
+    } };
+    const [result] = await checkFiles(page, [file], { apply: true, log() {} });
+    assert.deepEqual([...result.skips], [], 'not skipped for ATZ');
+    assert.deepEqual([...result.changes], [], 'not raised over ATZ or AAZ');
+    assert.equal(result.remaining, 1);
+    const rows = XLSX.utils.sheet_to_json(XLSX.readFile(file).Sheets.Loads, { header: 1 });
+    assert.deepEqual(rows[1].slice(9), [4500, 0], 'contract rate and $0 Carrier Amt unchanged');
+  } finally { fs.rmSync(folder, { recursive: true, force: true }); }
+});

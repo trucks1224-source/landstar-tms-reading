@@ -235,7 +235,7 @@ const deleteDrafts = (page, draftIds, log) => actOnDrafts(page, draftIds, 'delet
 // origin states, and ATZ's postings on each draft's lane and pickup day.
 async function boardChecks(board, stuck, log) {
   const { listPostings } = require('./dedupe');
-  const { OWN_POSTING_CODES, searchBoard, isSkipAgencyPosting } = require('./rate-check');
+  const { OWN_POSTING_CODES, searchBoard, isSkipAgencyPosting, POSTS_OVER_ATZ_CUSTOMER_NUMBERS } = require('./rate-check');
   const { findMatchingPostings } = require('./unpost');
   const states = [...new Set(stuck.map(draft => String(draft.listing?.originRegion || '').trim()).filter(Boolean))];
   const own = await listPostings(board, OWN_POSTING_CODES, log, states);
@@ -251,7 +251,8 @@ async function boardChecks(board, stuck, log) {
       originZip: d.posting.originZip, destZip: d.posting.destZip
     };
     let atz = null;
-    if (lane.originState && lane.destState && pickupDate) {
+    // AMERI 18347 posts even when ATZ has the load (see CONTRACT_RATE_FILE in rate-check.js).
+    if (lane.originState && lane.destState && pickupDate && !POSTS_OVER_ATZ_CUSTOMER_NUMBERS.includes(d.customerNumber)) {
       const key = `${lane.originState}|${lane.destState}|${pickupDate}`;
       if (!searches.has(key)) searches.set(key, await searchBoard(board, lane.originState, lane.destState, pickupDate).catch(() => []));
       atz = searches.get(key).find(b => isSkipAgencyPosting(b, lane)) || null;

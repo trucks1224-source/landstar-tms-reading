@@ -234,6 +234,86 @@ async function assignOnLandstar(context, landstarLoadId, truck, log, loadId) {
   }
 }
 
+// Approved carrier (AMERI 18347- ATZ, Daniel 2026-11-25): Capacity type Carrier, "Find a Carrier"
+// searched by the MC number. Landstar's results show the carrier's code, city and name, not the MC
+// ("CP*6022 - Toast, NC / Dude Smith Trucking LLC - Qualified"), so the bot only picks a result when
+// the search returns exactly one carrier and it is Qualified. Carrier Mode stays TL; Pay Capacity
+// (optional) is left blank.
+function pickCarrierOption(texts) {
+  const options = texts.map(clean).filter(Boolean);
+  if (options.length === 0) return { index: -1, reason: 'no carrier found' };
+  if (options.length > 1) return { index: -1, reason: `${options.length} carriers matched (${options.slice(0, 3).join(' | ')}); assign it by hand` };
+  if (!/\bqualified\b/i.test(options[0]) || /\b(not|un|dis)\s*-?qualified\b/i.test(options[0])) {
+    return { index: -1, reason: `the carrier is not Qualified on Landstar (${options[0]})` };
+  }
+  return { index: 0, reason: '' };
+}
+
+async function assignCarrierOnLandstar(context, landstarLoadId, mc, log, loadId) {
+  const page = await context.newPage();
+  const label = `carrier MC ${mc}`;
+  let clicked = false;
+  try {
+    await page.goto(ASSIGN_URL(landstarLoadId), { waitUntil: 'domcontentloaded' });
+    const radios = page.locator('input[formcontrolname="capacityType"]');
+    await radios.first().waitFor({ state: 'attached', timeout: 60000 });
+    // Carrier is the second capacity type (BCO first).
+    const carrier = radios.nth(1);
+    if (!(await carrier.isChecked().catch(() => false))) await carrier.check({ force: true });
+    const search = page.locator('input[placeholder*="Carrier Name"], input[placeholder*="Carrier Number"]').first();
+    await search.waitFor({ state: 'visible', timeout: 30000 });
+    await search.click();
+    await search.fill('');
+    await search.pressSequentially(String(mc), { delay: 80 });
+    const options = page.locator('[role="option"]');
+    await options.first().waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(1500); // let the result list settle
+    const texts = await options.allInnerTexts();
+    const pick = pickCarrierOption(texts);
+    if (pick.index < 0) return { ok: false, retry: false, message: `MC ${mc}: ${pick.reason}` };
+    const choice = clean(texts[pick.index]);
+    await options.nth(pick.index).click();
+    const assign = page.locator('button.agp-assgn-cap-assign');
+    await page.waitForFunction(() => {
+      const button = document.querySelector('button.agp-assgn-cap-assign');
+      return button && !button.disabled;
+    }, null, { timeout: 15000 });
+
+    if (!reserveAssignment(landstarLoadId, `MC ${mc}`, loadId)) {
+      return { ok: false, retry: false, unconfirmed: true, message: `An assignment was already attempted for Landstar load #${landstarLoadId}. Check its freight bill before any manual retry.` };
+    }
+    const assigned = page.waitForResponse(r => /assign-capacity(\?|$)/.test(r.url()) && r.request().method() === 'POST', { timeout: 45000 })
+      .then(r => ({ kind: 'response', status: r.status(), body: r.text().catch(() => '') }));
+    const stopped = page.locator(STOP_DIALOGS).first().waitFor({ state: 'visible', timeout: 45000 })
+      .then(() => ({ kind: 'dialog' }));
+    clicked = true;
+    await assign.click();
+    const outcome = await Promise.race([assigned, stopped]).catch(error => ({ kind: 'timeout', error }));
+    if (outcome.kind === 'dialog') {
+      const text = clean(await page.locator(STOP_DIALOGS).first().innerText().catch(() => ''));
+      return { ok: false, retry: false, message: `Landstar stopped the assignment: ${text.slice(0, 300) || 'warning dialog'}` };
+    }
+    if (outcome.kind !== 'response') {
+      return await checkUnconfirmedAssign(page, landstarLoadId, `MC ${mc}`, choice, log,
+        `Landstar did not confirm the assignment of ${label} to load #${landstarLoadId}. It may have gone through: check that load on Landstar before assigning it again`);
+    }
+    if (outcome.status >= 400) {
+      const body = clean(await outcome.body);
+      return { ok: false, retry: false, message: `Landstar refused the assignment (HTTP ${outcome.status}): ${body.slice(0, 300)}` };
+    }
+    await page.waitForTimeout(3000);
+    log(`  Assigned ${choice} (MC ${mc}) to Landstar load #${landstarLoadId}`);
+    return { ok: true, message: `Assigned ${choice} (MC ${mc}) to Landstar load #${landstarLoadId}` };
+  } catch (error) {
+    if (clicked) {
+      return { ok: false, retry: false, unconfirmed: true, message: `Something went wrong after clicking Assign for ${label} on load #${landstarLoadId} (${error.message}). Check that load on Landstar before assigning it again` };
+    }
+    return { ok: false, retry: true, message: error.message };
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 // Assigns every queued booking it can; returns how many were assigned.
 async function processAssignQueue(context, { log = console.log } = {}) {
   const release = claimAssignQueue();
@@ -267,8 +347,11 @@ async function processClaimedAssignQueue(context, { log }) {
         ? 'no matching bot-uploaded posting was verified using ZIPs, pickup/delivery times and weight'
         : 'its Landstar posting was not found on the board' };
     } else {
-      setStatus('logged-in', `Assigning truck ${item.truck} to load ${item.loadId}`);
-      result = await assignOnLandstar(context, posting.LoadId, item.truck, log, item.loadId);
+      const capacity = item.carrierMc ? `carrier MC ${item.carrierMc}` : `truck ${item.truck}`;
+      setStatus('logged-in', `Assigning ${capacity} to load ${item.loadId}`);
+      result = item.carrierMc
+        ? await assignCarrierOnLandstar(context, posting.LoadId, item.carrierMc, log, item.loadId)
+        : await assignOnLandstar(context, posting.LoadId, item.truck, log, item.loadId);
       if (result.ok) {
         assignedCount += 1;
         // Other copies of the same load would stay posted for a covered load: remove them.
@@ -279,10 +362,10 @@ async function processClaimedAssignQueue(context, { log }) {
     const attempts = (item.attempts || 0) + 1;
     const finished = result.ok || !result.retry || attempts >= MAX_ATTEMPTS;
     done.set(key, { request: JSON.stringify(item), state: finished ? 'done' : 'retry' });
-    log(`  ${item.customer} #${item.loadId} (truck ${item.truck}): ${result.ok ? 'assigned' : `NOT assigned - ${result.message}`}${!finished ? ' (will retry)' : ''}`);
+    log(`  ${item.customer} #${item.loadId} (${item.carrierMc ? `carrier MC ${item.carrierMc}` : `truck ${item.truck}`}): ${result.ok ? 'assigned' : `NOT assigned - ${result.message}`}${!finished ? ' (will retry)' : ''}`);
     if (finished) {
       reportAssignResult({
-        customer: item.customer, loadId: item.loadId, truck: item.truck, ok: result.ok,
+        customer: item.customer, loadId: item.loadId, truck: item.truck || '', ...(item.carrierMc ? { carrierMc: item.carrierMc } : {}), ok: result.ok,
         ...(result.ok ? { posting: item.posting } : {}),
         landstarLoadId: posting?.LoadId ? String(posting.LoadId) : '', message: result.message, unconfirmed: Boolean(result.unconfirmed)
       });
@@ -304,7 +387,7 @@ function reconcileAssignQueue(queue, done) {
   });
 }
 
-module.exports = { processAssignQueue, assignOnLandstar, isTractorOption, findTractorOption, pickPosting, claimAssignQueue, reserveAssignment, reconcileAssignQueue, judgeAssignCheck, checkUnconfirmedAssign };
+module.exports = { processAssignQueue, assignOnLandstar, assignCarrierOnLandstar, pickCarrierOption, isTractorOption, findTractorOption, pickPosting, claimAssignQueue, reserveAssignment, reconcileAssignQueue, judgeAssignCheck, checkUnconfirmedAssign };
 
 if (require.main === module) {
   const { chromium } = require('playwright');

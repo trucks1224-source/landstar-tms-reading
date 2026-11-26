@@ -57,7 +57,7 @@ export {
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
-  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
+  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
@@ -581,6 +581,87 @@ test('schedule picker parts round-trip pickup and delivery ranges', () => {
   const empty = policy.parseSchedulePickerParts('');
   assert.equal(empty.from, null);
   assert.equal(empty.to, null);
+});
+
+test('AMERI 18347- ATZ: Colony and York lanes are priced, brokerable, $0 Carrier Amt', () => {
+  const ameri = 'AMERI 18347- ATZ';
+  const colony = { ...load, origCity: 'COLONY', origSt: 'WY', destCity: 'RED BLUFF', destSt: 'CA' };
+  assert.equal(policy.getFixedLaneRate(ameri, colony), '4500', 'the Rate column, not the "Got $4,800" note');
+  assert.equal(policy.getFixedLaneRate(ameri, { ...colony, destCity: 'Mt Pleasant', destSt: 'IA' }), '2600');
+  assert.equal(policy.getFixedLaneRate(ameri, { ...colony, destCity: 'MOUNT PLEASANT', destSt: 'IA' }), '2600');
+  assert.equal(policy.getFixedLaneRate(ameri, { ...colony, destCity: 'Bentonville', destSt: 'AR' }), '3000');
+  assert.equal(policy.getFixedLaneRate(ameri, { ...colony, destCity: 'HOUSTON', destSt: 'TX' }), '', 'not on the sheet');
+  const york = { ...load, origCity: 'York', origSt: 'PA', destCity: 'Ft Pierce', destSt: 'FL' };
+  assert.equal(policy.getFixedLaneRate(ameri, york), '4100');
+  assert.equal(policy.getFixedLaneRate(ameri, { ...york, destCity: 'La Grange', destSt: 'GA' }), '2200');
+  assert.equal(policy.getFixedLaneRate('AMERI 18347- ATZ H', colony), '', 'exact account only');
+  assert.equal(policy.getFixedLaneRate(customers[0], colony), '');
+
+  assert.equal(policy.isAmeriCustomer(ameri), true);
+  assert.equal(policy.isAmeriCustomer('AMERI 18347 - ATZ'), true);
+  assert.equal(policy.isAmeriCustomer('AMERI 18347- ATZ P'), false);
+  assert.equal(policy.getLandstarBrokerable(ameri, { brokerable: 'false' }), 'Y', 'AMERI: always brokerable');
+  assert.equal(policy.getLandstarCarrierAmount(ameri, 4800), undefined, 'blank Carrier Amt cell (Landstar refused Y with 0)');
+  assert.equal(policy.getLandstarCarrierLoadAlerts(ameri), 'N', 'alerts off: brokerable with no Carrier Amt');
+  assert.equal(policy.getLandstarCarrierLoadAlerts(customers[0]), '', 'other customers unchanged');
+  assert.equal(policy.getLandstarBrokerable(customers[0], { brokerable: 'false' }), 'N');
+  assert.equal(policy.getLandstarBrokerable(customers[0], { brokerable: 'true' }), 'Y');
+  assert.equal(policy.getLandstarCarrierAmount(customers[0], 4800), 4800);
+});
+
+test('DAT posting: shipper-local pickup time, equipment, AMERI posts with no rate', () => {
+  const ameri = 'AMERI 18347- ATZ';
+  const colony = { ...load, id: '5001', origCity: 'COLONY', origSt: 'WY', origZip: '', destCity: 'RED BLUFF', destSt: 'CA', destZip: '',
+    eCode: 'V', weight: '42000 lbs', pickupTime: '11/30/2026 0600', rateInput: '4800', rateSource: 'user-entered' };
+  const { posting, error } = policy.buildDatPosting(ameri, colony);
+  assert.equal(error, undefined);
+  assert.equal(posting.earliestAvailabilityWhen, '2026-11-30T13:00:00.000Z', '6 AM Mountain time in Wyoming');
+  assert.equal(posting.equipmentType, 'V');
+  assert.equal(posting.lengthFeet, 53);
+  assert.equal(posting.weightPounds, 42000);
+  assert.equal(posting.rateUsd, 0, 'AMERI: no rate, like its $0 Carrier Amt');
+  assert.equal(posting.referenceId, '5001');
+  assert.equal(posting.customer, ameri);
+  assert.equal(policy.buildDatPosting(customers[0], colony).posting.rateUsd, 4800);
+  const york = policy.buildDatPosting(customers[0], { ...colony, origCity: 'YORK', origSt: 'PA', pickupTime: '11/30/2026 0700 - 1500' }).posting;
+  assert.equal(york.earliestAvailabilityWhen, '2026-11-30T12:00:00.000Z', 'Eastern');
+  assert.equal(york.latestAvailabilityWhen, '2026-11-30T20:00:00.000Z');
+  assert.deepEqual({ ...policy.getDatEquipment('R') }, { equipmentType: 'R', lengthFeet: 53 });
+  assert.deepEqual({ ...policy.getDatEquipment('VR') }, { equipmentType: 'VR', lengthFeet: 53 });
+  assert.deepEqual({ ...policy.getDatEquipment('SD') }, { equipmentType: 'SD', lengthFeet: 48 });
+  assert.deepEqual({ ...policy.getDatEquipment('48VN') }, { equipmentType: 'V', lengthFeet: 48 });
+  assert.equal(policy.getDatEquipment('D-ST'), null);
+  assert.match(policy.buildDatPosting(ameri, { ...colony, eCode: 'D-ST' }).error, /equipment/);
+  assert.match(policy.buildDatPosting(ameri, { ...colony, pickupTime: '' }).error, /pickup/);
+});
+
+test('Canadian cities cut short on a customer list still find their postal code (BURLINGT, ON)', () => {
+  assert.deepEqual({ ...policy.findCanadianPlace('BURLINGT', 'ON') }, { city: 'BURLINGTON', postal: 'L7L 0A1' });
+  assert.deepEqual({ ...policy.findCanadianPlace('Burlington', 'on') }, { city: 'BURLINGTON', postal: 'L7L 0A1' });
+  assert.deepEqual({ ...policy.findCanadianPlace('BURLINGT..', 'ON') }, { city: 'BURLINGTON', postal: 'L7L 0A1' });
+  assert.equal(policy.findCanadianPlace('BURLINGT', 'QC'), null, 'same province only');
+  assert.equal(policy.findCanadianPlace('BUR', 'ON'), null, 'too short to be sure');
+});
+
+test('AMERI approved carrier: an MC # books a carrier instead of a BCO truck', () => {
+  const ameri = 'AMERI 18347- ATZ';
+  const posting = { originZip: '82710', destZip: '52641', pickupThru: '12/04/26 23:00', deliveryThru: '12/06/26 07:00', weight: 41500 };
+  const load = { ...policy.createManualLoad('190923604'), id: '1204MOU1', landstarPosting: posting, carrierMc: 'MC-547847', truck: '' };
+  assert.equal(policy.getCarrierMc(load), '547847');
+  const { item, reason } = policy.buildAssignRequest(ameri, load);
+  assert.equal(reason, undefined);
+  assert.equal(item.carrierMc, '547847');
+  assert.equal(item.truck, '', 'a carrier is not a BCO truck');
+  // Booking needs a driver name, or an approved carrier's MC #.
+  assert.equal(policy.bookLoad(load).status, 'BOOKED');
+  assert.throws(() => policy.bookLoad({ ...load, carrierMc: '' }), error => error.message.includes('Enter the driver name (or the approved carrier MC #)'));
+  assert.equal(policy.buildAssignRequest(ameri, { ...load, carrierMc: '' }).reason, 'There is no truck number or carrier MC # on this load.');
+  // BCO trucks work as before.
+  assert.equal(policy.buildAssignRequest(ameri, { ...load, carrierMc: '', truck: '572203' }).item.truck, '572203');
+  // Results name the carrier.
+  const failed = policy.applyAssignResult({ id: '1204MOU1', notes: '' }, { ok: false, carrierMc: '547847', truck: '', message: 'MC 547847: no carrier found' });
+  assert.match(failed.notes, /carrier MC 547847 NOT assigned - MC 547847: no carrier found/);
+  assert.equal(failed.landstarAssignment.carrierMc, '547847');
 });
 
 test('Idaho to Florida lane always pays the fixed $11,000 rate', () => {
@@ -4496,4 +4577,107 @@ test('loads sent to the removal bot show the removal state, then RMOV', () => {
   assert.equal(policy.getRemovalBadge(policy.applyRemovalResult(queued, { state: 'gone', at: Date.now() })).text, 'RMOV');
   assert.equal(policy.getRemovalBadge(policy.applyRemovalResult(queued, { state: 'failed', at: Date.now() })).text, '⚠ NOT REMOVED');
   assert.equal(policy.getRemovalBadge(load), null);
+});
+
+test('truck pay (AMERI 18347- ATZ only): Landstar driver gets the full posted rate, approved carrier 78% to 85%', () => {
+  const ameri = 'AMERI 18347- ATZ';
+  assert.deepEqual({ ...policy.getTruckPay(ameri, { rateInput: '4,500' }) }, { posted: 4500, carrierLow: 3510, carrierHigh: 3825 });
+  assert.deepEqual({ ...policy.getTruckPay(ameri, { rateInput: '$1,999' }) }, { posted: 1999, carrierLow: 1559, carrierHigh: 1699 });
+  assert.equal(policy.getTruckPay(ameri, { rateInput: '' }), null);
+  assert.equal(policy.getTruckPay(ameri, { rateInput: '0' }), null);
+  assert.equal(policy.getTruckPay(customers[0], { rateInput: '4500' }), null, 'other customers show nothing');
+  assert.equal(policy.getTruckPay('R X O 2429200 - ATZ', { rateInput: '2000', rateSource: 'dat-api', eCode: 'V' }), null);
+  assert.equal(policy.getTruckPay('AMERI 18347- ATZ H', { rateInput: '4500' }), null, 'exact account only');
+});
+
+test('the AMERI city/state reader only runs for AMERI 18347- ATZ, never Paramount or others', () => {
+  // Paramount's screenshot header also has "Origin City" and "Dest" (2026-11-25 regression).
+  assert.equal(policy.isCityGridScreenshot(['Equip type Order # Early P/U Late P/U Origin City Origin State Origin Zip Dest City Dest State Dest Zip']), true);
+  assert.ok(source.includes("importMode === 'ai' && isAmeriCustomer(brokerName) && isCityGridScreenshot("), 'AMERI-only guard');
+});
+
+test('AMERI city/state grid screenshots: garbled OCR rows become real lanes with rates', () => {
+  // Real OCR lines from AMERI's portal screenshots (2026-11-25).
+  const lines = [
+    'Origin city Origin state | Dest city Dest st..| Early PJ dt Early del dt',
+    'COLONY WY SANGER [TX [11/30/2026 0600 [12/02/2026 1700 J',
+    'COLONY _ Wv  IREDBLUFF [CA [11/30/2026 0600 [12/03/2026 0530 J',
+    'COLONY ~~ WY ~~ BUCKEYE hz [12/01/2026 0600 [12/03/2026 0500 F',
+    'COLONY WY ~~ [SANTJAMES MO [12/01/2026 0600 [12/03/2026 0630 7',
+    'COLONY WY ~~ SPRINGVALLEY JL [12/01/2026 0600 [12/03/2026 0600 7',
+    'COLONY WY ~~ PLANVIEW [TX [12/02/2026 0600 [12/04/2026 0500',
+    'COLONY WY BUCKEYE _ liz [12/02/2026 0600 [12/04/2026 0500 5',
+    'COLONY WY ~~ [SANTJAMES MO [2/02/2026 0600 [12/04/2026 0630 7',
+    'COLONY WY MOUNTPLEAS. JA [12/03/2026 0600 [12/05/2026 0600 J',
+    'COLONY WY ~~ [PALESTINE [TX [12/0412026 0600 [12/06/2026 0900',
+    'COLONY WY RONRIDGE WI [12/07/2026 0600 [12/09/2026 0700',
+    'COLONY WY ~~ HOUSTON [TX [12/07/2026 0700 [12/10/2026 0700',
+    'COLONY WY PORTERVILLE [CA | 1112812026 0530 B',
+    'COLONY WY PALESTINE _ [TX [1124120260600 [11/27/2026 1600',
+    'COLONY WY INEWBRAUNFE..[TX [1112412026 0600 [11/26/2026 0500 J”',
+    'COLONY WY MOUNTPLEAS..|A [1112512026 0600 [11/27/2026 0530',
+    'COLONY WY PPLEVALLEY [CA [1130120260600 [12/02/2026 1200 J',
+    'COLONY WY SANGER [IX [1130120260600 [12/02/2026 0600',
+    'COLONY JY MENOMONIE Wi [11/30/2026 0600 [12/01/2026 0500',
+    'COLONY IENOMONIE [11/30/2026 0600 [12/01/2026 0500'
+  ];
+  const ameri = 'AMERI 18347- ATZ';
+  assert.equal(policy.isCityGridScreenshot(lines), true);
+  assert.equal(policy.isCityGridScreenshot(['Order # Origin Destination Weight']), false);
+  const { loads, skippedRows } = policy.parseCityGridScreenshotText(lines, zipcodes, ameri);
+  const lane = load => `${load.origCity}, ${load.origSt} > ${load.destCity}, ${load.destSt} | ${load.pickupTime} | ${load.deliveryTime}`;
+  assert.deepEqual(Array.from(loads, lane), [
+    'COLONY, WY > SANGER, TX | 11/30/2026 0600 - 2300 | 12/02/2026 1700',
+    'COLONY, WY > RED BLUFF, CA | 11/30/2026 0600 - 2300 | 12/03/2026 0530',
+    'COLONY, WY > BUCKEYE, AZ | 12/01/2026 0600 - 2300 | 12/03/2026 0500',
+    'COLONY, WY > SAINT JAMES, MO | 12/01/2026 0600 - 2300 | 12/03/2026 0630',
+    'COLONY, WY > SPRING VALLEY, IL | 12/01/2026 0600 - 2300 | 12/03/2026 0600',
+    'COLONY, WY > PLAINVIEW, TX | 12/02/2026 0600 - 2300 | 12/04/2026 0500',
+    'COLONY, WY > BUCKEYE, AZ | 12/02/2026 0600 - 2300 | 12/04/2026 0500',
+    'COLONY, WY > SAINT JAMES, MO | 12/02/2026 0600 - 2300 | 12/04/2026 0630',
+    'COLONY, WY > MOUNT PLEASANT, IA | 12/03/2026 0600 - 2300 | 12/05/2026 0600',
+    'COLONY, WY > PALESTINE, TX | 12/04/2026 0600 - 2300 | 12/06/2026 0900',
+    'COLONY, WY > IRON RIDGE, WI | 12/07/2026 0600 - 2300 | 12/09/2026 0700 - 2100',
+    'COLONY, WY > HOUSTON, TX | 12/07/2026 0600 - 2300 | 12/10/2026 0700',
+    'COLONY, WY > PALESTINE, TX | 11/24/2026 0600 - 2300 | 11/27/2026 1600',
+    'COLONY, WY > NEW BRAUNFELS, TX | 11/24/2026 0600 - 2300 | 11/26/2026 0500',
+    'COLONY, WY > MOUNT PLEASANT, IA | 11/25/2026 0600 - 2300 | 11/27/2026 0530',
+    'COLONY, WY > APPLE VALLEY, CA | 11/30/2026 0600 - 2300 | 12/02/2026 1200',
+    'COLONY, WY > SANGER, TX | 11/30/2026 0600 - 2300 | 12/02/2026 0600',
+    'COLONY, WY > MENOMONIE, WI | 11/30/2026 0600 - 2300 | 12/01/2026 0500',
+    'COLONY, WY > MENOMONIE, WI | 11/30/2026 0600 - 2300 | 12/01/2026 0500'
+  ]);
+  assert.equal(skippedRows.length, 1, 'the row whose red pickup cell is unreadable');
+  assert.match(skippedRows[0], /PORTERVILLE.*pickup or delivery date not readable/);
+  assert.deepEqual(Array.from(loads.slice(0, 2), load => load.id), ['1130SAN1', '1130RED1']);
+  assert.ok(loads.every(load => load.id.length <= 8), 'fits DAT reference ids');
+  assert.equal(loads[17].id, '1130MEN1');
+  assert.equal(loads[18].id, '1130MEN2', 'same lane and day numbered');
+  assert.ok(loads.every(load => load.eCode === 'VR' && !load.hazmat && load.status === 'OPEN'));
+  assert.equal(policy.getFixedLaneRate(ameri, loads[1]), '4500', 'Rate column');
+  assert.equal(loads[1].planningComment, 'Got $4,800 approved on 11/19', 'approved amount shown as a note');
+  assert.equal(loads[0].planningComment, 'Got $3,500 approved on 11/18');
+  assert.equal(loads[2].planningComment, '', 'Buckeye has no approved note');
+  assert.equal(policy.applyAmeriLoadDefaults(ameri, loads[1]).planningComment, 'Got $4,800 approved on 11/19', 'not added twice');
+  assert.equal(loads[10].weight, '43500 lbs', 'Iron Ridge is a Menards stop');
+  assert.ok(loads.filter((load, index) => index !== 10).every(load => load.weight === '41500 lbs'), 'every other AMERI load');
+  assert.equal(policy.isAmeriMenardsLoad({ destCity: 'VALLEY', destSt: 'NE' }), true);
+  assert.equal(policy.isAmeriMenardsLoad({ destCity: 'SANGER', destSt: 'TX' }), false);
+  // Other AMERI pickup locations use their own hours; unknown ones keep the list's time.
+  const york = policy.applyAmeriLoadDefaults(ameri, { origCity: 'YORK', origSt: 'PA', destCity: 'MIAMI', destSt: 'FL', pickupTime: '12/01/2026 0900', deliveryTime: '12/03/2026 0800' });
+  assert.equal(york.pickupTime, '12/01/2026 0600 - 2000');
+  assert.equal(york.deliveryTime, '12/03/2026 0800');
+  assert.equal(york.weight, '41500 lbs');
+  assert.equal(policy.applyAmeriLoadDefaults(ameri, { origCity: 'GREYBULL', origSt: 'WY', pickupTime: '12/01/2026 0900' }).pickupTime, '12/01/2026 0800 - 2100');
+  assert.equal(policy.applyAmeriLoadDefaults(ameri, { origCity: 'NOWHERE', origSt: 'WY', pickupTime: '12/01/2026 0900' }).pickupTime, '12/01/2026 0900');
+  const notAmeri = { origCity: 'COLONY', origSt: 'WY', pickupTime: '12/01/2026 0900' };
+  assert.equal(policy.applyAmeriLoadDefaults('AMERI 18347- ATZ H', notAmeri), notAmeri, 'exact account only');
+  assert.equal(policy.getFixedLaneRate(ameri, loads[8]), '2600');
+  assert.equal(policy.getFixedLaneRate(ameri, loads[11]), '', 'Houston is not on the rate sheet');
+  // Another customer: no rate-sheet places, so cities come from the ZIP data alone.
+  const other = policy.parseCityGridScreenshotText([lines[0], 'YORK PA SANGER [TX [11/30/2026 0600 [12/02/2026 1700'], zipcodes, 'Some Other Customer');
+  assert.equal(lane(other.loads[0]), 'YORK, PA > SANGER, TX | 11/30/2026 0600 | 12/02/2026 1700');
+  assert.equal(other.loads[0].eCode, 'V');
+  assert.match(policy.parseCityGridScreenshotText([lines[1]], zipcodes, 'Some Other Customer').skippedRows[0], /origin city not readable/,
+    'Colony, WY is only known from the AMERI rate sheet');
 });

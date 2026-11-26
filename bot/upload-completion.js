@@ -16,6 +16,8 @@ async function closeSuccessfulUploadConfirmation(page, { timeout = RESULT_TIMEOU
       for (const dialog of dialogs) {
         const text = dialog.innerText || '';
         if (/TMS Loads Upload Partially Complete/i.test(text)) return { state: 'partial', text };
+        // Every load rejected: nothing was posted (AMERI, 2026-11-25).
+        if (/TMS Loads Upload Unsuccessful/i.test(text)) return { state: 'unsuccessful', text: text.replace(/\s+/g, ' ').trim() };
         if (!/TMS Loads Upload Complete/i.test(text)) continue;
         const match = text.match(/(\d+)\s+of\s+(\d+)\s+Loads were successfully created/i);
         if (!match || Number(match[1]) === 0 || Number(match[1]) !== Number(match[2])) {
@@ -31,9 +33,16 @@ async function closeSuccessfulUploadConfirmation(page, { timeout = RESULT_TIMEOU
     }, null, { timeout });
   } catch (error) {
     if (!/timeout|timed out/i.test(error.message)) throw error;
-    throw new Error(`Landstar never showed the upload result (Complete / Partially Complete) within ${Math.round(timeout / 1000)} seconds; its loads may still be unposted drafts.`);
+    // Say what Landstar did show (an error window or message), so the real reason is in the
+    // log before the page is reloaded (Daniel, 2026-11-25: AMERI uploads hung with no reason).
+    const shown = await readShownMessages(page);
+    throw new Error(`Landstar never showed the upload result (Complete / Partially Complete) within ${Math.round(timeout / 1000)} seconds; its loads may still be unposted drafts.${shown ? ` Landstar showed: ${shown}` : ' No Landstar message was on screen.'}`);
   }
   const outcome = await result.jsonValue();
+  if (outcome.state === 'unsuccessful') {
+    // The window stays open (its only button opens Landstar's correction page) so it can be read.
+    throw new Error(`Landstar rejected the upload: ${outcome.text}`);
+  }
   if (outcome.state === 'incomplete') {
     throw new Error(`Landstar did not confirm every load was created: ${outcome.text}`);
   }
@@ -49,4 +58,16 @@ async function closeSuccessfulUploadConfirmation(page, { timeout = RESULT_TIMEOU
   return outcome;
 }
 
-module.exports = { closeSuccessfulUploadConfirmation, RESULT_TIMEOUT_MS };
+// Text of the windows and messages Landstar has on screen (dialogs, alerts, snack bars, form errors).
+async function readShownMessages(page) {
+  try {
+    const texts = await page.evaluate(() => Array.from(document.querySelectorAll(
+      '.cdk-overlay-pane, [role="dialog"], [role="alert"], .mat-mdc-snack-bar-container, .mat-snack-bar-container, mat-error, .mat-mdc-form-field-error, .toast, .error, .alert'
+    )).map(node => (node.innerText || '').replace(/\s+/g, ' ').trim()).filter(Boolean));
+    return [...new Set(texts)].join(' | ').slice(0, 1500);
+  } catch {
+    return '';
+  }
+}
+
+module.exports = { closeSuccessfulUploadConfirmation, readShownMessages, RESULT_TIMEOUT_MS };

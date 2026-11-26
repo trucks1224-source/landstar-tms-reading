@@ -7,6 +7,7 @@ require('./file-log')('watchdog'); // also writes this bot's output to bot/logs
 //   - the helper bot      (bot/helper-status.json, written every few seconds)
 //   - the removal bot     (bot/removal-status.json, written every few seconds)
 //   - the rate worker     (bot/rates-status.json, written every few seconds)
+//   - the refresh bot     (bot/refresh-status.json: pause/unpause AMERI and hazmat postings)
 //
 // Run it and leave it open:   node watchdog.js
 // (or double-click "Start Everything (watchdog).bat" in the project folder)
@@ -23,7 +24,7 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const BOT_DIR = __dirname;
 const HELPER_STATUS_FILE = path.join(BOT_DIR, 'helper-status.json');
-const { removalActive, readRatesStatus } = require('./status-server');
+const { removalActive, readRatesStatus, readRefreshStatus } = require('./status-server');
 const { readBotControl } = require('./local-bot-control');
 const { writeWatchdogHeartbeat, readEmailBotStatus, postingBotFromStatus } = require('./health');
 
@@ -36,8 +37,8 @@ const RESTART_AFTER_MS = 45 * 1000;
 const RELAUNCH_COOLDOWN_MS = 90 * 1000;
 const CHECK_MS = 10 * 1000;
 
-const downSince = { tms: 0, bot: 0, helper: 0, removal: 0, rates: 0, emailbot: 0 };
-const lastLaunch = { tms: 0, bot: 0, helper: 0, removal: 0, rates: 0, emailbot: 0 };
+const downSince = { tms: 0, bot: 0, helper: 0, removal: 0, rates: 0, refresh: 0, emailbot: 0 };
+const lastLaunch = { tms: 0, bot: 0, helper: 0, removal: 0, rates: 0, refresh: 0, emailbot: 0 };
 
 const log = message => console.log(`[${new Date().toLocaleTimeString()}] ${message}`);
 
@@ -123,10 +124,11 @@ async function check() {
   maybeRestart('removal', removalActive(), () => launch('Start Removal Bot.bat', 'Landstar Removal Bot'), 'The removal bot');
   const rates = readRatesStatus();
   maybeRestart('rates', rates.state !== 'off', () => launch('Start Rate Worker.bat', 'Landstar Rate Worker'), 'The rate worker');
+  maybeRestart('refresh', readRefreshStatus().state !== 'off', () => launch('Start Refresh Bot.bat', 'Landstar Refresh Bot'), 'The refresh bot');
   maybeRestart('emailbot', readEmailBotStatus().state !== 'off', () => launch('Start Email Bot.bat', 'Landstar Email Bot'), 'The email bot');
 }
 
-log('Watchdog on. Keeping the TMS, posting, helper, removal, rate workers and email bot running.');
+log('Watchdog on. Keeping the TMS, posting, helper, removal, rate, refresh workers and email bot running.');
 log('Close this window to turn the watchdog off.');
 
 // At sign-in the TMS is usually not running yet: start it right away instead of

@@ -121,3 +121,12 @@ test('only a record naming the truck turns an unconfirmed Assign into assigned',
   assert.match(unknown.message, /^fallback/);
   fs.rmSync(path.join(__dirname, 'logs', 'assign-check-190318597.json'), { force: true });
 });
+
+test('approved carrier (MC #): only one Qualified carrier in the search is ever picked', () => {
+  const { pickCarrierOption } = require('./assign');
+  assert.equal(pickCarrierOption(['CP*6022 - Toast, NC\nDude Smith Trucking LLC - Qualified']).index, 0);
+  assert.match(pickCarrierOption([]).reason, /no carrier found/);
+  assert.match(pickCarrierOption(['CP*1 - A - Qualified', 'CP*2 - B - Qualified']).reason, /2 carriers matched.*by hand/);
+  assert.match(pickCarrierOption(['CP*1 - X, NC\nY LLC - Not Qualified']).reason, /not Qualified/);
+  assert.match(pickCarrierOption(['CP*1 - X, NC\nY LLC']).reason, /not Qualified/, 'no Qualified label');
+});

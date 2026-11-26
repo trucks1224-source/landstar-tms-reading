@@ -62,3 +62,10 @@ bot/error-drafts-seen.json
 bot/error-drafts-seen.json.*.tmp
 bot/removal-results.json
 bot/removal-results.json.*.tmp
+bot/dat-postings.json
+bot/dat-postings.json.*.tmp
+bot/pause-refresh-state.json
+bot/pause-refresh-state.json.*.tmp
+bot/browser-profile-refresh/
+bot/refresh-status.json
+bot/refresh-status.json.*.tmp

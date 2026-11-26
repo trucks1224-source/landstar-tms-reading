@@ -7,6 +7,7 @@ import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { processRoadMilesRequest } from './api/road-miles.js'
 import { processDatRateRequest, getDatConfig } from './api/dat-rate.js'
+import { createDatPostingService, createDatRequest, getDatPostingConfig, DAT_REPOST_MINUTES } from './api/_lib/datPosting.js'
 import { handleParamountEmail } from './api/_lib/gmailThread.js'
 import { getServiceClient } from './api/_lib/server.js'
 import { processInviteRequest } from './api/invite-user.js'
@@ -21,7 +22,7 @@ const { readBotControl, writeBotControl } = createRequire(import.meta.url)('./bo
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  for (const key of ['GOOGLE_MAPS_API_KEY', 'DAT_USERNAME', 'DAT_PASSWORD', 'DAT_USER_USERNAME', 'DAT_AUTH_BASE', 'DAT_RATECAST_URL',
+  for (const key of ['GOOGLE_MAPS_API_KEY', 'DAT_USERNAME', 'DAT_PASSWORD', 'DAT_USER_USERNAME', 'DAT_AUTH_BASE', 'DAT_RATECAST_URL', 'DAT_FREIGHT_BASE', 'DAT_PARTNER_ID',
     'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']) {
     if (!process.env[key] && env[key]) {
       process.env[key] = env[key]
@@ -477,6 +478,72 @@ export default defineConfig(({ mode }) => {
               res.statusCode = 400
               res.setHeader('Content-Type', 'application/json')
               res.end(JSON.stringify({ error: 'The DAT rate request could not be processed.' }))
+            }
+          })
+
+          // DAT load-board posting (api/_lib/datPosting.js). Local TMS only: it posts under
+          // your DAT account. GET lists live postings; POST { action: 'post', postings } or
+          // { action: 'remove', postingIds }. While this server runs, every posting is
+          // reposted every DAT_REPOST_MINUTES and taken down when its pickup has passed.
+          const datConfig = getDatPostingConfig()
+          const datPostings = createDatPostingService({
+            request: createDatRequest(datConfig),
+            storePath: path.resolve(process.cwd(), 'bot', 'dat-postings.json')
+          })
+          const datConfigured = Boolean(datConfig.username && datConfig.password && datConfig.userUsername)
+          if (globalThis.__datRefreshTimer) clearInterval(globalThis.__datRefreshTimer)
+          if (datConfigured) {
+            let reposting = false
+            globalThis.__datRefreshTimer = setInterval(async () => {
+              if (reposting) return
+              reposting = true
+              try {
+                const summary = await datPostings.repostDue()
+                if (summary.reposted || summary.removed || summary.failed.length) {
+                  console.log(`DAT postings: ${summary.reposted} reposted, ${summary.removed} taken down${summary.failed.length ? `; failed: ${summary.failed.join('; ')}` : ''}`)
+                }
+              } catch (error) {
+                console.error('DAT repost pass failed:', error.message)
+              } finally {
+                reposting = false
+              }
+            }, 30_000)
+          }
+          server.middlewares.use('/api/dat-post', async (req, res) => {
+            res.setHeader('Content-Type', 'application/json')
+            res.setHeader('Cache-Control', 'no-store')
+            const send = (status, body) => { res.statusCode = status; res.end(JSON.stringify(body)) }
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              return send(403, { error: 'Only the local TMS can post to DAT.' })
+            }
+            if (!datConfigured) {
+              return send(503, { error: 'DAT is not configured. Add DAT_USERNAME, DAT_PASSWORD and DAT_USER_USERNAME to .env.' })
+            }
+            if (req.method === 'GET') return send(200, { postings: datPostings.list(), repostMinutes: DAT_REPOST_MINUTES })
+            if (req.method !== 'POST') return send(405, { error: 'Use GET or POST.' })
+            let raw = ''
+            for await (const chunk of req) {
+              raw += chunk
+              if (raw.length > 512_000) return send(413, { error: 'Too many loads in one DAT request.' })
+            }
+            let body
+            try { body = JSON.parse(raw || '{}') } catch { return send(400, { error: 'The DAT request must be JSON.' }) }
+            try {
+              if (body.action === 'post' && Array.isArray(body.postings)) {
+                const results = []
+                for (const posting of body.postings.slice(0, 200)) results.push(await datPostings.post(posting))
+                return send(200, { results })
+              }
+              if (body.action === 'remove' && Array.isArray(body.postingIds)) {
+                const results = []
+                for (const postingId of body.postingIds.slice(0, 200)) results.push(await datPostings.remove(postingId))
+                return send(200, { results })
+              }
+              return send(400, { error: 'Unknown DAT action.' })
+            } catch (error) {
+              console.error('DAT posting request failed:', error)
+              return send(502, { error: error.message || 'Could not reach DAT.' })
             }
           })
         }

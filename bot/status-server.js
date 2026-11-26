@@ -72,7 +72,20 @@ const HELPER_STATUS_FILE = process.env.HELPER_STATUS_FILE || path.join(__dirname
 const IS_HELPER = process.env.BOT_ROLE === 'helper';
 const IS_REMOVAL = process.env.BOT_ROLE === 'removal';
 const IS_RATES = process.env.BOT_ROLE === 'rates';
+const IS_REFRESH = process.env.BOT_ROLE === 'refresh';
 const REMOVAL_STATUS_FILE = process.env.REMOVAL_STATUS_FILE || path.join(__dirname, 'removal-status.json');
+// Refresh bot (refresh-bot.js): pauses and unpauses AMERI and hazmat postings.
+const REFRESH_STATUS_FILE = process.env.REFRESH_STATUS_FILE || path.join(__dirname, 'refresh-status.json');
+
+function readRefreshStatus() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(REFRESH_STATUS_FILE, 'utf8'));
+    return Date.now() - Number(parsed.at) < 90000 ? parsed : { state: 'off', message: 'Refresh bot is not running' };
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Could not read refresh bot status:', error.message);
+    return { state: 'off', message: 'Refresh bot is not running' };
+  }
+}
 const RATES_STATUS_FILE = process.env.RATES_STATUS_FILE || path.join(__dirname, 'rates-status.json');
 
 function readRatesStatus() {
@@ -171,10 +184,13 @@ function enqueueAssign(bookings) {
   bookings.forEach(item => {
     const posting = item && item.posting;
     const truck = String(item?.truck || '').trim();
-    if (!truck || !posting || !posting.originZip || !posting.destZip || !posting.pickupThru) return;
+    // An approved carrier is booked by MC number instead of a BCO truck (AMERI 18347- ATZ).
+    const carrierMc = String(item?.carrierMc || '').replace(/\D/g, '');
+    if ((!truck && !carrierMc) || !posting || !posting.originZip || !posting.destZip || !posting.pickupThru) return;
     const key = `${item.customer}|${item.loadId}`;
     const entry = {
-      customer: String(item.customer || ''), loadId: String(item.loadId || ''), truck,
+      customer: String(item.customer || ''), loadId: String(item.loadId || ''), truck: carrierMc ? '' : truck,
+      ...(carrierMc ? { carrierMc } : {}),
       driver: String(item.driver || ''), attempts: 0, recoverPosting: item.recoverPosting === true,
       posting: {
         originZip: String(posting.originZip), destZip: String(posting.destZip),
@@ -543,6 +559,14 @@ function setStatus(state, message = '') {
     fs.writeFileSync(REMOVAL_STATUS_FILE, JSON.stringify({ state, message, at: Date.now(), pid: process.pid }));
     return;
   }
+  if (IS_REFRESH) {
+    try {
+      saveJsonFile(REFRESH_STATUS_FILE, { state, message, at: Date.now(), pid: process.pid });
+    } catch (error) {
+      console.error('Could not save the refresh bot status (it is tried again shortly):', error.message);
+    }
+    return;
+  }
   if (IS_HELPER) {
     // openBoard() etc. report "signing-in"/"logged-in": that is the helper's own light.
     try { fs.writeFileSync(HELPER_STATUS_FILE, JSON.stringify({
@@ -564,6 +588,7 @@ module.exports = {
   servingStatus: () => Boolean(server),
   readRatesStatus, RATES_STATUS_FILE,
   readRemovalStatus, removalActive, REMOVAL_STATUS_FILE,
+  readRefreshStatus, REFRESH_STATUS_FILE,
   readHelperStatus, helperActive, HELPER_STATUS_FILE, readResults,
   setStatus, setProgress, PORT, readQueue, writeQueue, enqueue, QUEUE_FILE,
   readAssignQueue, writeAssignQueue, enqueueAssign, reportAssignResult, ASSIGN_QUEUE_FILE,

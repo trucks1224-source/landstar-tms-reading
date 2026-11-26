@@ -15,6 +15,11 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sourceFolder = process.argv.slice(2).find(arg => !arg.startsWith('--')) || path.join(os.homedir(), 'Downloads');
 const hazmatEnabled = !process.argv.includes('--no-hazmat-watch');
 const HAZMAT_INTERVAL_MS = 15 * 60 * 1000; // PARA/RXO board-rate sweep every 15 minutes (Daniel, 2026-11-20)
+// Pause/unpause refresh (pause-refresh.js) runs in its own refresh bot (refresh-bot.js) so the
+// rate worker stays free; --pause-refresh runs it here instead (once a minute, between exports).
+const { runPauseRefresh } = require('./pause-refresh');
+const pauseRefreshEnabled = process.argv.includes('--pause-refresh');
+const PAUSE_REFRESH_CHECK_MS = 60 * 1000;
 
 async function main() {
   // The profile is an exclusive browser lock as well as a separate sign-in.
@@ -38,6 +43,8 @@ async function main() {
     let hazmatDueAt = Date.now() + 2 * 60 * 1000;
     let lastActivity = Date.now();
     let hazmatError = '';
+    let pauseRefreshDueAt = Date.now() + 60 * 1000;
+    let pauseRefreshError = '';
     const report = (state, message) => setStatus(hazmatError && state === 'logged-in' ? 'blocked' : state,
       hazmatError ? `${message}. Hazmat check needs attention: ${hazmatError}` : message);
     while (!closed) {
@@ -90,6 +97,21 @@ async function main() {
           });
           report('logged-in', result.state === 'busy'
             ? 'Waiting for export ownership' : `${result.state === 'skipped' ? 'Skipped empty' : 'Prepared'} export; ${files.length - 1} remaining`);
+          lastActivity = Date.now();
+        } else if (pauseRefreshEnabled && Date.now() >= pauseRefreshDueAt) {
+          // AMERI every 5 min, hazmat every 10 min: pause + unpause so they show fresh on DAT.
+          pauseRefreshDueAt = Date.now() + PAUSE_REFRESH_CHECK_MS;
+          setStatus('working', 'Refreshing AMERI and hazmat postings (pause/unpause)');
+          try {
+            const result = await runPauseRefresh(context, { shouldYield: () => pendingRateFiles(sourceFolder).length > 0 });
+            pauseRefreshError = result.problems.join(' ');
+            if (result.problems.length) console.error(`Pause refresh needs attention: ${pauseRefreshError}`);
+          } catch (error) {
+            if (closed) break;
+            pauseRefreshError = error.message;
+            console.error('Pause refresh failed; export preparation will continue:', error.message);
+          }
+          report('logged-in', pauseRefreshError ? `Pause refresh needs attention: ${pauseRefreshError}` : 'Waiting for exports to rate-check');
           lastActivity = Date.now();
         } else {
           if (Date.now() - lastActivity >= 15 * 60 * 1000) {

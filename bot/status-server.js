@@ -184,10 +184,13 @@ function enqueueAssign(bookings) {
   bookings.forEach(item => {
     const posting = item && item.posting;
     const truck = String(item?.truck || '').trim();
-    if (!truck || !posting || !posting.originZip || !posting.destZip || !posting.pickupThru) return;
+    // An approved carrier is booked by MC number instead of a BCO truck (AMERI 18347- ATZ).
+    const carrierMc = String(item?.carrierMc || '').replace(/\D/g, '');
+    if ((!truck && !carrierMc) || !posting || !posting.originZip || !posting.destZip || !posting.pickupThru) return;
     const key = `${item.customer}|${item.loadId}`;
     const entry = {
-      customer: String(item.customer || ''), loadId: String(item.loadId || ''), truck,
+      customer: String(item.customer || ''), loadId: String(item.loadId || ''), truck: carrierMc ? '' : truck,
+      ...(carrierMc ? { carrierMc } : {}),
       driver: String(item.driver || ''), attempts: 0, recoverPosting: item.recoverPosting === true,
       posting: {
         originZip: String(posting.originZip), destZip: String(posting.destZip),

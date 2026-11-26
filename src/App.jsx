@@ -127,9 +127,27 @@ const canadianPostalDatabase = {
   "IQALUIT, NU": "X0A 0H0"
 };
 
+// A Canadian city and its postal code. Customer lists cut long names short ("BURLINGT, ON" in
+// Paramount's list, 2026-11-25), so with no exact match a unique city in that province that
+// starts with the given letters counts (5+ letters). Returns { city, postal } or null.
+function findCanadianPlace(city, province) {
+  const name = String(city || '').trim().toUpperCase().replace(/\.+$/, '').trim();
+  const region = String(province || '').trim().toUpperCase();
+  if (!name || !region) return null;
+  const exact = canadianPostalDatabase[`${name}, ${region}`];
+  if (exact) return { city: name, postal: exact };
+  const letters = value => value.replace(/[^A-Z]/g, '');
+  if (letters(name).length < 5) return null;
+  const matches = Object.keys(canadianPostalDatabase).filter(key => {
+    const [keyCity, keyRegion] = key.split(', ');
+    return keyRegion === region && letters(keyCity).startsWith(letters(name));
+  });
+  if (matches.length !== 1) return null;
+  return { city: matches[0].split(', ')[0], postal: canadianPostalDatabase[matches[0]] };
+}
+
 function lookupCanadianPostalCode(city, province) {
-  const key = `${String(city || '').trim().toUpperCase()}, ${String(province || '').trim().toUpperCase()}`;
-  return canadianPostalDatabase[key] || '';
+  return findCanadianPlace(city, province)?.postal || '';
 }
 
 function autoFillLoadZipCodes(loads) {
@@ -281,8 +299,9 @@ function moveToOfferWithDriverPhone(load) {
 
 // Booking a load needs a driver; the load moves to the Booked Loads folder.
 function bookLoad(load, bookedAt = new Date().toISOString()) {
-  if (!String(load?.driver || '').trim()) {
-    throw new Error('Enter the driver name before booking this load.');
+  // An approved carrier (MC #) can be booked before its driver is known.
+  if (!String(load?.driver || '').trim() && !String(load?.carrierMc || '').replace(/\D/g, '')) {
+    throw new Error('Enter the driver name (or the approved carrier MC #) before booking this load.');
   }
   // Booking covers the capacity need, so the ⭐ flag clears itself.
   const { needsCapacity, ...rest } = load;
@@ -5422,7 +5441,9 @@ function getRemovalBadge(load) {
 // What the bot needs to assign a booked load on Landstar, or why it can't.
 function buildAssignRequest(customer, load) {
   const truck = String(load?.truck || '').trim();
-  if (!truck) return { reason: 'There is no truck number on this load.' };
+  // An approved carrier's MC number (AMERI 18347- ATZ) books a carrier instead of a BCO truck.
+  const carrierMc = getCarrierMc(load);
+  if (!truck && !carrierMc) return { reason: 'There is no truck number or carrier MC # on this load.' };
   let posting = load?.landstarPosting;
   const recoverPosting = !posting?.originZip;
   if (recoverPosting) {
@@ -5445,10 +5466,16 @@ function buildAssignRequest(customer, load) {
   }
   return {
     item: {
-      customer, loadId: String(load.id), truck,
+      customer, loadId: String(load.id), truck: carrierMc ? '' : truck,
+      ...(carrierMc ? { carrierMc } : {}),
       driver: String(load.driver || '').trim(), posting, recoverPosting
     }
   };
+}
+
+// The approved carrier's MC number typed on the load (digits only; "MC-547847" -> "547847").
+function getCarrierMc(load) {
+  return String(load?.carrierMc || '').replace(/\D/g, '');
 }
 function readAssignQueue() {
   try {
@@ -5504,15 +5531,16 @@ function takeNewAssignResults(results) {
 }
 // The load's note after the bot's assignment: "Landstar: Assigned 420371 - LDWY ..." or why not.
 function applyAssignResult(load, result) {
+  const capacity = result.carrierMc ? `carrier MC ${result.carrierMc}` : `truck ${result.truck}`;
   const line = result.ok
     ? `Landstar: ${result.message}`
     : result.unconfirmed
-      ? `Landstar: truck ${result.truck} NOT CONFIRMED - check Landstar before assigning again. ${result.message}`
-      : `Landstar: truck ${result.truck} NOT assigned - ${result.message}. Assign it by hand.`;
+      ? `Landstar: ${capacity} NOT CONFIRMED - check Landstar before assigning again. ${result.message}`
+      : `Landstar: ${capacity} NOT assigned - ${result.message}. Assign it by hand.`;
   return {
     ...load,
     ...(result.ok && result.posting ? { landstarPosting: result.posting } : {}),
-    landstarAssignment: { ok: Boolean(result.ok), truck: result.truck, landstarLoadId: result.landstarLoadId || '', message: result.message, at: result.at },
+    landstarAssignment: { ok: Boolean(result.ok), truck: result.truck, ...(result.carrierMc ? { carrierMc: result.carrierMc } : {}), landstarLoadId: result.landstarLoadId || '', message: result.message, at: result.at },
     notes: load.notes ? `${load.notes}\n${line}` : line
   };
 }
@@ -8741,16 +8769,17 @@ export default function App({ sharing = null, userId = null } = {}) {
       });
       setSelectedOrder(current => (current && String(current.id) === String(result.loadId)
         ? applyAssignResult(current, result) : current));
+      const capacity = result.carrierMc ? `carrier MC ${result.carrierMc}` : `truck ${result.truck}`;
       if (!result.ok && result.unconfirmed) {
-        pushNotice(`Landstar Assign Capacity: load #${result.loadId} (truck ${result.truck}) - Landstar did not confirm. ${result.message} It may already be assigned: check the load on Landstar before assigning it again.`);
+        pushNotice(`Landstar Assign Capacity: load #${result.loadId} (${capacity}) - Landstar did not confirm. ${result.message} It may already be assigned: check the load on Landstar before assigning it again.`);
       } else if (!result.ok) {
-        pushNotice(`Landstar Assign Capacity: load #${result.loadId} (truck ${result.truck}) was NOT assigned. ${result.message} Assign it by hand on Landstar.`);
+        pushNotice(`Landstar Assign Capacity: load #${result.loadId} (${capacity}) was NOT assigned. ${result.message} Assign it by hand on Landstar.`);
       }
       if (!result.ok) {
         alertDriverReply(`Capacity assignment needs attention - load #${result.loadId}`,
-          `Truck ${result.truck}: ${result.message}. ${result.unconfirmed
+          `${result.carrierMc ? `Carrier MC ${result.carrierMc}` : `Truck ${result.truck}`}: ${result.message}. ${result.unconfirmed
             ? 'Check Landstar before retrying; the assignment may already exist.'
-            : 'Verify the tractor number and finish the assignment on Landstar.'}`,
+            : result.carrierMc ? 'Verify the MC number and finish the assignment on Landstar.' : 'Verify the tractor number and finish the assignment on Landstar.'}`,
           undefined, 'CAPACITY ASSIGNMENT FAILED');
       }
     };
@@ -10157,19 +10186,22 @@ export default function App({ sharing = null, userId = null } = {}) {
       // An entered ZIP always wins: export its postal city and state (see getExportPlace).
       const originPlace = getExportPlace(ord.origCity, originState, enteredOriginLocation);
       const destinationPlace = getExportPlace(ord.destCity, destinationState, enteredDestinationLocation);
+      // Canada: the full city name the postal lookup matched ("BURLINGT" -> "BURLINGTON").
+      const originCanadaCity = originCountry === 'CA' && !enteredOriginZip ? findCanadianPlace(ord.origCity, originState)?.city : '';
+      const destinationCanadaCity = destinationCountry === 'CA' && !enteredDestinationZip ? findCanadianPlace(ord.destCity, destinationState)?.city : '';
       const originCity = toLandstarCity(
-        originPlace.fromZip
+        originCanadaCity || (originPlace.fromZip
           ? originPlace.city
           : originLocation?.city || cityMatchesPostalCity(ord.origCity, originLocation)
             ? originLocation.city
-            : getLandstarCity(ord.origCity, originLocation)
+            : getLandstarCity(ord.origCity, originLocation))
       );
       const destinationCity = toLandstarCity(
-        destinationPlace.fromZip
+        destinationCanadaCity || (destinationPlace.fromZip
           ? destinationPlace.city
           : destinationLocation?.city || cityMatchesPostalCity(ord.destCity, destinationLocation)
             ? destinationLocation.city
-            : getLandstarCity(ord.destCity, destinationLocation)
+            : getLandstarCity(ord.destCity, destinationLocation))
       );
       const originStateMatchesZip = originPlace.fromZip || !ord.origSt || !originLocation || originState === originLocation.state;
       const destinationStateMatchesZip = destinationPlace.fromZip || !ord.destSt || !destinationLocation || destinationState === destinationLocation.state;
@@ -12519,6 +12551,18 @@ export default function App({ sharing = null, userId = null } = {}) {
                     </div>
                   </div>
                 </div>
+                {isAmeriCustomer(selectedBroker) && (
+                  <div className="mb-3">
+                    <label htmlFor="assignment-carrier-mc" className="text-xs text-violet-300 font-semibold block mb-1">Approved carrier MC # <span className="text-gray-500 font-normal">(leave empty for a Landstar BCO truck)</span></label>
+                    <div className="flex gap-1">
+                      <input id="assignment-carrier-mc" type="text" inputMode="numeric" autoComplete="off" value={selectedOrder.carrierMc || ''} onChange={(e) => handleFieldChange('carrierMc', e.target.value)} placeholder="MC number, e.g. 547847" className="min-w-0 w-full bg-[#0b132b] border border-violet-500/50 rounded p-2 text-sm text-white" />
+                      <button type="button" onClick={() => copyToClipboard(selectedOrder.carrierMc || '', 'Carrier MC #')} title="Copy Carrier MC #" aria-label="Copy Carrier MC #" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
+                    </div>
+                    {getCarrierMc(selectedOrder) && (
+                      <p className="text-[11px] text-violet-200 mt-1">Book Load assigns this approved carrier on Landstar (Capacity type: Carrier) instead of a BCO truck. The bot only assigns it when the MC search finds exactly one Qualified carrier.</p>
+                    )}
+                  </div>
+                )}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label htmlFor="assignment-trailer" className="text-xs text-gray-400 block mb-1">Trailer Number</label>

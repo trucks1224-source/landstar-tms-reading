@@ -15,18 +15,18 @@ const posting = (id, extra = {}) => ({
   OrderDate: `/Date(${NOW - 60 * 60 * 1000})/`, ...extra
 });
 
-test('AMERI postings are due every 5 minutes, hazmat every 10, others never', () => {
+test('AMERI postings are due every 5 minutes, hazmat every 30, others never', () => {
   assert.equal(AMERI_REFRESH_MS, 5 * 60 * 1000);
-  assert.equal(HAZMAT_REFRESH_MS, 10 * 60 * 1000);
+  assert.equal(HAZMAT_REFRESH_MS, 30 * 60 * 1000);
   const ameri = posting('1');
   const hazmat = posting('2', { OriginZipCode: '45401', CommodityCode: 'HAZMAT' });
   const plain = posting('3', { OriginZipCode: '30301' });
   const ameriSignatures = new Set([postingSignature(ameri)]);
-  const state = { 1: { refreshedAt: NOW - 4 * 60 * 1000 }, 2: { refreshedAt: NOW - 9 * 60 * 1000 } };
+  const state = { 1: { refreshedAt: NOW - 4 * 60 * 1000 }, 2: { refreshedAt: NOW - 29 * 60 * 1000 } };
   const ownCodes = ['ANQ', 'SNB', 'QNX'];
   assert.deepEqual(selectDue([ameri, hazmat, plain], { ameriSignatures, ownCodes, state, now: NOW }), [], 'not yet');
   const later = selectDue([ameri, hazmat, plain], { ameriSignatures, ownCodes, state, now: NOW + 60 * 1000 });
-  assert.deepEqual(later.map(d => [d.loadId, d.group]), [['2', 'HAZMAT'], ['1', 'AMERI']], 'longest waiting first');
+  assert.deepEqual(later.map(d => [d.loadId, d.group]), [['1', 'AMERI'], ['2', 'HAZMAT']], 'AMERI first, even though the hazmat load waited longer');
   // A fresh posting counts from when it was posted.
   const fresh = posting('4', { OrderDate: `/Date(${NOW - 2 * 60 * 1000})/` });
   assert.deepEqual(selectDue([fresh], { ameriSignatures: new Set([postingSignature(fresh)]), ownCodes, now: NOW }), []);

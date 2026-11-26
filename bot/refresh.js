@@ -203,7 +203,9 @@ async function processRefresh(context, { uploadedFolder, reviewFolder, openUploa
     log(`Important load ${item.loadId}: replacement verified; old posting removed. Next refresh in 15 minutes.`);
     return true;
   } catch (error) {
-    save({ retryAt: Date.now() + 60000, error: `Important load ${item.loadId}: ${error.message}` });
+    // These errors wait for Daniel (re-export, check Landstar); retrying every minute only signed in
+    // to Landstar again and again (3 loads, every few seconds, 2026-11-25). Try again in 15 minutes.
+    save({ retryAt: Date.now() + REFRESH_INTERVAL_MS, error: `Important load ${item.loadId}: ${error.message}` });
     log(state[key].error);
     return false;
   } finally {

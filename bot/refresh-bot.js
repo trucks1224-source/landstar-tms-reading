@@ -1,5 +1,5 @@
 require('./file-log')('refresh'); // also writes this bot's output to bot/logs
-// Refresh bot: keeps AMERI 18347- ATZ (every 5 min) and hazmat (every 10 min) postings fresh on
+// Refresh bot: keeps AMERI 18347- ATZ (every 5 min) and hazmat (every 30 min) postings fresh on
 // DAT by pausing and unpausing them on Landstar (pause-refresh.js). Its own browser and sign-in,
 // so the rate worker stays free for rate checks (Daniel, 2026-11-25). The watchdog keeps it running.
 process.env.BOT_ROLE = 'refresh';
@@ -40,7 +40,7 @@ async function main() {
     process.once('SIGINT', () => { closed = true; void context.close(); });
     process.once('SIGTERM', () => { closed = true; void context.close(); });
     await openBoard(context);
-    console.log('Refresh bot signed in. Pausing and unpausing AMERI (5 min) and hazmat (10 min) postings.');
+    console.log('Refresh bot signed in. Pausing and unpausing AMERI (5 min) and hazmat (30 min) postings.');
     while (!closed) {
       try {
         if (!readBotControl()) {

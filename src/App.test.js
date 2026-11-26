@@ -57,7 +57,7 @@ export {
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
-  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
+  createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
@@ -633,6 +633,35 @@ test('DAT posting: shipper-local pickup time, equipment, AMERI posts with no rat
   assert.equal(policy.getDatEquipment('D-ST'), null);
   assert.match(policy.buildDatPosting(ameri, { ...colony, eCode: 'D-ST' }).error, /equipment/);
   assert.match(policy.buildDatPosting(ameri, { ...colony, pickupTime: '' }).error, /pickup/);
+});
+
+test('Canadian cities cut short on a customer list still find their postal code (BURLINGT, ON)', () => {
+  assert.deepEqual({ ...policy.findCanadianPlace('BURLINGT', 'ON') }, { city: 'BURLINGTON', postal: 'L7L 0A1' });
+  assert.deepEqual({ ...policy.findCanadianPlace('Burlington', 'on') }, { city: 'BURLINGTON', postal: 'L7L 0A1' });
+  assert.deepEqual({ ...policy.findCanadianPlace('BURLINGT..', 'ON') }, { city: 'BURLINGTON', postal: 'L7L 0A1' });
+  assert.equal(policy.findCanadianPlace('BURLINGT', 'QC'), null, 'same province only');
+  assert.equal(policy.findCanadianPlace('BUR', 'ON'), null, 'too short to be sure');
+});
+
+test('AMERI approved carrier: an MC # books a carrier instead of a BCO truck', () => {
+  const ameri = 'AMERI 18347- ATZ';
+  const posting = { originZip: '82710', destZip: '52641', pickupThru: '12/04/26 23:00', deliveryThru: '12/06/26 07:00', weight: 41500 };
+  const load = { ...policy.createManualLoad('190923604'), id: '1204MOU1', landstarPosting: posting, carrierMc: 'MC-547847', truck: '' };
+  assert.equal(policy.getCarrierMc(load), '547847');
+  const { item, reason } = policy.buildAssignRequest(ameri, load);
+  assert.equal(reason, undefined);
+  assert.equal(item.carrierMc, '547847');
+  assert.equal(item.truck, '', 'a carrier is not a BCO truck');
+  // Booking needs a driver name, or an approved carrier's MC #.
+  assert.equal(policy.bookLoad(load).status, 'BOOKED');
+  assert.throws(() => policy.bookLoad({ ...load, carrierMc: '' }), error => error.message.includes('Enter the driver name (or the approved carrier MC #)'));
+  assert.equal(policy.buildAssignRequest(ameri, { ...load, carrierMc: '' }).reason, 'There is no truck number or carrier MC # on this load.');
+  // BCO trucks work as before.
+  assert.equal(policy.buildAssignRequest(ameri, { ...load, carrierMc: '', truck: '572203' }).item.truck, '572203');
+  // Results name the carrier.
+  const failed = policy.applyAssignResult({ id: '1204MOU1', notes: '' }, { ok: false, carrierMc: '547847', truck: '', message: 'MC 547847: no carrier found' });
+  assert.match(failed.notes, /carrier MC 547847 NOT assigned - MC 547847: no carrier found/);
+  assert.equal(failed.landstarAssignment.carrierMc, '547847');
 });
 
 test('Idaho to Florida lane always pays the fixed $11,000 rate', () => {

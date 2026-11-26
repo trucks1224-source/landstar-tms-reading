@@ -4,7 +4,7 @@
 // page) and unpausing it (UNPAUSE) makes it show as fresh there, with the same Landstar load #:
 // nothing is reposted or cancelled.
 //   - AMERI 18347- ATZ postings: every 5 minutes
-//   - hazmat postings (any customer): every 10 minutes
+//   - hazmat postings (any customer): every 30 minutes
 // Run by the rate worker between export checks (new exports always go first).
 //
 // Landstar's warning: "All paused loads will be immediately removed from the load board and
@@ -19,7 +19,7 @@ const path = require('path');
 const { uploadedSignatures, postingSignature } = require('./bot-postings');
 
 const AMERI_REFRESH_MS = 5 * 60 * 1000;
-const HAZMAT_REFRESH_MS = 10 * 60 * 1000;
+const HAZMAT_REFRESH_MS = 30 * 60 * 1000; // was 10; Daniel, 2026-11-25
 const STATE_FILE = process.env.PAUSE_REFRESH_STATE_FILE || path.join(__dirname, 'pause-refresh-state.json');
 const SETTINGS_FILE = process.env.PAUSE_REFRESH_SETTINGS_FILE || path.join(__dirname, 'pause-refresh-settings.json');
 const DETAIL_URL = loadId => `https://portal.landstaronline.com/agent/detail/PORTAL/${loadId}/LRGR`;
@@ -64,8 +64,9 @@ function selectDue(postings, { ameriSignatures, ownCodes, state = {}, now = Date
     const last = Math.max(postedAt(posting), Number(state[loadId]?.refreshedAt) || 0);
     if (now - last >= every) due.push({ loadId, group, posting });
   }
-  // Longest-waiting first.
-  return due.sort((a, b) => (Number(state[a.loadId]?.refreshedAt) || postedAt(a.posting))
+  // AMERI first (it must keep its 5 minutes), then longest-waiting first.
+  return due.sort((a, b) => Number(b.group === 'AMERI') - Number(a.group === 'AMERI')
+    || (Number(state[a.loadId]?.refreshedAt) || postedAt(a.posting))
     - (Number(state[b.loadId]?.refreshedAt) || postedAt(b.posting)));
 }
 
@@ -197,7 +198,18 @@ async function runPauseRefresh(context, { log = console.log, shouldYield, stateP
   if (!due.length) return { refreshed: 0, problems };
   log(`  Pause refresh: ${due.length} posting(s) due (${due.filter(d => d.group === 'AMERI').length} AMERI, ${due.filter(d => d.group === 'HAZMAT').length} hazmat).`);
   let refreshed = 0;
-  for (const { loadId, group, posting } of due) {
+  const done = new Set();
+  // Before each load, an AMERI posting that has come due since the pass started goes first, so a
+  // long hazmat pass never holds AMERI past its 5 minutes.
+  const nextLoad = () => {
+    const ameriNow = selectDue(postings, {
+      ameriSignatures, ownCodes: OWN_POSTING_CODES, state: readState(statePath), onlyLoadId: settings.onlyLoadId
+    }).find(item => item.group === 'AMERI' && !done.has(item.loadId));
+    return ameriNow || due.find(item => !done.has(item.loadId));
+  };
+  for (let item = nextLoad(); item; item = nextLoad()) {
+    const { loadId, group, posting } = item;
+    done.add(loadId);
     if (shouldYield?.()) { log('  Pause refresh: paused for new exports; it continues after them.'); break; }
     const lane = `${posting.OriginCity || ''}, ${posting.OriginState || ''} -> ${posting.DestinationCity || ''}, ${posting.DestinationState || ''}`;
     try {

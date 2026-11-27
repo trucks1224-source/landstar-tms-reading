@@ -48,12 +48,18 @@ export default function LoadTable({ rows = [], selectedKey = '', showCustomer = 
               onClick={() => onOpen(row)}
               className={`cursor-pointer border-b border-slate-800 ${row.key === selectedKey ? 'bg-[#2b3d73] outline outline-2 outline-yellow-300' : row.hazmat ? 'bg-[#2a1708] hover:bg-[#3a2010]' : 'bg-[#0d1630] hover:bg-[#1a2647]'}`}
             >
-              <td className="py-0.5 px-1" onClick={event => event.stopPropagation()}>
+              <td
+                className={`py-0.5 px-1 ${row.urgency === 'past' ? 'border-l-4 border-l-red-500' : row.urgency === 'today' ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-transparent'}`}
+                onClick={event => event.stopPropagation()}
+              >
                 <input type="checkbox" checked={row.checked} disabled={row.checkDisabled} onChange={event => onToggle(row, event)} aria-label={`Check load ${row.id}`} className="cursor-pointer accent-blue-600" />
               </td>
               {showCustomer && <td className="px-1 text-teal-200 whitespace-nowrap max-w-[8rem] truncate">{row.customer}</td>}
               <td className="px-1 font-mono text-blue-300 whitespace-nowrap">{row.id}</td>
-              <td className="px-1 whitespace-nowrap">{row.pickup}</td>
+              <td
+                className={`px-1 whitespace-nowrap ${row.urgency === 'past' ? 'text-red-400 font-bold' : row.urgency === 'today' ? 'text-amber-300 font-bold' : ''}`}
+                title={row.urgency === 'past' ? 'Pickup day has passed (not booked)' : row.urgency === 'today' ? 'Picks up today (not booked)' : undefined}
+              >{row.pickup}</td>
               <td className="px-1 whitespace-nowrap max-w-[10rem] truncate" title={row.origin}>{row.origin}</td>
               <td className="px-1 whitespace-nowrap max-w-[10rem] truncate" title={row.destination}>{row.destination}</td>
               <td className="px-1 whitespace-nowrap text-gray-400">{row.delivery}</td>
@@ -62,7 +68,9 @@ export default function LoadTable({ rows = [], selectedKey = '', showCustomer = 
               <td className={`px-1 text-right font-bold ${row.rate > 0 ? 'text-emerald-300' : 'text-amber-300 font-normal'}`}>{money(row.rate) || 'no rate'}</td>
               <td className="px-1 text-right text-gray-400">{row.perMile > 0 ? `$${row.perMile.toFixed(2)}` : ''}</td>
               <td className="px-1"><span className={`text-[10px] px-1 rounded font-semibold ${statusClass(row.status)}`}>{row.status}</span></td>
-              <td className="px-1 text-right text-emerald-300/80 whitespace-nowrap">{row.exported ? `↑ ${row.exported}` : ''}</td>
+              <td className="px-1 text-right text-emerald-300/80 whitespace-nowrap">
+                {row.exported ? `↑ ${row.exported}` : row.urgency === 'unsent' ? <span className="text-slate-400 italic" title="Open and never sent to Landstar">not sent</span> : ''}
+              </td>
               <td className="px-1 whitespace-nowrap">{row.flags.join(' ')}</td>
             </tr>
           ))}

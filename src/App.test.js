@@ -63,7 +63,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
-  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, noticeLevel, getLoadCardFacts, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
+  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, noticeLevel, getLoadCardFacts, getLoadUrgency, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
@@ -1909,6 +1909,17 @@ test('load cards show their rates, and "no rate" for loads without one', () => {
   app.render();
   const updated = app.find(node => node.props?.['aria-label'] === 'Rate for load 0');
   assert.equal(text(updated), '$1,800');
+});
+
+test('load urgency: pickup passed, pickup today, never sent to Landstar; booked loads never', () => {
+  const now = new Date(2026, 10, 27, 15, 0);
+  assert.equal(policy.getLoadUrgency({ status: 'OPEN', pickupTime: '11/26/2026 0800 - 1600' }, now), 'past');
+  assert.equal(policy.getLoadUrgency({ status: 'ENT', pickupTime: '11/27/2026 1800', landstarExportedAt: 'x' }, now), 'today');
+  assert.equal(policy.getLoadUrgency({ status: 'OPEN', pickupTime: '12/01/2026 1000' }, now), 'unsent');
+  assert.equal(policy.getLoadUrgency({ status: 'ENT', pickupTime: '12/01/2026 1000', landstarExportedAt: 'x' }, now), '', 'sent, picks up later');
+  assert.equal(policy.getLoadUrgency({ status: 'BOOKED', pickupTime: '11/20/2026 0800' }, now), '', 'on the road');
+  assert.equal(policy.getLoadUrgency({ status: 'OPEN', puDate: 'PU: 11/27/26' }, now), 'today', 'imported short dates');
+  assert.equal(policy.getLoadUrgency({ status: 'OPEN' }, now), 'unsent', 'no pickup date yet');
 });
 
 test('load card numbers: miles, $/mile and when it went to Landstar', () => {

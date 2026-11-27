@@ -2713,6 +2713,23 @@ function getLoadCardFacts(load, now = new Date()) {
   };
 }
 
+// How urgent a load is, for its color (Daniel 2026-11-27): 'past' = pickup day already gone,
+// 'today' = picks up today, 'unsent' = open and never exported to Landstar, '' = nothing.
+// Booked loads are never colored (past pickup just means the truck is on the road).
+function getLoadUrgency(load, now = new Date()) {
+  if (!load || load.status === 'BOOKED') return '';
+  const pickup = getPickupSortValue(load);
+  if (pickup !== Number.MAX_SAFE_INTEGER) {
+    const day = new Date(pickup);
+    const pickupDay = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate());
+    const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+    if (pickupDay < today) return 'past';
+    if (pickupDay === today) return 'today';
+  }
+  if (load.status === 'OPEN' && !load.landstarExportedAt) return 'unsent';
+  return '';
+}
+
 function getRatePerMile(rate, miles) {
   const rateValue = Number(String(rate || '').replace(/[$,]/g, ''));
   // Miles can arrive with a unit suffix from broker exports, e.g. '396.3 miles'.
@@ -5246,6 +5263,7 @@ function buildLoadTableRow(customer, order, { checked, checkDisabled, isHotLane 
     hazmat: isHazmatLoad(order),
     exportedAt: Number.isFinite(exportedAt) ? exportedAt : 0,
     exported: facts.exported,
+    urgency: getLoadUrgency(order),
     checked, checkDisabled,
     flags: [
       isHazmatLoad(order) && '☢',
@@ -12018,7 +12036,12 @@ export default function App({ sharing = null, userId = null } = {}) {
                       : isHazmatLoad(ord)
                         ? 'bg-orange-950/40 border-orange-500/70 border-l-4 hover:bg-orange-900/40'
                         : 'bg-[#161f36]/60 border-transparent hover:bg-[#1c2541]/50'
-                }`}
+                }${{
+                  // Urgency color (getLoadUrgency): the left edge, over the hazmat orange edge.
+                  past: ' border-l-4 !border-l-red-500',
+                  today: ' border-l-4 !border-l-amber-400',
+                  unsent: customer === selectedBroker && selectedOrder?.id === ord.id ? '' : ' border-dashed !border-slate-500/60'
+                }[getLoadUrgency(ord)] || ''}`}
               >
                 <input
                   type="checkbox"
@@ -12059,6 +12082,12 @@ export default function App({ sharing = null, userId = null } = {}) {
                           <span className="tms-card-dates flex-1 min-w-0 truncate">
                             {[getLoadCardDates(ord), facts.milesText, facts.perMileText].filter(Boolean).join(' · ')}
                           </span>
+                          {getLoadUrgency(ord) === 'past' && (
+                            <span title="The pickup day has passed and the load is not booked" className="shrink-0 bg-red-600 text-white text-[9px] px-1 py-px rounded font-extrabold whitespace-nowrap">PU PASSED</span>
+                          )}
+                          {getLoadUrgency(ord) === 'today' && (
+                            <span title="Picks up today and is not booked yet" className="shrink-0 bg-amber-400 text-black text-[9px] px-1 py-px rounded font-extrabold whitespace-nowrap">PU TODAY</span>
+                          )}
                           <span className={`shrink-0 text-[10px] px-1.5 py-px rounded font-semibold ${statusClass(ord.status)}`}>{ord.status}</span>
                           {ord.tag && ord.tag !== ord.status && (
                             <span className={`shrink-0 text-[10px] px-1.5 py-px rounded font-bold ${ord.tag === 'HOLD' ? 'bg-red-600 text-white' : statusClass(ord.tag)}`}>{ord.tag}</span>

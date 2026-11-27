@@ -28,8 +28,12 @@ function writeState(state) {
   fs.renameSync(temp, STATE_FILE);
 }
 
-function readRefreshStatus() {
-  return Object.entries(readState()).filter(([, state]) => state.error)
+// Only problems with loads the TMS still asks to refresh (open/ENT, important, no truck). A load
+// that was booked, deleted or renamed (e.g. ATZ V -> VAN) is never retried, so its old error
+// would otherwise show forever.
+function readRefreshStatus(snapshot = (() => { try { return readSnapshot(); } catch { return null; } })()) {
+  const current = new Set((snapshot?.loads || []).filter(canRefresh).map(loadKey));
+  return Object.entries(readState()).filter(([key, state]) => state.error && current.has(key))
     .map(([key, state]) => ({ key, message: state.error, at: state.at }));
 }
 

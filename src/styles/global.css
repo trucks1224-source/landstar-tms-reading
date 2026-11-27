@@ -1269,3 +1269,512 @@ body.tms-drawer-open .tms-sidebar {
 .tms-load-table table th {
   line-height: 1.35;
 }
+
+/* ---- Slim professional controls (Daniel 2026-11-27: "futuristic and classic ... professional").
+   Calm dark glass, one cyan accent, color only on what is selected; ~38px tall, easy to click. ---- */
+.tms-shell {
+  --pro-line: rgba(148, 163, 184, 0.22);
+  --pro-line-strong: rgba(148, 163, 184, 0.4);
+  --pro-panel: rgba(12, 20, 38, 0.78);
+  --pro-raise: rgba(30, 41, 59, 0.72);
+  --pro-hover: rgba(51, 65, 85, 0.85);
+  --pro-text: #e2e8f0;
+  --pro-dim: #94a3b8;
+  --pro-accent: #22d3ee;
+  --pro-accent-fill: rgba(34, 211, 238, 0.14);
+}
+
+.tms-shell .tms-slim-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  min-width: 38px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--pro-text);
+  background: var(--pro-raise);
+  border: 1px solid var(--pro-line);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.tms-shell .tms-slim-btn:hover { background: var(--pro-hover); border-color: var(--pro-line-strong); }
+.tms-shell .tms-slim-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.tms-shell .tms-slim-btn:focus-visible,
+.tms-shell .tms-account-tab:focus-visible,
+.tms-shell .tms-status-tab:focus-visible { outline: 2px solid var(--pro-accent); outline-offset: 2px; }
+.tms-shell .tms-slim-btn[aria-pressed='true'],
+.tms-shell .tms-slim-btn[data-active='true'] {
+  color: #fff;
+  background: var(--pro-accent-fill);
+  border-color: var(--pro-accent);
+  box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.25);
+}
+.tms-shell .tms-slim-btn.tms-primary { color: #04212a; background: var(--pro-accent); border-color: var(--pro-accent); }
+.tms-shell .tms-slim-btn.tms-danger { color: #fecaca; border-color: rgba(248, 113, 113, 0.45); }
+.tms-shell .tms-slim-btn.tms-danger:hover { background: rgba(127, 29, 29, 0.55); }
+.tms-shell .tms-caret { font-size: 11px; color: var(--pro-dim); }
+
+.tms-shell .tms-slim-input {
+  min-height: 38px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--pro-text);
+  background: rgba(2, 6, 23, 0.6);
+  border: 1px solid var(--pro-line);
+  border-radius: 8px;
+  outline: none;
+}
+.tms-shell .tms-slim-input:focus { border-color: var(--pro-accent); }
+
+/* Drawer: Import and Data menus */
+.tms-menu-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tms-shell .tms-menu-toggle { justify-content: space-between; width: 100%; text-transform: uppercase; letter-spacing: 0.14em; font-size: 12px; }
+.tms-import-menu,
+.tms-data-menu {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--pro-panel);
+  border: 1px solid var(--pro-line);
+  border-radius: 10px;
+}
+.tms-import-menu.hidden { display: none; }
+.tms-data-menu.is-closed { display: contents; }
+.tms-data-menu.is-closed > :not([role='dialog']) { display: none; }
+.tms-drawer-panel .tms-import-menu .tms-tool,
+.tms-drawer-panel .tms-data-menu .tms-tool {
+  width: 100%;
+  justify-content: flex-start;
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--pro-text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  box-shadow: inset 2px 0 0 rgba(var(--accent), 0.7);
+  transform: none;
+}
+.tms-drawer-panel .tms-import-menu .tms-tool:hover,
+.tms-drawer-panel .tms-data-menu .tms-tool:hover { background: var(--pro-hover); box-shadow: inset 3px 0 0 rgb(var(--accent)); }
+
+/* Customer list: one line per account */
+.tms-shell .tms-account-row {
+  padding: 6px 6px 6px 8px;
+  border-bottom: 1px solid var(--pro-line);
+  border-radius: 8px;
+}
+.tms-shell .tms-account-row[data-selected='true'] {
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.1), transparent 70%);
+  box-shadow: inset 2px 0 0 var(--pro-accent);
+}
+.tms-shell .tms-account-row[draggable='true'] { cursor: grab; }
+.tms-shell .tms-account-row.is-dragging { opacity: 0.45; }
+.tms-shell .tms-account-row.is-drop-target { box-shadow: 0 -2px 0 var(--pro-accent); }
+.tms-account-line { display: flex; align-items: center; gap: 8px; }
+.tms-shell .tms-account-name {
+  width: 4.5rem;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--pro-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tms-account-tabs { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; min-width: 0; }
+.tms-shell .tms-account-tab {
+  position: relative;
+  min-height: 34px;
+  padding: 0 11px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--pro-dim);
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid var(--pro-line);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.tms-shell .tms-account-tab:hover { color: var(--pro-text); border-color: var(--pro-line-strong); }
+.tms-shell .tms-account-tab[aria-pressed='true'] { color: #fff; background: var(--pro-accent-fill); border-color: var(--pro-accent); }
+.tms-shell .tms-account-single {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pro-text);
+  text-align: left;
+  cursor: pointer;
+}
+.tms-shell .tms-account-tag {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--pro-dim);
+  padding: 2px 6px;
+  border: 1px solid var(--pro-line);
+  border-radius: 5px;
+}
+.tms-shell .tms-shared-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: #34d399;
+  vertical-align: middle;
+}
+.tms-shell .tms-account-more {
+  flex-shrink: 0;
+  width: 38px;
+  height: 34px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--pro-dim);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.tms-shell .tms-account-more:hover,
+.tms-shell .tms-account-more[aria-expanded='true'] { color: #fff; background: var(--pro-hover); }
+.tms-account-menu { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; padding: 8px; background: rgba(2, 6, 23, 0.55); border: 1px solid var(--pro-line); border-radius: 8px; }
+.tms-account-menu-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tms-account-menu-name { flex: 1 1 100%; font-size: 12px; color: var(--pro-dim); }
+.tms-shell .tms-add-customer { width: 100%; justify-content: flex-start; margin-top: 6px; color: var(--pro-accent); border-style: dashed; background: transparent; }
+
+/* Load list: status bar, day row, filters */
+.tms-status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  background: var(--pro-panel);
+  border: 1px solid var(--pro-line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.tms-shell .tms-status-tab {
+  flex: 1 1 auto;
+  min-height: 38px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--pro-dim);
+  border-right: 1px solid var(--pro-line);
+  cursor: pointer;
+  --status: 34, 211, 238;
+}
+.tms-shell .tms-status-tab:last-child { border-right: 0; }
+.tms-shell .tms-status-tab:hover { color: var(--pro-text); background: rgba(51, 65, 85, 0.45); }
+.tms-shell .tms-status-tab[data-status='OPEN'] { --status: 52, 211, 153; }
+.tms-shell .tms-status-tab[data-status='ON-HOLD'] { --status: 248, 113, 113; }
+.tms-shell .tms-status-tab[data-status='OFFER'] { --status: 148, 163, 184; }
+.tms-shell .tms-status-tab[data-status='ENT'] { --status: 250, 204, 21; }
+.tms-shell .tms-status-tab[data-status='BOOKED'] { --status: 192, 132, 252; }
+.tms-shell .tms-status-tab[aria-pressed='true'] {
+  color: #fff;
+  background: rgba(var(--status), 0.16);
+  box-shadow: inset 0 -2px 0 rgb(var(--status));
+}
+.tms-day-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+.tms-shell .tms-filters-toggle { margin-left: auto; }
+.tms-date-pick { position: relative; display: inline-flex; }
+.tms-shell .tms-date-input {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  color-scheme: dark;
+}
+.tms-filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 10px;
+  background: var(--pro-panel);
+  border: 1px solid var(--pro-line);
+  border-radius: 10px;
+}
+.tms-filter-panel.hidden { display: none; }
+.tms-filter-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tms-shell .tms-filter-label {
+  width: 3.6rem;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--pro-dim);
+}
+.tms-filter-arrow { color: var(--pro-dim); }
+.tms-filter-actions { justify-content: flex-end; }
+.tms-tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.tms-shell .tms-filter-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #cffafe;
+  background: var(--pro-accent-fill);
+  border: 1px solid rgba(34, 211, 238, 0.5);
+  border-radius: 16px;
+  cursor: pointer;
+}
+.tms-shell .tms-filter-tag span { color: var(--pro-dim); }
+.tms-shell .tms-filter-tag:hover span { color: #fff; }
+.tms-select-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
+.tms-shell .tms-select-all { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; font-size: 13px; color: var(--pro-text); cursor: pointer; }
+.tms-shell .tms-select-all input { width: 20px; height: 20px; }
+.tms-shell .tms-move-btn[data-status='OPEN'] { box-shadow: inset 2px 0 0 #34d399; }
+.tms-shell .tms-move-btn[data-status='ON-HOLD'] { box-shadow: inset 2px 0 0 #f87171; }
+.tms-shell .tms-move-btn[data-status='ENT'] { box-shadow: inset 2px 0 0 #facc15; }
+
+/* ---- More color (Daniel 2026-11-27: "make them stick out more ... a little bit more color").
+   Each control has its own color; what is selected lights up with a glow. ---- */
+.tms-shell .tms-slim-btn {
+  color: #f1f5f9;
+  background: linear-gradient(180deg, rgba(51, 65, 85, 0.95), rgba(30, 41, 59, 0.95));
+  border-color: rgba(148, 163, 184, 0.38);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+[data-tone='slate'] { --tone: 148, 163, 184; }
+[data-tone='emerald'] { --tone: 52, 211, 153; }
+[data-tone='sky'] { --tone: 56, 189, 248; }
+[data-tone='violet'] { --tone: 167, 139, 250; }
+[data-tone='cyan'] { --tone: 34, 211, 238; }
+[data-tone='blue'] { --tone: 96, 165, 250; }
+[data-tone='amber'] { --tone: 251, 191, 36; }
+[data-tone='red'] { --tone: 248, 113, 113; }
+.tms-shell .tms-slim-btn[data-tone] {
+  color: #f8fafc;
+  background: linear-gradient(180deg, rgba(var(--tone), 0.24), rgba(var(--tone), 0.12));
+  border-color: rgba(var(--tone), 0.65);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 0 1px rgba(var(--tone), 0.08);
+}
+.tms-shell .tms-slim-btn[data-tone]:hover { background: rgba(var(--tone), 0.34); border-color: rgb(var(--tone)); }
+.tms-shell .tms-slim-btn[data-tone][aria-pressed='true'],
+.tms-shell .tms-slim-btn[data-tone][data-active='true'] {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(var(--tone), 0.75), rgba(var(--tone), 0.5));
+  border-color: rgb(var(--tone));
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 0 16px rgba(var(--tone), 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+.tms-shell .tms-slim-btn[data-tone]:disabled { opacity: 0.4; box-shadow: none; }
+.tms-shell .tms-slim-btn.tms-primary { color: #04212a; background: linear-gradient(180deg, #67e8f9, #22d3ee); border-color: #67e8f9; box-shadow: 0 0 14px rgba(34, 211, 238, 0.45); }
+
+/* Status bar: each status in its own color, the selected one filled and glowing */
+.tms-shell .tms-status-tab {
+  color: rgb(var(--status));
+  background: rgba(var(--status), 0.09);
+}
+.tms-shell .tms-status-tab:hover { color: #fff; background: rgba(var(--status), 0.22); }
+.tms-shell .tms-status-tab[aria-pressed='true'] {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(var(--status), 0.55), rgba(var(--status), 0.3));
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  box-shadow: inset 0 -3px 0 rgb(var(--status)), 0 0 18px rgba(var(--status), 0.35);
+}
+.tms-shell .tms-status-tab[data-status='ALL'] { --status: 96, 165, 250; }
+.tms-shell .tms-status-tab[data-status='OFFER'] { --status: 203, 213, 225; }
+
+/* Account tabs colored by equipment */
+.tms-account-tab[data-kind='van'] { --tone: 96, 165, 250; }
+.tms-account-tab[data-kind='reefer'] { --tone: 34, 211, 238; }
+.tms-account-tab[data-kind='flat'] { --tone: 251, 191, 36; }
+.tms-account-tab[data-kind='haz'] { --tone: 248, 113, 113; }
+.tms-account-tab[data-kind='panels'] { --tone: 250, 204, 21; }
+.tms-account-tab[data-kind='snb'] { --tone: 52, 211, 153; }
+.tms-account-tab[data-kind='plain'] { --tone: 167, 139, 250; }
+.tms-shell .tms-account-tab {
+  color: #f1f5f9;
+  background: rgba(var(--tone), 0.15);
+  border-color: rgba(var(--tone), 0.6);
+}
+.tms-shell .tms-account-tab:hover { background: rgba(var(--tone), 0.3); border-color: rgb(var(--tone)); }
+.tms-shell .tms-account-tab[aria-pressed='true'] {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(var(--tone), 0.8), rgba(var(--tone), 0.55));
+  border-color: rgb(var(--tone));
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 14px rgba(var(--tone), 0.55);
+}
+.tms-shell .tms-account-name { color: #a5f3fc; }
+.tms-shell .tms-account-row[data-selected='true'] {
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.18), rgba(124, 58, 237, 0.08) 60%, transparent);
+  box-shadow: inset 3px 0 0 var(--pro-accent), 0 0 18px rgba(34, 211, 238, 0.12);
+}
+.tms-shell .tms-account-single[aria-pressed='true'] { color: #a5f3fc; }
+
+/* Import / Data lists: each tool keeps its color */
+.tms-drawer-panel .tms-import-menu .tms-tool,
+.tms-drawer-panel .tms-data-menu .tms-tool {
+  background: rgba(var(--accent), 0.1);
+  border-color: rgba(var(--accent), 0.3);
+  box-shadow: inset 3px 0 0 rgb(var(--accent));
+}
+.tms-drawer-panel .tms-import-menu .tms-tool:hover,
+.tms-drawer-panel .tms-data-menu .tms-tool:hover { background: rgba(var(--accent), 0.24); box-shadow: inset 4px 0 0 rgb(var(--accent)), 0 0 12px rgba(var(--accent), 0.3); }
+
+/* Filter tags */
+.tms-shell .tms-filter-tag { box-shadow: 0 0 10px rgba(34, 211, 238, 0.25); }
+
+/* ---- Whole screen in the same style (Daniel 2026-11-27: "make the rest of it look futuristic
+   and classic as well"). Solid-color buttons become tinted glass in their own color, panels and
+   cards dark glass with a thin cyan edge; colors that mean something (status, hazmat, overdue,
+   today) are kept. ---- */
+
+/* Buttons */
+.tms-shell button:is(.bg-blue-400, .bg-blue-600, .bg-blue-700) { --tone: 96, 165, 250; }
+.tms-shell button:is(.bg-sky-500, .bg-sky-600, .bg-sky-700) { --tone: 56, 189, 248; }
+.tms-shell button:is(.bg-emerald-400, .bg-emerald-600, .bg-emerald-700, .bg-green-600) { --tone: 52, 211, 153; }
+.tms-shell button:is(.bg-red-600, .bg-red-700, .bg-red-900, .bg-rose-700) { --tone: 248, 113, 113; }
+.tms-shell button:is(.bg-amber-400, .bg-amber-600, .bg-yellow-300, .bg-yellow-400, .bg-yellow-600) { --tone: 251, 191, 36; }
+.tms-shell button:is(.bg-orange-500, .bg-orange-600, .bg-orange-700) { --tone: 251, 146, 60; }
+.tms-shell button:is(.bg-purple-600, .bg-purple-700, .bg-indigo-700) { --tone: 192, 132, 252; }
+.tms-shell button:is(.bg-slate-600, .bg-slate-700, .bg-slate-800, .bg-gray-600, .bg-\[\#1c2541\], .bg-\[\#0b132b\]) { --tone: 148, 163, 184; }
+.tms-shell button:is(.bg-blue-400, .bg-blue-600, .bg-blue-700, .bg-sky-500, .bg-sky-600, .bg-sky-700,
+  .bg-emerald-400, .bg-emerald-600, .bg-emerald-700, .bg-green-600, .bg-red-600, .bg-red-700, .bg-red-900, .bg-rose-700,
+  .bg-amber-400, .bg-amber-600, .bg-yellow-300, .bg-yellow-400, .bg-yellow-600, .bg-orange-500, .bg-orange-600, .bg-orange-700,
+  .bg-purple-600, .bg-purple-700, .bg-indigo-700, .bg-slate-600, .bg-slate-700, .bg-slate-800, .bg-gray-600, .bg-\[\#1c2541\], .bg-\[\#0b132b\]) {
+  color: #f8fafc;
+  background: linear-gradient(180deg, rgba(var(--tone), 0.3), rgba(var(--tone), 0.14));
+  border: 1px solid rgba(var(--tone), 0.6);
+  border-radius: 8px;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.tms-shell button:is(.bg-blue-400, .bg-blue-600, .bg-blue-700, .bg-sky-500, .bg-sky-600, .bg-sky-700,
+  .bg-emerald-400, .bg-emerald-600, .bg-emerald-700, .bg-green-600, .bg-red-600, .bg-red-700, .bg-red-900, .bg-rose-700,
+  .bg-amber-400, .bg-amber-600, .bg-yellow-300, .bg-yellow-400, .bg-yellow-600, .bg-orange-500, .bg-orange-600, .bg-orange-700,
+  .bg-purple-600, .bg-purple-700, .bg-indigo-700, .bg-slate-600, .bg-slate-700, .bg-slate-800, .bg-gray-600, .bg-\[\#1c2541\], .bg-\[\#0b132b\]):hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(var(--tone), 0.45), rgba(var(--tone), 0.26));
+  border-color: rgb(var(--tone));
+  box-shadow: 0 0 14px rgba(var(--tone), 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+.tms-shell button:is(.bg-blue-400, .bg-blue-600, .bg-blue-700, .bg-sky-500, .bg-sky-600, .bg-sky-700,
+  .bg-emerald-400, .bg-emerald-600, .bg-emerald-700, .bg-green-600, .bg-red-600, .bg-red-700, .bg-red-900, .bg-rose-700,
+  .bg-amber-400, .bg-amber-600, .bg-yellow-300, .bg-yellow-400, .bg-yellow-600, .bg-orange-500, .bg-orange-600, .bg-orange-700,
+  .bg-purple-600, .bg-purple-700, .bg-indigo-700, .bg-slate-600, .bg-slate-700, .bg-slate-800, .bg-gray-600):is([aria-pressed='true'], .ring-2) {
+  background: linear-gradient(180deg, rgba(var(--tone), 0.72), rgba(var(--tone), 0.48));
+  border-color: rgb(var(--tone));
+  box-shadow: 0 0 16px rgba(var(--tone), 0.5);
+}
+
+/* The OPEN / ENT buttons on a load */
+.tms-shell .tms-action-bar button.tms-ent,
+.tms-shell button.tms-ent { --tone: 250, 204, 21; }
+.tms-shell .tms-action-bar button.tms-open,
+.tms-shell button.tms-open { --tone: 52, 211, 153; }
+.tms-shell .tms-action-bar button:is(.tms-ent, .tms-open),
+.tms-shell button:is(.tms-ent, .tms-open) {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(var(--tone), 0.42), rgba(var(--tone), 0.22));
+  border: 1px solid rgb(var(--tone));
+  border-radius: 8px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 12px rgba(var(--tone), 0.3);
+}
+.tms-shell .tms-action-bar button:is(.tms-ent, .tms-open):hover,
+.tms-shell button:is(.tms-ent, .tms-open):hover { background: linear-gradient(180deg, rgba(var(--tone), 0.6), rgba(var(--tone), 0.35)); }
+
+/* Bar above the list (Table, Rules, Full-height) */
+.tms-shell .tms-list-bar {
+  background: linear-gradient(180deg, rgba(12, 20, 38, 0.95), rgba(8, 14, 28, 0.95));
+  border-bottom: 1px solid rgba(34, 211, 238, 0.3);
+  box-shadow: 0 1px 0 rgba(34, 211, 238, 0.08);
+}
+.tms-shell .tms-list-bar-title {
+  font-family: var(--fx-font-display);
+  letter-spacing: 0.14em;
+  color: #a5f3fc;
+}
+.tms-shell .tms-list-bar-button {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: #f1f5f9;
+  background: linear-gradient(180deg, rgba(51, 65, 85, 0.95), rgba(30, 41, 59, 0.95));
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  border-radius: 8px;
+}
+.tms-shell .tms-list-bar-button:hover { border-color: #22d3ee; box-shadow: 0 0 12px rgba(34, 211, 238, 0.35); }
+
+/* Load cards */
+.tms-shell .tms-load-card.bg-\[\#161f36\]\/60 {
+  background: linear-gradient(180deg, rgba(17, 26, 46, 0.78), rgba(10, 17, 33, 0.78));
+  border-color: rgba(148, 163, 184, 0.18);
+}
+.tms-shell .tms-load-card.bg-\[\#161f36\]\/60:hover {
+  background: linear-gradient(180deg, rgba(22, 36, 62, 0.88), rgba(13, 22, 42, 0.88));
+  border-color: rgba(34, 211, 238, 0.45);
+}
+/* The open load: cyan edge and glow instead of the thick yellow ring */
+.tms-shell .tms-load-card.ring-4 {
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.22), rgba(124, 58, 237, 0.14) 70%, rgba(10, 17, 33, 0.85));
+  border-color: #67e8f9;
+  box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.55), 0 0 22px rgba(34, 211, 238, 0.35), inset 4px 0 0 #22d3ee;
+}
+
+/* Panels and boxes */
+.tms-shell :is(div, section, form, aside):is(.bg-\[\#0b132b\], .bg-\[\#121829\], .bg-\[\#161f36\], .bg-\[\#0b1020\], .bg-\[\#0f1a24\], .bg-slate-900) {
+  background-color: rgba(10, 18, 34, 0.8);
+  border-color: rgba(148, 163, 184, 0.22);
+}
+.tms-load-details .rounded-lg {
+  background: linear-gradient(180deg, rgba(12, 21, 40, 0.55), rgba(6, 12, 26, 0.45));
+  border-color: rgba(148, 163, 184, 0.2);
+  box-shadow: inset 0 1px 0 rgba(34, 211, 238, 0.16), 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+.tms-workspace label {
+  letter-spacing: 0.14em;
+  color: #94a3b8;
+}
+
+/* Form fields: the same slim glass fields everywhere */
+.tms-shell input:not([type='checkbox']):not([type='file']):not([type='radio']),
+.tms-shell textarea,
+.tms-shell select {
+  border-color: rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+}
+
+/* Pop-up windows (Rules, History, Prospects, CH Offers, ...) */
+.fixed[role='dialog'] > div {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.97), rgba(8, 13, 28, 0.97));
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.1), 0 24px 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(34, 211, 238, 0.12);
+}
+.fixed[role='dialog'] h2 {
+  font-family: var(--fx-font-display);
+  letter-spacing: 0.1em;
+  color: #a5f3fc;
+}
+
+/* Notices at the top */
+.tms-shell [role='alert'].rounded-md {
+  border-radius: 10px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}

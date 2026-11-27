@@ -20,6 +20,10 @@ import ChOffers from './ChOffers.jsx';
 import { ProblemBanner, TodayPanel } from './TodayPanel.jsx';
 import { findBigListChanges, describeListChange, restoredPostedLoads } from './lib/undo.js';
 import LoadTable from './LoadTable.jsx';
+import { getCustomerRules, hasCustomerRules, filterByImportEquipment, ruleEquipment2, ruleLaneRate, startingRate, higherRate } from './app/customerRules.js';
+import CustomerRulesPanel from './app/CustomerRulesPanel.jsx';
+import { groupCustomers, moveCustomers, splitCustomerName, shortAccountName, accountTagKind } from './app/customerGroups.js';
+import { accountKey, findListedAccount } from './lib/accountAliases.js';
 import { chOfferToTmsLoad, getTodaysExportedLanes, CH_TMS_ACCOUNT } from './lib/chOffers.js';
 import { parseChatLoadMessage, chatLoadAccount, chatLoadToTmsLoad } from './lib/chatLoads.js';
 import automationPolicy from '../bot/automation-policy.json';
@@ -56,45 +60,128 @@ import {
   createLaneRateKey,
   getSavedLaneRate
 } from './app/laneRates.js';
+import {
+  isNolanCustomer,
+  isRxoCustomer,
+  redHoldScreenshotCustomers,
+  holdsRedScreenshotLoads,
+  isCh593772Customer
+} from './app/customers.js';
+import {
+  screenshotColumns,
+  stateCodes,
+  clusterPositions,
+  detectColumnsFromData,
+  detectScreenshotColumns,
+  detectColumnsFromHeader,
+  parseWeightPounds,
+  parseScreenshotLines,
+  findNtgCards,
+  parseNtgScreenshotLines,
+  editDistance,
+  parseDatScreenshotLines,
+  findChHeaders,
+  getChColumnBounds,
+  parseChWeight,
+  parseChScreenshotLines,
+  normalizeMilesValue
+} from './app/screenshotParsers.js';
+import {
+  isCityGridScreenshot,
+  ocrStateLookalikes,
+  readCityGridDates,
+  parseCityGridScreenshotText
+} from './app/cityGrid.js';
+import {
+  zipDatabase,
+  autoFillLoadZipCodes,
+  parseGmailLoadEmail
+} from './app/gmailLoads.js';
+import {
+  exportedLoadRetentionMs,
+  isLoadBeingWorked,
+  findDroppedPostings,
+  isSkippableEquipment,
+  getEquipmentListCategory,
+  getRxoEquipmentListCategory,
+  getLandstarCommodity,
+  isHazmatLoad,
+  isTankerLoad,
+  rxoSkippedVanOriginStates,
+  vanEquipmentCodes,
+  isRxoSkippedVanLoad,
+  isMexicoPlace,
+  isMexicoLoad,
+  importStatusPreservationCustomers,
+  preservesImportedLoadStatus,
+  normalizeLoadId,
+  createLaneDayKey,
+  getImportedLoadKey,
+  replaceImportedCustomerLoads,
+  isNewDayForExistingLoad,
+  toAlphabeticalSuffix,
+  getBaseLoadId,
+  hasPastPickupDate,
+  assignImportedLoadIdentity,
+  isDatRateSource
+} from './app/importRules.js';
+import {
+  datRegionCityAliases,
+  correctDatCities,
+  correctCitiesFromZip
+} from './app/cityFixes.js';
+import {
+  parseLineHaul,
+  addBookingEntry,
+  getBookingPotential,
+  getBookingCustomerGroup,
+  removeBookingEntry,
+  getBookingWeekStart,
+  summarizeBookings,
+  fuelSurchargeRegions,
+  getFuelSurchargeRegion,
+  getFuelSurchargeRate
+} from './app/bookings.js';
+import {
+  loadMatchesSearch,
+  getLoadSearchEntries
+} from './app/search.js';
+import {
+  bookingLogKey,
+  BookingsReportPage
+} from './app/BookingsReportPage.jsx';
+import {
+  SYSTEM_CHECK_URL,
+  systemCheckShownKey,
+  systemCheckColors,
+  systemCheckRank,
+  emailCheckRow,
+  mergeSystemCheck,
+  SystemCheck
+} from './app/SystemCheck.jsx';
+import {
+  loadListHistoryReasons,
+  describeLoadListSummary,
+  LoadListHistory
+} from './app/LoadListHistory.jsx';
+import {
+  TeamInvite
+} from './app/TeamInvite.jsx';
+import {
+  toolsPinnedKey,
+  isPhoneScreen,
+  readToolsPinned,
+  ToolsDrawer
+} from './app/ToolsDrawer.jsx';
+import {
+  formatRxoExcelDateTime,
+  toExcelDateTime,
+  parseSchedulePickerParts,
+  formatSchedulePickerParts
+} from './app/dates.js';
 
-const exportedLoadRetentionMs = 30 * 24 * 60 * 60 * 1000;
 // Landstar's bulk upload accepts at most 25 loads per spreadsheet.
 const landstarExportChunkSize = 25;
-
-// ==========================================
-// ZIP CODE AUTO-FILL DICTIONARY & HELPER
-// ==========================================
-const zipDatabase = {
-  "PARCHMENT, MI": "49004",
-  "STONE MOUNTAIN, GA": "30083",
-  // 08520 is filed under Hightstown in the offline ZIP data.
-  "EAST WINDSOR, NJ": "08520",
-  // Add other recurring lanes or missing cities here as needed:
-};
-
-function autoFillLoadZipCodes(loads) {
-  return loads.map(load => {
-    const updated = { ...load };
-    
-    // Check and fill Origin ZIP if missing
-    if (!updated.origZip && updated.origCity && updated.origSt) {
-      const originKey = `${updated.origCity.trim().toUpperCase()}, ${updated.origSt.trim().toUpperCase()}`;
-      if (zipDatabase[originKey]) {
-        updated.origZip = zipDatabase[originKey];
-      }
-    }
-
-    // Check and fill Destination ZIP if missing
-    if (!updated.destZip && updated.destCity && updated.destSt) {
-      const destKey = `${updated.destCity.trim().toUpperCase()}, ${updated.destSt.trim().toUpperCase()}`;
-      if (zipDatabase[destKey]) {
-        updated.destZip = zipDatabase[destKey];
-      }
-    }
-
-    return updated;
-  });
-}
 
 // A load added by hand (＋ Add Load). It stays in the TMS until you delete it: imports of
 // the customer's list never remove it, it never expires, and its Landstar posting is never
@@ -248,129 +335,6 @@ function bookLoad(load, bookedAt = new Date().toISOString()) {
   return { ...rest, status: 'BOOKED', tag: 'BOOKED', bookedAt: load.bookedAt || bookedAt };
 }
 
-// ---------- Bookings report ----------
-// Every booked load is logged here (customer, line haul, when), so weekly and monthly
-// booking totals survive deliveries, imports and deletions (Daniel's rule, 2026-11-13).
-const bookingLogKey = 'landstar_bookingLog';
-// The amount at the start of the rate box; words typed after it ("5500 killing it today")
-// don't zero the line haul.
-function parseLineHaul(load) {
-  const match = String(load?.rateInput || '').replace(/[$,]/g, '').match(/^\s*(\d+(?:\.\d+)?)/);
-  return match ? Number(match[1]) : 0;
-}
-// Adds (or refreshes) one booked load in the log, keyed by customer + load number.
-function addBookingEntry(log, customer, load) {
-  const entries = Array.isArray(log) ? log : [];
-  const key = `${customer}|${load.id}`;
-  const existing = entries.find(entry => `${entry.customer}|${entry.loadId}` === key);
-  const lineHaul = parseLineHaul(load);
-  const miles = Number(normalizeMilesValue(load.miles)) || 0;
-  const origSt = String(load.origSt || '').trim().toUpperCase();
-  // A removed booking (capacity fell off) stays removed until the load is booked again
-  // (a re-booking gets a fresh bookedAt, which no longer matches the removed entry's).
-  // Only removals you made (Remove capacity / status change) carry removedAt. An older TMS
-  // marked bookings removed by itself when its load list was out of date: those come back
-  // while the load is still booked with the same booking date.
-  // A recovered load keeps its original booking week (Daniel's rule, 2026-11-24), so the
-  // entry's `at` can be older than the load's bookedAt: `bookedAt` remembers the booking it
-  // came from, so a stale copy of that same booking can't undo a later removal.
-  const entryBookedAt = existing?.bookedAt || existing?.at;
-  const autoRemoved = existing?.removed && !existing.removedAt && load.bookedAt && load.bookedAt === entryBookedAt
-    && String(load.status || '').toUpperCase() === 'BOOKED';
-  if (existing?.removed && !autoRemoved && (!load.bookedAt || load.bookedAt === entryBookedAt)) return entries;
-  // Capacity was removed and the load is booked again (recovered): it counts in the week it
-  // was first booked, not the week it was recovered.
-  const recovered = existing?.removed && existing.removedAt && existing.at && load.bookedAt;
-  const refresh = !existing || existing.removed
-    || (lineHaul > 0 && existing.lineHaul !== lineHaul)
-    || (miles > 0 && !(Number(existing.miles) > 0))
-    || (origSt && !existing.origSt);
-  if (!refresh) return entries;
-  return [...entries.filter(entry => entry !== existing), {
-    customer, loadId: String(load.id),
-    at: recovered || (existing?.recoveredAt && !existing.removed) ? existing.at : load.bookedAt || (existing?.removed && !autoRemoved ? '' : existing?.at) || new Date().toISOString(),
-    ...(recovered || existing?.bookedAt ? { bookedAt: load.bookedAt || existing.bookedAt } : {}),
-    ...(recovered ? { recoveredAt: load.bookedAt } : existing?.recoveredAt ? { recoveredAt: existing.recoveredAt } : {}),
-    lineHaul: lineHaul || Number(existing?.lineHaul) || 0, miles, origSt,
-    eCode: String(load.eCode || '').trim().toUpperCase(),
-    origin: [load.origCity, load.origSt].filter(Boolean).join(', '),
-    destination: [load.destCity, load.destSt].filter(Boolean).join(', ')
-  }];
-}
-// Straight trucks (D-ST / D-LG / D-RF) pay 11%; every other load pays 5%.
-function getBookingPotential(entry) {
-  const straight = /^D-(ST|LG|RF)/.test(String(entry?.eCode || '').trim().toUpperCase());
-  return (Number(entry?.lineHaul) || 0) * (straight ? 0.11 : 0.05);
-}
-// One report row per customer: the ATZ sub-accounts (R X O 2429200 - ATZ V/R/P/F...,
-// Para 1522166 - ATZ/ATZ H) roll up into one line each.
-function getBookingCustomerGroup(name) {
-  return String(name || '').replace(/\s*-\s*ATZ\b.*$/i, '').trim() || 'Unknown';
-}
-// The booking fell through (capacity removed): the entry is kept but marked removed, so a
-// stale load list on another synced computer cannot quietly put it back in the totals.
-function removeBookingEntry(log, customer, loadId) {
-  const entries = Array.isArray(log) ? log : [];
-  return entries.map(entry => (entry.customer === customer && String(entry.loadId) === String(loadId))
-    ? { ...entry, removed: true, removedAt: new Date().toISOString() } : entry);
-}
-
-// Midnight on the Monday of that date's week.
-function getBookingWeekStart(at) {
-  const date = new Date(at);
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
-  return date.getTime();
-}
-// Weekly totals (newest first, with a per-customer breakdown) and monthly totals.
-// The full booked amount per load is line haul + miles × the pickup region's fuel
-// surcharge rate (from ⚙ My Settings / the weekly fuel email).
-function summarizeBookings(log, fuelRates = null) {
-  const weeks = new Map();
-  const months = new Map();
-  for (const entry of Array.isArray(log) ? log : []) {
-    if (entry.removed) continue;
-    const at = Date.parse(entry.at);
-    if (!Number.isFinite(at)) continue;
-    const lineHaul = Number(entry.lineHaul) || 0;
-    const potential = getBookingPotential(entry);
-    const origSt = entry.origSt || String(entry.origin || '').split(',').pop();
-    const fscRate = getFuelSurchargeRate(fuelRates, origSt);
-    const total = lineHaul + (Number(entry.miles) || 0) * (fscRate || 0);
-    const weekStart = getBookingWeekStart(at);
-    const week = weeks.get(weekStart) || { start: weekStart, loads: 0, lineHaul: 0, total: 0, potential: 0, customers: new Map() };
-    week.loads += 1;
-    week.lineHaul += lineHaul;
-    week.total += total;
-    week.potential += potential;
-    const name = getBookingCustomerGroup(entry.customer);
-    const customer = week.customers.get(name) || { loads: 0, lineHaul: 0, total: 0, potential: 0 };
-    customer.loads += 1;
-    customer.lineHaul += lineHaul;
-    customer.total += total;
-    customer.potential += potential;
-    week.customers.set(name, customer);
-    weeks.set(weekStart, week);
-    const date = new Date(at);
-    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-    const month = months.get(monthKey) || { month: monthKey, loads: 0, lineHaul: 0, total: 0, potential: 0 };
-    month.loads += 1;
-    month.lineHaul += lineHaul;
-    month.total += total;
-    month.potential += potential;
-    months.set(monthKey, month);
-  }
-  return {
-    weeks: [...weeks.values()].sort((a, b) => b.start - a.start).map(week => ({
-      ...week,
-      customers: [...week.customers.entries()]
-        .map(([name, totals]) => ({ customer: name, ...totals }))
-        .sort((a, b) => b.loads - a.loads || b.lineHaul - a.lineHaul)
-    })),
-    months: [...months.values()].sort((a, b) => b.month.localeCompare(a.month))
-  };
-}
-
 // Takes the truck off a booked load: clears the driver, equipment, pickup ETA, previous
 // empty location and tracking, and puts the load back in OPEN so it can be re-booked or
 // exported. The rate and every other load detail are kept.
@@ -473,499 +437,13 @@ function markLoadsExported(loads, exportedIds, exportedAt) {
     : load);
 }
 
-const screenshotColumns = [0, 0.024, 0.081, 0.171, 0.27, 0.352, 0.452, 0.547, 0.58, 0.616, 0.693, 0.724, 0.78, 0.815, 0.856, 1];
 const canadianProvinceCodes = new Set('AB BC MB NB NL NS NT NU ON PE QC SK YT'.split(' '));
-const stateCodes = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
+
 canadianProvinceCodes.forEach(code => stateCodes.add(code));
 const sortedStateCodes = Array.from(stateCodes).sort();
 
 function getCountryForRegion(region) {
   return canadianProvinceCodes.has(String(region || '').trim().toUpperCase()) ? 'CA' : 'US';
-}
-
-function clusterPositions(values, tolerance = 0.012) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const clusters = [];
-  sorted.forEach(value => {
-    const last = clusters[clusters.length - 1];
-    if (last && value - last.max <= tolerance) {
-      last.max = value;
-      last.count += 1;
-    } else {
-      clusters.push({ min: value, max: value, count: 1 });
-    }
-  });
-  return clusters;
-}
-
-function detectColumnsFromData(allWords, imageWidth) {
-  const words = allWords.map(word => ({
-    text: word.text,
-    x0: word.bbox.x0 / imageWidth,
-    x1: word.bbox.x1 / imageWidth
-  }));
-  const margin = 0.004;
-  const largest = clusters => [...clusters].sort((a, b) => b.count - a.count)[0];
-
-  const dateWords = words.filter(word => /\d{1,2}\/\d{1,2}\/\d{2,4}/.test(word.text));
-  const dateClusters = clusterPositions(dateWords.map(word => word.x0));
-  const strongest = Math.max(0, ...dateClusters.map(cluster => cluster.count));
-  const dateColumns = dateClusters.filter(cluster => cluster.count >= Math.max(2, strongest * 0.3));
-  if (dateColumns.length !== 4) return null;
-
-  const distanceCluster = largest(clusterPositions(
-    words.filter(word => /^[^A-Za-z0-9]*\d{2,4}\.\d[^A-Za-z0-9]*$/.test(word.text)).map(word => word.x0)
-  ));
-  if (!distanceCluster || distanceCluster.count < 2) return null;
-  const distanceStart = distanceCluster.min;
-
-  const zipClusters = clusterPositions(words
-    .filter(word => /^[^A-Za-z0-9]*\d{5}[^A-Za-z0-9]*$/.test(word.text) && !/\.\./.test(word.text)
-      && word.x0 > dateColumns[3].min + 0.1 && word.x0 < distanceStart - 0.02)
-    .map(word => word.x0))
-    .filter(cluster => cluster.count >= 2)
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 2)
-    .sort((a, b) => a.min - b.min);
-  if (zipClusters.length !== 2) return null;
-  const [originZip, destZip] = zipClusters.map(cluster => cluster.min);
-
-  const cityStart = (from, to) => largest(clusterPositions(words
-    .filter(word => word.x0 > from && word.x0 < to && /[A-Za-z]{3,}/.test(word.text))
-    .map(word => word.x0)));
-  const originCity = cityStart(dateColumns[3].min + 0.07, originZip - 0.04);
-  const destCity = cityStart(originZip + 0.04, destZip - 0.04);
-  if (!originCity || !destCity) return null;
-
-  const weightCluster = largest(clusterPositions(words
-    .filter(word => word.x0 > distanceStart + 0.03 && /^[^A-Za-z]*\d{4,6}/.test(word.text))
-    .map(word => word.x0)));
-  if (!weightCluster) return null;
-
-  const columns = [
-    0,
-    dateColumns[0].min - 0.06,
-    dateColumns[0].min - margin,
-    dateColumns[1].min - margin,
-    dateColumns[2].min - margin,
-    dateColumns[3].min - margin,
-    originCity.min - margin,
-    originCity.min + (originZip - originCity.min) * 0.6,
-    originZip - margin,
-    destCity.min - margin,
-    destCity.min + (destZip - destCity.min) * 0.6,
-    destZip - margin,
-    distanceStart - margin,
-    weightCluster.min - margin,
-    weightCluster.min + 0.048,
-    1
-  ];
-  return columns.every((value, index) => index === 0 || value > columns[index - 1]) ? columns : null;
-}
-
-function detectScreenshotColumns(lines, imageWidth) {
-  if (lines[0]?.screenshotColumns) return lines[0].screenshotColumns;
-  const allWords = lines.flatMap(line => line.words || []);
-  return detectColumnsFromHeader(allWords, imageWidth)
-    || detectColumnsFromData(allWords, imageWidth)
-    || screenshotColumns;
-}
-
-function detectColumnsFromHeader(allWords, imageWidth) {
-  const orderHeader = allWords
-    .filter(word => /^order$/i.test(word.text))
-    .sort((a, b) => a.bbox.y0 - b.bbox.y0)[0];
-  if (!orderHeader) return null;
-
-  const headerY = (orderHeader.bbox.y0 + orderHeader.bbox.y1) / 2;
-  const tolerance = (orderHeader.bbox.y1 - orderHeader.bbox.y0) * 0.5;
-  const headerWords = allWords
-    .filter(word => Math.abs((word.bbox.y0 + word.bbox.y1) / 2 - headerY) <= tolerance)
-    .sort((a, b) => a.bbox.x0 - b.bbox.x0);
-  const find = pattern => headerWords.filter(word => pattern.test(word.text.replace(/[^A-Za-z]/g, '')));
-  const origin = find(/^origin./i)[0];
-  const dest = find(/^destc/i)[0];
-  const distance = find(/^dist/i)[0];
-  const weight = find(/^weigh/i)[0];
-  const planning = find(/^plan/i)[0];
-  if (!origin || !dest || !distance || !weight || !planning) return null;
-  const dateHeaders = headerWords.filter(word =>
-    word.bbox.x0 > orderHeader.bbox.x1 && word.bbox.x1 <= origin.bbox.x0 + 1
-  );
-  if (dateHeaders.length !== 4) return null;
-  const [early, late, earlyDelivery, lateDelivery] = dateHeaders;
-  const start = word => Math.max(0, word.bbox.x0 / imageWidth - 0.004);
-  const originStart = start(origin);
-  const destStart = start(dest);
-  const distanceStart = start(distance);
-  const originSpan = destStart - originStart;
-  const destSpan = distanceStart - destStart;
-  const columns = [
-    0,
-    start(orderHeader),
-    start(early),
-    start(late),
-    start(earlyDelivery),
-    start(lateDelivery),
-    originStart,
-    originStart + originSpan * 0.57,
-    originStart + originSpan * 0.76,
-    destStart,
-    destStart + destSpan * 0.46,
-    destStart + destSpan * 0.65,
-    distanceStart,
-    start(weight),
-    start(planning),
-    1
-  ];
-  return columns.every((value, index) => index === 0 || value > columns[index - 1])
-    ? columns
-    : null;
-}
-
-function parseWeightPounds(value) {
-  const normalized = String(value ?? '').trim().replace(/,/g, '');
-  const match = normalized.match(/\d+(?:\.\d+)?/);
-  if (!match) return null;
-  const pounds = Number(match[0]);
-  return Number.isFinite(pounds) && pounds > 0 ? Math.round(pounds) : null;
-}
-
-function parseScreenshotLines(lines, imageWidth, imageHeight, selectedBroker) {
-  // Both Paramount accounts (ATZ and ATZ H) send the same screenshot, whose clipped time cells
-  // show hours only ("08..."). ATZ H read them as minutes (0008) and Landstar rejected loads
-  // whose delivery then ended before pickup (2026-11-20).
-  const isParaImport = isParamountTrackingCustomer(selectedBroker);
-  const holdsRedRows = holdsRedScreenshotLoads(selectedBroker);
-  const cleanCell = value => value
-    .replace(/[|[\]]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const parseWeight = value => {
-    return String(parseWeightPounds(value) || '');
-  };
-  const parseDateTime = (value, fallbackDate = '') => {
-    const text = String(value || '').trim();
-    const dateMatch = text.match(/\b(1[0-2]|0?[1-9])\s*[/.-]\s*(3[01]|[12]\d|0?[1-9])\s*[/.-]\s*(20\d{2}|\d{2})\b/);
-    const fallbackMatch = String(fallbackDate || '').match(/\b(1[0-2]|0?[1-9])\s*[/.-]\s*(3[01]|[12]\d|0?[1-9])\s*[/.-]\s*(20\d{2}|\d{2})\b/);
-    const date = dateMatch || fallbackMatch;
-    if (!date) return '';
-
-    const [, month, day, yearText] = date;
-    const year = yearText.length === 2 ? `20${yearText}` : yearText;
-    const timeText = dateMatch ? text.slice(dateMatch.index + dateMatch[0].length).trim() : text;
-    const timeMatch = timeText.match(/\b(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?\b/i)
-      || timeText.match(/\b(\d{3,4})\b/);
-    if (!timeMatch) return `${month}/${day}/${year} 0000`;
-
-    let hour;
-    let minute;
-    const [, hourText, minuteText, meridiem] = timeMatch;
-    if (minuteText !== undefined) {
-      hour = Number(hourText);
-      minute = Number(minuteText);
-    } else if (isParaImport && hourText.length <= 2) {
-      // Para's clipped cells show hours, not minutes; a lone zero uses 08:00.
-      hour = hourText === '0' && !meridiem ? 8 : Number(hourText);
-      minute = 0;
-    } else {
-      const digits = hourText.padStart(4, '0');
-      hour = Number(digits.slice(0, -2));
-      minute = Number(digits.slice(-2));
-    }
-    if (meridiem) {
-      if (hour < 1 || hour > 12) return '';
-      hour = hour % 12 + (meridiem.toUpperCase() === 'PM' ? 12 : 0);
-    }
-    const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), hour, minute));
-    if (parsed.getUTCFullYear() !== Number(year)
-      || parsed.getUTCMonth() !== Number(month) - 1
-      || parsed.getUTCDate() !== Number(day)
-      || hour > 23
-      || minute > 59) return '';
-    return `${month}/${day}/${year} ${String(hour).padStart(2, '0')}${String(minute).padStart(2, '0')}`;
-  };
-  const shortDateTime = value => value.replace(/^(\d{1,2})\/(\d{1,2})\/\d{4}/, '$1/$2');
-  
-  const parseState = value => {
-    const cleanVal = String(value || '').replace(/[^A-Za-z]/g, '').toUpperCase();
-    if (stateCodes.has(cleanVal)) return cleanVal;
-    if (cleanVal.length > 2 && stateCodes.has(cleanVal.slice(-2))) return cleanVal.slice(-2);
-    return Array.from(cleanVal.matchAll(/[A-Z]{2}/g)).map(match => match[0]).reverse().find(code => stateCodes.has(code)) || '';
-  };
-
-  const columns = detectScreenshotColumns(lines, imageWidth);
-  return lines.map((line, index) => {
-    if (line.bbox.y0 < imageHeight * 0.035) return null;
-    const cells = Array.from({ length: columns.length - 1 }, () => []);
-    line.words.forEach(word => {
-      const x = (word.bbox.x0 + word.bbox.x1) / 2 / imageWidth;
-      const column = columns.findIndex((boundary, cellIndex) => x >= boundary && x < columns[cellIndex + 1]);
-      if (column >= 0) cells[column].push(word);
-    });
-
-    const values = cells.map(cell => cleanCell(cell.sort((a, b) => a.bbox.x0 - b.bbox.x0).map(word => word.text).join(' ')));
-    const [equipmentText, orderText, earlyPickup, latePickup, earlyDelivery, lateDelivery, origCity, origSt, origZip, destCity, destSt, destZip, miles, weight, planningComment] = values;
-    const numberText = orderText.replace(/\D/g, '');
-    const orderMatch = numberText.match(/22\d{5}/)?.[0];
-    const id = line.verifiedOrderId || orderMatch || '';
-    const equipment = line.verifiedEquipmentCode
-      || equipmentText.toUpperCase().match(/\b(V53|VM|VT|VZ|VE|VR|RZ|R|F|FV|FH|SD|VAN|V)\b/)?.[0]?.replace(/^V53$/, 'V') || '';
-    const rowText = line.text.toLowerCase();
-    if (/distance/.test(rowText) && /weight/.test(rowText) && /comment/.test(rowText)) return null;
-    if (/\border\b/.test(rowText) && /\bearly\b/.test(rowText) && /\blate\b/.test(rowText)) return null;
-    // A row whose city didn't read used to vanish. Keep it whenever the order number is
-    // known, flagged "verify", so it imports and you can fix the city instead of losing it.
-    if (!origCity && !destCity && !id) return null;
-
-    const pickupFrom = parseDateTime(earlyPickup);
-    const pickupTo = parseDateTime(latePickup, earlyPickup);
-    const deliveryFrom = parseDateTime(earlyDelivery);
-    const deliveryTo = parseDateTime(lateDelivery, earlyDelivery);
-    const mileageDigits = miles.replace(/\D/g, '');
-    const rawDecimalMiles = miles.replace(/\s/g, '').match(/\d{1,6}\.\d/)?.[0];
-    const decimalMiles = rawDecimalMiles && rawDecimalMiles.split('.')[0].length >= 5
-      ? `${rawDecimalMiles.slice(0, 3)}.${rawDecimalMiles.slice(-1)}`
-      : rawDecimalMiles;
-    const mergedMiles = !decimalMiles && mileageDigits.length >= 7
-      ? mileageDigits.slice(0, -6)
-      : '';
-    const mileage = mergedMiles
-      ? `${mergedMiles}.0`
-      : decimalMiles
-      ? decimalMiles
-      : miles.includes('.')
-        ? miles.replace(/[^0-9.]/g, '')
-      : mileageDigits.length === 4 || mileageDigits.length === 5
-        ? `${mileageDigits.slice(0, -1)}.${mileageDigits.slice(-1)}`
-        : mileageDigits;
-    const normalizeCity = (city, stateText) => {
-      let normalizedCity = city.toUpperCase().replace(/[^A-Z\s.'-]/g, '').trim();
-      let state = parseState(stateText);
-      const trailingState = normalizedCity.match(/\s+([A-Z]{2})$/)?.[1];
-      if (trailingState && stateCodes.has(trailingState)) {
-        state ||= trailingState;
-        normalizedCity = normalizedCity.slice(0, -trailingState.length).trim();
-      } else if (!state) {
-        const gluedState = normalizedCity.match(/^(.{3,}?)[.\s]*I?([A-Z]{2})$/);
-        if (gluedState && stateCodes.has(gluedState[2])) {
-          normalizedCity = gluedState[1].replace(/\.+$/, '').trim();
-          state = gluedState[2];
-        }
-      }
-      return { city: normalizedCity, state };
-    };
-    const normalizedOrigin = normalizeCity(origCity, origSt);
-    const normalizedDestination = normalizeCity(destCity, destSt);
-    const origin = normalizedOrigin.city;
-    const destination = normalizedDestination.city;
-    const originState = normalizedOrigin.state;
-    const destinationState = normalizedDestination.state;
-    const originZipcode = origZip.replace(/\D/g, '').match(/\d{5}/)?.[0] || '';
-    const destinationZipcode = destZip.replace(/\D/g, '').match(/\d{5}/)?.[0] || '';
-    const positionedWeightText = line.words
-      .filter(word => {
-        const center = (word.bbox.x0 + word.bbox.x1) / 2 / imageWidth;
-        return center >= columns[13] && center < columns[14];
-      })
-      .sort((a, b) => a.bbox.x0 - b.bbox.x0)
-      .map(word => word.text)
-      .join(' ');
-    const weightFromComment = parseWeight(planningComment.match(/^\s*(\d[\d,. ]{2,8})/)?.[1]);
-    const weightFromLabel = parseWeight(
-      line.text.match(/\b(\d[\d,. ]{2,8})\s*(?:lbs?|pounds)\b/i)?.[1]
-    );
-    const rawWeight = parseWeight(weight)
-      || parseWeight(positionedWeightText)
-      || weightFromComment
-      || weightFromLabel;
-    const weightValue = /^1\d{5}$/.test(rawWeight) && Number(rawWeight.slice(1)) >= 1000
-      ? rawWeight.slice(1)
-      : rawWeight;
-    const normalizedComment = weightFromComment
-      ? planningComment.replace(/^\s*\d[\d,. ]{2,8}\s*/, '').trim()
-      : planningComment;
-
-    return {
-      id: id || `IMG-${Date.now()}-${index}`,
-      eCode: isTeamEquipment(equipment) ? 'V' : equipment || (isRxoCustomer(selectedBroker) ? 'VAN:VAN' : 'VZ'),
-      team: isTeamEquipment(equipment) ? 'true' : 'false',
-      status: holdsRedRows && line.orderNumberHighlighted ? 'ON HOLD' : 'OPEN',
-      tag: holdsRedRows && line.orderNumberHighlighted ? 'HOLD' : 'OPEN',
-      ...(holdsRedRows && typeof line.orderNumberHighlighted === 'boolean'
-        ? { screenshotStatus: line.orderNumberHighlighted ? 'ON HOLD' : 'OPEN' }
-        : {}),
-      route: `${origin}${originState ? `, ${originState}` : ''} → ${destination}${destinationState ? `, ${destinationState}` : ''}`,
-      puDate: pickupFrom || pickupTo ? `PU: ${shortDateTime(pickupFrom || pickupTo)}` : 'PU: Today',
-      delDate: deliveryTo || deliveryFrom ? `DFL: ${shortDateTime(deliveryTo || deliveryFrom)}` : 'DFL: Upcoming',
-      pickupTime: pickupFrom && pickupTo ? `${pickupFrom} - ${pickupTo}` : pickupFrom || pickupTo || '10/19/2026 0800 - 1700',
-      origCity: origin,
-      origSt: originState,
-      origZip: originZipcode,
-      weight: weightValue ? `${weightValue} lbs` : '40000 lbs',
-      deliveryTime: deliveryFrom && deliveryTo ? `${deliveryFrom} - ${deliveryTo}` : deliveryFrom || deliveryTo || '10/21/2026 0800 - 1700',
-      destCity: destination,
-      destSt: destinationState,
-      destZip: destinationZipcode,
-      miles: normalizeMilesValue(mileage) || '400',
-      planningComment: normalizedComment,
-      carrier: '',
-      driver: '',
-      truck: '',
-      trailer: '',
-      rateInput: '',
-      brokerable: 'false',
-      notes: id && originState && origin && destination ? '' : 'Some fields were unreadable from the screenshot; please verify the cities, state codes and times.'
-    };
-  }).filter(Boolean);
-}
-
-function findNtgCards(lines, imageWidth, imageHeight, { wholeCard = false } = {}) {
-  const words = lines.flatMap(line => line.words || [])
-    .map(word => {
-      const x0 = word.bbox.x0 / imageWidth;
-      const x1 = word.bbox.x1 / imageWidth;
-      return { text: String(word.text || '').trim(), x0, x1, cx: (x0 + x1) / 2, cy: (word.bbox.y0 + word.bbox.y1) / 2, h: word.bbox.y1 - word.bbox.y0 };
-    })
-    .filter(word => word.text);
-  if (wholeCard) {
-    return { cards: words.length ? [{ cy: imageHeight * 0.3, top: 0, bottom: imageHeight, words }] : [], spacing: imageHeight };
-  }
-  const markers = words
-    .filter(word => (word.cx > 0.5 && /^(sto\w{0,2}|weight|total)$/i.test(word.text)) || (word.x0 < 0.2 && /^\d{7}$/.test(word.text)))
-    .sort((a, b) => a.cy - b.cy);
-  const clusters = [];
-  markers.forEach(word => {
-    const last = clusters[clusters.length - 1];
-    if (last && word.cy - last.cy < imageHeight * 0.02) {
-      last.count += 1;
-      last.cy += (word.cy - last.cy) / last.count;
-    } else {
-      clusters.push({ cy: word.cy, count: 1 });
-    }
-  });
-  const anchors = clusters;
-  const spacing = anchors.length > 1
-    ? anchors.slice(1).map((anchor, index) => anchor.cy - anchors[index].cy).sort((a, b) => a - b)[Math.floor((anchors.length - 1) / 2)]
-    : imageHeight;
-  const cards = anchors.map(anchor => {
-    const top = anchor.cy - spacing * 0.2;
-    const bottom = anchor.cy + spacing * 0.8;
-    return { cy: anchor.cy, top, bottom, words: words.filter(word => word.cy >= top && word.cy < bottom) };
-  });
-  return { cards, spacing };
-}
-
-function parseNtgScreenshotLines(lines, imageWidth, imageHeight, options = {}) {
-  const { cards: anchors } = findNtgCards(lines, imageWidth, imageHeight, options);
-  const toRows = region => {
-    const rows = [];
-    region.slice().sort((a, b) => a.cy - b.cy).forEach(word => {
-      const row = rows[rows.length - 1];
-      if (row && Math.abs(word.cy - row.cy) < Math.max(6, word.h * 0.6)) {
-        row.words.push(word);
-        row.cy = row.words.reduce((sum, item) => sum + item.cy, 0) / row.words.length;
-      } else {
-        rows.push({ cy: word.cy, words: [word] });
-      }
-    });
-    return rows.map(row => ({ ...row, text: row.words.sort((a, b) => a.x0 - b.x0).map(word => word.text).join(' ') }));
-  };
-  const parseCity = text => {
-    const match = text.replace(/[|]/g, '').replace(/(\s+\d{1,2})+\s*$/, '').match(/^(.*?)[,.]?\s+([A-Za-z]{2})$/);
-    const state = match?.[2].toUpperCase();
-    if (!match || !stateCodes.has(state)) return null;
-    const city = match[1].replace(/[^A-Za-z\s.'-]/g, '').replace(/\s+/g, ' ').trim().toUpperCase();
-    return city ? { city, state } : null;
-  };
-  const parseDates = text => {
-    const cleaned = text.replace(/[Oo]/g, '0').replace(/(\d)\s*[vV|\\]\s*(\d)/g, '$1/$2');
-    const dateMatch = cleaned.match(/(1[0-2]|0?[1-9])\s*\/?\s*(3[01]|[12]\d|0?[1-9])\s*\/\s*(20\d{2}|\d{2})/);
-    if (!dateMatch) return '';
-    const date = `${dateMatch[1].padStart(2, '0')}/${dateMatch[2].padStart(2, '0')}/${dateMatch[3].length === 2 ? `20${dateMatch[3]}` : dateMatch[3]}`;
-    const timeText = cleaned.slice(dateMatch.index + dateMatch[0].length)
-      .replace(/\b[D0]?[BR0-9][\s:;.]*\d{2}\b/g, value => value.replace(/D/g, '0').replace(/[BR]/g, '8'));
-    const times = Array.from(timeText.matchAll(/\b([01]?\d|2[0-3])\s*[:;.]?\s*([0-5]\d)\b/g))
-      .map(match => `${match[1].padStart(2, '0')}${match[2]}`);
-    const start = times[0] || '0800';
-    const end = times[1] || (times[0] ? times[0] : '1600');
-    return `${date} ${start} - ${end}`;
-  };
-
-  return anchors.map((anchor, index) => {
-    const card = anchor.words;
-    const idWord = card.find(word => word.x0 < 0.2 && /^\d{7}$/.test(word.text));
-    const milesWord = card.find(word => /miles?$/i.test(word.text));
-    const centerX = milesWord ? milesWord.cx : 0.45;
-    let mileage = milesWord?.text.match(/(\d{2,5})\s*miles?/i)?.[1] || '';
-    if (milesWord && !mileage) {
-      mileage = card
-        .filter(word => /^\D{0,2}\d{2,5}$/.test(word.text) && Math.abs(word.cy - milesWord.cy) < milesWord.h && word.x1 <= milesWord.x0 + 0.01 && word.x0 > milesWord.x0 - 0.08)
-        .sort((a, b) => b.x1 - a.x1)[0]?.text.replace(/\D/g, '') || '';
-    }
-    const statsLeft = (card.find(word => /^stops$/i.test(word.text))?.x0 ?? 0.69) - 0.02;
-    const rateWord = card.find(word => /^\$\s*[\d,]+(\.\d+)?$/.test(word.text));
-    const rate = rateWord ? rateWord.text.replace(/[^0-9.]/g, '') : '';
-    const weightWord = card
-      .filter(word => word.cx >= statsLeft && word !== rateWord && /^(\d{1,3}([,.]\d{3})+|\d{2,6})(\.\d+)?$/.test(word.text))
-      .sort((a, b) => a.x0 - b.x0)[0];
-    // "2.293" is a misread "2,293"; a decimal weight like "39,974.4" keeps its decimal.
-    const weightText = weightWord ? weightWord.text.replace(/^(\d{1,3})\.(\d{3})(?=$|\.)/, '$1,$2') : '';
-    let weightValue = weightWord ? Math.round(Number(weightText.replace(/,/g, ''))) : 0;
-    // OCR sometimes drops the separators in weights like "39,974.4", producing 399744.
-    while (weightValue > 60000 && !/[.,]/.test(weightWord.text)) weightValue = Math.round(weightValue / 10);
-    const weight = weightValue ? String(weightValue) : '';
-
-    const originRows = toRows(card.filter(word => word.x0 > 0.08 && word.cx < centerX - 0.06));
-    const destRows = toRows(card.filter(word => word.cx > centerX + 0.06 && word.cx < statsLeft));
-    const findLocation = rows => {
-      const rowIndex = rows.findIndex(row => parseCity(row.text));
-      return rowIndex < 0 ? { location: null, dates: '' } : {
-        location: parseCity(rows[rowIndex].text),
-        dates: parseDates(rows[rowIndex + 1]?.text || '')
-      };
-    };
-    const origin = findLocation(originRows);
-    const destination = findLocation(destRows);
-    if (!origin.location || !destination.location) return null;
-
-    const equipmentText = card.map(word => word.text).join(' ');
-    const isReefer = /reefer/i.test(equipmentText);
-    const isFlatbed = /flat\s*bed|\bflat\b/i.test(equipmentText);
-    const tags = [/haz|\b\w{1,2}zmat\b/i.test(equipmentText) && 'Hazmat', /tanker/i.test(equipmentText) && 'Tanker (N) Endorsement'].filter(Boolean);
-    const isHazmat = tags.includes('Hazmat');
-    const shortDate = value => value.replace(/^(\d{2})\/(\d{2})\/\d{4}\s+(\d{4}).*$/, '$1/$2 $3');
-    return {
-      id: idWord ? idWord.text : `NTG-${Date.now()}-${index}`,
-      eCode: /str\w{0,3}ght\s*tr\w*|sprinter|box\s*truck/i.test(equipmentText) ? normalizeEquipmentCode(`Straight Truck ${equipmentText}`) : /c\w{1,3}est\w{0,2}ga/i.test(equipmentText) ? 'FLCS' : isFlatbed ? (isHazmat ? 'FH' : 'F,SD') : isHazmat ? (isReefer && !/\bvan\b/i.test(equipmentText) ? 'RZ' : 'VZ') : isReefer ? (/\bvan\b/i.test(equipmentText) ? 'VR' : 'R') : 'V',
-      ...(isHazmat ? { hazmat: 'true' } : {}),
-      ...(tags.some(tag => /tanker/i.test(tag)) ? { tanker: 'true' } : {}),
-      status: 'OPEN',
-      tag: 'OPEN',
-      route: `${origin.location.city}, ${origin.location.state} → ${destination.location.city}, ${destination.location.state}`,
-      puDate: origin.dates ? `PU: ${shortDate(origin.dates)}` : 'PU: Today',
-      delDate: destination.dates ? `DFL: ${shortDate(destination.dates)}` : 'DFL: Upcoming',
-      pickupTime: origin.dates,
-      origCity: origin.location.city,
-      origSt: origin.location.state,
-      origZip: '',
-      weight: weight ? `${weight} lbs` : '',
-      deliveryTime: destination.dates,
-      destCity: destination.location.city,
-      destSt: destination.location.state,
-      destZip: '',
-      miles: mileage,
-      planningComment: tags.join(', '),
-      carrier: '',
-      driver: '',
-      truck: '',
-      trailer: '',
-      rateInput: rate,
-      rateSource: rate ? 'user-entered' : undefined,
-      brokerable: 'false',
-      notes: idWord ? '' : 'Load number was unreadable from the NTG screenshot; please enter it.'
-    };
-  }).filter(Boolean);
 }
 
 async function readCanvasStrip(worker, canvas, x0, y0, x1, y1, pattern, thresholds = [150, 110, 190, 0]) {
@@ -1124,298 +602,6 @@ async function readNtgScreenshotCards(worker, image, onProgress) {
   return loads;
 }
 
-function editDistance(a, b) {
-  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
-  for (let i = 1; i <= a.length; i += 1) {
-    let previous = row[0];
-    row[0] = i;
-    for (let j = 1; j <= b.length; j += 1) {
-      const current = row[j];
-      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, previous + (a[i - 1] === b[j - 1] ? 0 : 1));
-      previous = current;
-    }
-  }
-  return row[b.length];
-}
-
-// DAT region names that are not postal cities, so ZIP data cannot correct OCR misreads.
-const datRegionCityAliases = {
-  NY: { LONGLISLAND: 'LONG ISLAND' }
-};
-
-function correctDatCities(loads, zipData) {
-  const normalize = value => String(value || '').toUpperCase().replace(/[^A-Z]/g, '');
-  const cache = {};
-  const citiesFor = state => {
-    if (!cache[state]) {
-      const names = Array.from(new Set((zipData.lookupByState?.(state) || []).map(item => String(item.city).toUpperCase())));
-      cache[state] = names.map(name => ({ name, key: normalize(name) }));
-    }
-    return cache[state];
-  };
-  const fix = (load, cityKey, stateKey) => {
-    const state = load[stateKey];
-    const cities = state ? citiesFor(state) : [];
-    if (!cities.length) return;
-    const tokens = String(load[cityKey] || '').toUpperCase().split(/\s+/).filter(Boolean);
-    if (!tokens.length || cities.some(city => city.name === tokens.join(' '))) return;
-    let best = null;
-    for (let start = 0; start < tokens.length; start += 1) {
-      for (let end = tokens.length; end > start; end -= 1) {
-        const text = tokens.slice(start, end).join(' ');
-        const exact = cities.find(city => city.name === text || city.key === normalize(text));
-        if (exact && (!best || text.length > best.length)) best = { length: text.length, name: exact.name };
-      }
-    }
-    if (!best) {
-      const joined = normalize(tokens.join(''));
-      let bestDistance = 3;
-      cities.forEach(city => {
-        if (city.key.length < 5) return;
-        const distance = editDistance(city.key, joined);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          best = { name: city.name };
-        }
-      });
-      Object.entries(datRegionCityAliases[state] || {}).forEach(([key, name]) => {
-        const distance = editDistance(key, joined);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          best = { name };
-        }
-      });
-    }
-    if (best) load[cityKey] = best.name;
-  };
-  loads.forEach(load => {
-    fix(load, 'origCity', 'origSt');
-    fix(load, 'destCity', 'destSt');
-    load.route = `${load.origCity}${load.origSt ? `, ${load.origSt}` : ''} → ${load.destCity}${load.destSt ? `, ${load.destSt}` : ''}`;
-  });
-  return loads;
-}
-
-// ==========================================
-// CITY/STATE GRID SCREENSHOTS (AMERI 18347- ATZ and other shipper-portal lists)
-// ==========================================
-// Columns: Origin city | Origin state | Dest city | Dest st | Early P/U dt | Early del dt.
-// No load numbers. OCR of these grids is noisy (2026-11-25, AMERI screenshots): cell borders
-// read as "[" or "|", spaces vanish ("SANTJAMES"), states garble ("hz" = AZ, "JL" = IL,
-// "|A" = IA, "Wv" = WY) and highlighted rows lose their slashes ("1124120260600" =
-// 11/24/2026 0600). Each city is matched to a real place: the customer's rate-sheet lanes
-// first, then the ZIP database's cities in that state (or nearby state codes).
-function isCityGridScreenshot(lineTexts) {
-  return lineTexts.some(text => /origin\s*c\w*/i.test(text) && /dest/i.test(text));
-}
-
-const ocrStateLookalikes = { I: 'TLJ', J: 'I', L: 'I', T: 'I', V: 'Y', Y: 'V', H: 'A', '|': 'I', 1: 'I' };
-
-// OCR date like 11/30/2026 0600, 12/0412026 0600, 1112412026 0600 or 1124120260600.
-function readCityGridDates(text) {
-  const dates = [];
-  const pattern = /(\d{1,2})[/1Il|]?(\d{2})[/1Il|](20\d{2})\s*(\d{4})?/g;
-  let match;
-  while ((match = pattern.exec(text))) {
-    const [, month, day, year, time] = match;
-    if (Number(day) < 1 || Number(day) > 31) continue;
-    dates.push({ month: Number(month), day: Number(day), year: Number(year), time: time || '', index: match.index });
-  }
-  return dates;
-}
-
-function parseCityGridScreenshotText(lineTexts, zipData, customer) {
-  const letters = value => String(value || '').toUpperCase().replace(/[^A-Z]/g, '');
-  const known = [];
-  fixedLaneRates.filter(lane => lane.customer && normalizeCustomerName(lane.customer) === normalizeCustomerName(customer))
-    .forEach(lane => {
-      known.push({ city: lane.origCity, state: lane.origSt });
-      known.push({ city: lane.destCity, state: lane.destSt });
-    });
-  if (isAmeriCustomer(customer)) {
-    [...Object.keys(ameriPickupHours), ...ameriMenardsStops].forEach(key => {
-      const [city, state] = key.split('|');
-      known.push({ city, state });
-    });
-  }
-  const cityCache = new Map();
-  const citiesIn = state => {
-    if (!cityCache.has(state)) {
-      const names = new Set((zipData?.lookupByState?.(state) || []).map(item => String(item.city || '').toUpperCase()));
-      known.filter(place => place.state === state).forEach(place => names.add(place.city));
-      cityCache.set(state, [...names].map(name => ({ name, key: letters(name), known: known.some(place => place.state === state && place.city === name) })));
-    }
-    return cityCache.get(state);
-  };
-  const stateCandidates = raw => {
-    let code = String(raw || '').toUpperCase().replace(/[^A-Z|1]/g, '');
-    if (code.length === 3 && /^[LIJ|]/.test(code)) code = code.slice(1);
-    const out = new Map();
-    if (stateCodes.has(code)) out.set(code, 0);
-    const lookalike = code.split('').map(char => [char, ...(ocrStateLookalikes[char] || '')]);
-    if (code.length === 2) {
-      lookalike[0].forEach(a => lookalike[1].forEach(b => { if (stateCodes.has(a + b) && !out.has(a + b)) out.set(a + b, 0.02); }));
-    }
-    stateCodes.forEach(state => {
-      if (!out.has(state) && code && editDistance(code, state) <= 1) out.set(state, 0.05);
-    });
-    return out;
-  };
-  // Best real place for an OCR city (letters, possibly truncated with "..") in the given states.
-  const matchCity = (ocrText, states) => {
-    const truncated = /\.\s*\.?\s*$|…/.test(String(ocrText).trim());
-    const raw = letters(ocrText);
-    if (raw.length < 3) return null;
-    const variants = [raw];
-    if (/^[IJL]/.test(raw) && raw.length > 4) variants.push(raw.slice(1));
-    let best = null;
-    states.forEach((penalty, state) => {
-      citiesIn(state).forEach(city => {
-        variants.forEach((variant, variantIndex) => {
-          if (truncated && city.key.length < variant.length) return;
-          const target = truncated ? city.key.slice(0, variant.length) : city.key;
-          const distance = editDistance(variant, target);
-          const limit = variant.length >= 6 ? 2 : 1;
-          if (distance > limit) return;
-          const score = 1 - distance / Math.max(variant.length, target.length) - penalty
-            + (city.known ? 0.05 : 0) - (variantIndex ? 0.03 : 0);
-          if (score >= 0.72 && (!best || score > best.score)) best = { city: city.name, state, score };
-        });
-      });
-    });
-    return best;
-  };
-  const allStates = new Map([...stateCodes].map(state => [state, 0.08]));
-  const pad = value => String(value).padStart(2, '0');
-  const loads = [];
-  const skippedRows = [];
-  const laneDayCounts = new Map();
-  lineTexts.forEach(rawText => {
-    const text = String(rawText || '').replace(/[[\]{}~_¥—–“”"'’`]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!text || /origin\s*c/i.test(text)) return;
-    let dates = readCityGridDates(text);
-    if (!/^[A-Za-z|]/.test(text)) return;
-    if (dates.length < 2) {
-      skippedRows.push(`${text} (pickup or delivery date not readable)`);
-      return;
-    }
-    dates = dates.slice(0, 2);
-    // A lost leading "1" (2/02 for 12/02) shows up as a month far before the other date's.
-    const [pickup, delivery] = dates;
-    [[pickup, delivery], [delivery, pickup]].forEach(([date, other]) => {
-      if (date.month <= 2 && other.month >= 11 && date.month + 10 <= 12) date.month += 10;
-    });
-    if (dates.some(date => date.month < 1 || date.month > 12)) {
-      skippedRows.push(`${text} (date not readable)`);
-      return;
-    }
-    const words = text.slice(0, pickup.index).replace(/[|]/g, ' ').split(/\s+/).filter(token => /[A-Za-z]/.test(token));
-    // A state is a short token; a border read in front of it can add a letter ("liz" = AZ).
-    const isStateToken = token => !/\.\./.test(token)
-      && (letters(token).length <= 2 || letters(token).length === 3 && /^[LIJ|]/i.test(token));
-    // Origin: the first place on the row; destination: the rest. States are the short tokens.
-    let origin = null;
-    let destWords = [];
-    let destStateRaw = '';
-    const originStateIndex = words.findIndex((token, index) => index > 0 && isStateToken(token));
-    if (originStateIndex > 0) {
-      origin = matchCity(words.slice(0, originStateIndex).join(' '), stateCandidates(words[originStateIndex]));
-      const rest = words.slice(originStateIndex + 1);
-      if (rest.length > 1 && isStateToken(rest[rest.length - 1])) {
-        destStateRaw = rest[rest.length - 1];
-        destWords = rest.slice(0, -1);
-      } else {
-        destWords = rest;
-      }
-    } else {
-      // No readable origin state: try the first word as the origin city anywhere.
-      origin = matchCity(words[0] || '', allStates);
-      destWords = words.slice(1);
-      if (destWords.length > 1 && isStateToken(destWords[destWords.length - 1])) destStateRaw = destWords.pop();
-    }
-    const destination = destWords.length
-      ? matchCity(destWords.join(' '), destStateRaw ? stateCandidates(destStateRaw) : allStates)
-        || (destStateRaw ? matchCity(destWords.join(' '), allStates) : null)
-      : null;
-    if (!origin || !destination) {
-      skippedRows.push(`${text} (${!origin ? 'origin' : 'destination'} city not readable)`);
-      return;
-    }
-    const dateText = date => `${pad(date.month)}/${pad(date.day)}/${date.year}${date.time ? ` ${date.time}` : ''}`;
-    const laneDay = `${pad(pickup.month)}${pad(pickup.day)}${letters(destination.city).slice(0, 3)}`;
-    const count = (laneDayCounts.get(laneDay) || 0) + 1;
-    laneDayCounts.set(laneDay, count);
-    loads.push(applyAmeriLoadDefaults(customer, {
-      id: `${laneDay}${count}`,
-      eCode: isAmeriCustomer(customer) ? 'VR' : 'V',
-      status: 'OPEN',
-      tag: 'OPEN',
-      route: `${origin.city}, ${origin.state} → ${destination.city}, ${destination.state}`,
-      puDate: `PU: ${dateText(pickup)}`,
-      delDate: `DFL: ${dateText(delivery)}`,
-      pickupTime: dateText(pickup),
-      origCity: origin.city,
-      origSt: origin.state,
-      origZip: '',
-      weight: '',
-      deliveryTime: dateText(delivery),
-      destCity: destination.city,
-      destSt: destination.state,
-      destZip: '',
-      miles: '',
-      planningComment: '',
-      carrier: '',
-      driver: '',
-      truck: '',
-      trailer: '',
-      rateInput: '',
-      brokerable: 'false',
-      notes: ''
-    }));
-  });
-  return { loads, skippedRows };
-}
-
-function correctCitiesFromZip(loads, zipData) {
-  const normalize = value => String(value || '').toUpperCase().replace(/[^A-Z]/g, '');
-  const fix = (load, cityKey, stateKey, zipKey) => {
-    const zip = String(load[zipKey] || '').replace(/\D/g, '').slice(0, 5);
-    const location = zip.length === 5 ? zipData.codes?.[zip] : null;
-    const ocrCity = normalize(load[cityKey]);
-    const truncated = /\.\.|…/.test(String(load[cityKey] || '')) && ocrCity.length >= 5;
-    if (truncated && load[stateKey]) {
-      const names = Array.from(new Set((zipData.lookupByState?.(load[stateKey]) || []).map(item => String(item.city))));
-      const candidates = names.filter(name => normalize(name).startsWith(ocrCity));
-      if (candidates.length === 1) {
-        load[cityKey] = candidates[0].toUpperCase();
-        return;
-      }
-    }
-    if (!location && !load[stateKey] && ocrCity.length >= 3) {
-      const cityName = String(load[cityKey]).trim();
-      const states = Array.from(stateCodes).filter(code => zipData.lookupByName?.(cityName, code)?.length);
-      if (states.length === 1) load[stateKey] = states[0];
-      return;
-    }
-    if (!location) return;
-    if (load[stateKey] && load[stateKey] !== location.state) return;
-    const postalCity = normalize(location.city);
-    // A ZIP's preferred postal city can differ from the actual load city.
-    if (!ocrCity || ocrCity === postalCity
-      || ocrCity.length >= 5 && editDistance(ocrCity, postalCity) <= 2
-      || truncated && postalCity.startsWith(ocrCity)) {
-      load[cityKey] = String(location.city).toUpperCase();
-    }
-    load[stateKey] = location.state;
-  };
-  loads.forEach(load => {
-    fix(load, 'origCity', 'origSt', 'origZip');
-    fix(load, 'destCity', 'destSt', 'destZip');
-    load.route = `${load.origCity}${load.origSt ? `, ${load.origSt}` : ''} → ${load.destCity}${load.destSt ? `, ${load.destSt}` : ''}`;
-  });
-  return loads;
-}
-
 function parseDatRateText(text) {
   const lines = String(text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   for (const line of lines) {
@@ -1429,366 +615,6 @@ function parseDatRateText(text) {
   return 0;
 }
 
-function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker, laneRates) {
-  const allBbox = lines.flatMap(line => [line.bbox, ...(line.words || []).map(word => word.bbox)].filter(Boolean));
-  if (!(imageWidth > 0) && allBbox.length) imageWidth = Math.max(...allBbox.map(b => b.x1 || 0));
-  if (!(imageHeight > 0) && allBbox.length) imageHeight = Math.max(...allBbox.map(b => b.y1 || 0));
-  const cleanCell = words => words
-    .sort((a, b) => a.bbox.x0 - b.bbox.x0)
-    .map(word => word.text)
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const headerCenters = {};
-  const headerPatterns = {
-    rate: /^rate/i,
-    trip: /^trip$/i,
-    origin: /^origin$/i,
-    destination: /^destination$/i,
-    pickup: /^pick(?:\s*up)?$/i,
-    equipment: /^e[sq5)\]]+$/i,
-    weight: /^weight$/i
-  };
-  const allWords = lines.flatMap(line => line.words || []);
-  const headerWords = {};
-  Object.entries(headerPatterns).forEach(([field, pattern]) => {
-    headerWords[field] = allWords
-      .filter(word => pattern.test(word.text))
-      .sort((a, b) => a.bbox.y0 - b.bbox.y0)[0];
-    if (headerWords[field]) {
-      headerCenters[field] = (headerWords[field].bbox.x0 + headerWords[field].bbox.x1) / 2 / imageWidth;
-    }
-  });
-  const headerFields = Object.keys(headerCenters)
-    .sort((a, b) => headerCenters[a] - headerCenters[b]);
-  const getHeaderCell = (line, field) => {
-    const fieldIndex = headerFields.indexOf(field);
-    if (fieldIndex < 0) return '';
-    const center = headerCenters[field];
-    const left = fieldIndex === 0
-      ? 0
-      : (headerCenters[headerFields[fieldIndex - 1]] + center) / 2;
-    const right = fieldIndex === headerFields.length - 1
-      ? 1
-      : (center + headerCenters[headerFields[fieldIndex + 1]]) / 2;
-    return cleanCell(line.words.filter(word => {
-      const wordCenter = (word.bbox.x0 + word.bbox.x1) / 2 / imageWidth;
-      return wordCenter >= left && wordCenter < right;
-    }));
-  };
-  const getCellBounds = field => {
-    const fieldIndex = headerFields.indexOf(field);
-    if (fieldIndex < 0) return null;
-    const center = headerCenters[field];
-    return {
-      left: fieldIndex === 0 ? 0 : (headerCenters[headerFields[fieldIndex - 1]] + center) / 2,
-      right: fieldIndex === headerFields.length - 1
-        ? 1
-        : (center + headerCenters[headerFields[fieldIndex + 1]]) / 2
-    };
-  };
-  const tripBounds = getCellBounds('trip');
-  const rateBounds = getCellBounds('rate');
-  const tripHeaderY = headerWords.trip
-    ? (headerWords.trip.bbox.y0 + headerWords.trip.bbox.y1) / 2
-    : 0;
-  const tripAnchors = tripBounds
-    ? allWords.filter(word => {
-      const centerX = (word.bbox.x0 + word.bbox.x1) / 2 / imageWidth;
-      const centerY = (word.bbox.y0 + word.bbox.y1) / 2;
-      return centerX >= tripBounds.left
-        && centerX < tripBounds.right
-        && centerY > tripHeaderY
-        && /^\d{2,5}$/.test(word.text.replace(/[Oo]/g, '0'));
-    }).sort((a, b) => a.bbox.y0 - b.bbox.y0)
-    : [];
-  const pickupHeaderY = headerWords.pickup
-    ? (headerWords.pickup.bbox.y0 + headerWords.pickup.bbox.y1) / 2
-    : tripHeaderY;
-  const pickupDateAnchors = allWords.filter(word => {
-    const centerY = (word.bbox.y0 + word.bbox.y1) / 2;
-    const text = word.text.replace(/[Oo]/g, '0');
-    return centerY > pickupHeaderY
-      && !/[$]|\/\s*mi\b/i.test(text)
-      && /\b(?:0?[1-9]|1[0-2])\s*[/.-]\s*(?:0?[1-9]|[12]\d|3[01])(?:\s*[/.-]\s*\d{2,4})?\b/.test(text);
-  }).sort((a, b) => a.bbox.y0 - b.bbox.y0);
-  const datRows = [];
-  const rowTolerance = Math.max(8, Math.min(imageHeight * 0.02, imageHeight * 0.035));
-  const rowAnchors = tripAnchors.length ? tripAnchors : pickupDateAnchors;
-  rowAnchors.forEach(anchor => {
-    const centerY = (anchor.bbox.y0 + anchor.bbox.y1) / 2;
-    const previous = datRows[datRows.length - 1];
-    if (previous && Math.abs(previous.centerY - centerY) < rowTolerance * 0.5) return;
-    const words = allWords.filter(word =>
-      Math.abs((word.bbox.y0 + word.bbox.y1) / 2 - centerY) <= rowTolerance
-    );
-    datRows.push({
-      words,
-      text: words.map(word => word.text).join(' '),
-      bbox: { y0: centerY - rowTolerance, y1: centerY + rowTolerance },
-      trip: tripAnchors.length ? anchor.text.replace(/[Oo]/g, '0') : ''
-    });
-  });
-  const rowsToRead = datRows.length ? datRows : lines;
-  const rowEquipment = line => {
-    const fromCell = getHeaderCell(line, 'equipment').toUpperCase().replace(/^VV$/, 'V')
-      .match(/\b(VT|VAN|V|R|F|SD|VR|RZ|VZ|VE|FH|RG|ST|LB|AC|HS|HR|LA|SR|SS|TT|VA|VF|VS|DD|DT|FA|FB|FD|FN|FR|FT|GN|LS|LT|NB|NF|NG|NR|NS|OT|PD|PO|RA|RE|RF|RN|RO|RS|RT|SB|SC|SK|SL|SN|SO|SQ|SW|TA|TB|TC|TD|TE|TF|TG|TH|TK|TL|TM|TN|TO|TP|TR|TS|TU|TV|TW|TX|TY|TZ)\b/)?.[0];
-    if (fromCell) return fromCell;
-    const date = line.text.match(/\b(?:1[0-2]|0?[1-9])\s*[/.-]\s*(?:3[01]|[12]\d|0?[1-9])\b/);
-    return date
-      ? line.text.slice(date.index + date[0].length).toUpperCase()
-        .match(/\b(VT|VAN|VV|V|R|F|SD|VR|RZ|VZ|VE|FH|RG|ST|LB|AC|HS|HR|LA|SR|SS|TT|VA|VF|VS|DD|DT|FA|FB|FD|FN|FR|FT|GN|LS|LT|NB|NF|NG|NR|NS|OT|PD|PO|RA|RE|RF|RN|RO|RS|RT|SB|SC|SK|SL|SN|SO|SQ|SW|TA|TB|TC|TD|TE|TF|TG|TH|TK|TL|TM|TN|TO|TP|TR|TS|TU|TV|TW|TX|TY|TZ)\b/)?.[0]?.replace(/^VV$/, 'V') || ''
-      : '';
-  };
-  const equipmentCounts = rowsToRead
-    .map(rowEquipment)
-    .filter(Boolean)
-    .reduce((counts, equipment) => ({
-      ...counts,
-      [equipment]: (counts[equipment] || 0) + 1
-    }), {});
-  const [dominantEquipment, dominantEquipmentCount] = Object.entries(equipmentCounts)
-    .sort((a, b) => b[1] - a[1])[0] || ['', 0];
-  const reliableDominantEquipment = dominantEquipmentCount >= 3
-    && dominantEquipmentCount / Object.values(equipmentCounts).reduce((total, count) => total + count, 0) >= 0.8
-    ? dominantEquipment
-    : '';
-  const rateObservations = lines.flatMap(line => {
-    const rateText = line.text.replace(/\$\s*[\d,.]+[^A-Za-z0-9]*\/\s*mi\b/gi, '');
-    const match = rateText.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/);
-    const rate = Number(match?.[1].replace(/,/g, ''));
-    return rate > 0
-      ? [{ y: (line.bbox.y0 + line.bbox.y1) / 2, rate }]
-      : [];
-  });
-  const getLocation = value => {
-    const match = value.match(/^(.*?)[,\s]+([A-Z]{2})$/i);
-    if (!match || !stateCodes.has(match[2].toUpperCase())) return null;
-    const city = match[1]
-      .replace(/^[A-Za-z0]{1,2}\s*[-=>»|]+\s*/, '')
-      .replace(/^([NSEW])(?=[A-Z][a-z]{2,})/, '$1 ')
-      .replace(/^[Oo0]\s+(?=[A-Z])/, '')
-      .replace(/[^\w\s.'-]/g, '')
-      .trim()
-      .toUpperCase();
-    const tokens = city.split(/\s+/).filter(Boolean);
-    const cleanedTokens = tokens.filter((token, tokenIndex) =>
-      !tokens.some((other, otherIndex) =>
-        otherIndex !== tokenIndex
-        && token.length >= 4
-        && (other.length > token.length || (other.length === token.length && otherIndex < tokenIndex))
-        && other.includes(token))
-      && !(tokenIndex === tokens.length - 1 && tokenIndex > 0 && token.replace(/[^A-Z]/g, '').length <= 2)
-    );
-    const finalCity = cleanedTokens.join(' ').replace(/[^\w\s.'-]/g, '').trim();
-    return finalCity ? { city: finalCity, state: match[2].toUpperCase() } : null;
-  };
-  const monthCounts = {};
-  allWords.forEach(word => {
-    const found = word.text.replace(/[Oo]/g, '0').match(/^(1[0-2]|[1-9])\/(3[01]|[12]\d|0?[1-9])$/);
-    if (found) monthCounts[found[1]] = (monthCounts[found[1]] || 0) + 1;
-  });
-  const commonMonth = Number(Object.entries(monthCounts).sort((a, b) => b[1] - a[1])[0]?.[0]) || new Date().getMonth() + 1;
-  const getDate = value => {
-    const cleaned = value.replace(/[Oo]/g, '0').trim();
-    const match = cleaned.match(/\b(1[0-2]|0?[1-9])\s*[/.-]\s*(3[01]|[12]\d|0?[1-9])\b/)
-      || cleaned.match(/^(1[0-2])(0[1-9]|[12]\d|3[01])$/)
-      || cleaned.match(/(?:^|\s)0\s*\/\s*(3[01]|[12]\d|0?[1-9])\b/);
-    if (!match) return '';
-    const isMissingMonth = match.length === 2;
-    const month = isMissingMonth ? commonMonth : Number(match[1]);
-    const day = Number(isMissingMonth ? match[1] : match[2]);
-    const year = new Date().getFullYear();
-    const date = new Date(Date.UTC(year, month - 1, day));
-    if (date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return '';
-    return `${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}/${year}`;
-  };
-  const getTextRow = text => {
-    const normalizedText = String(text || '')
-      .replace(/\$?\s*\d[\d,.]*\s*[/°*]\s*mi\b/gi, ' ')
-      .replace(/\/\s*mi\b/gi, ' ')
-      .replace(/[Oo](?=\d)/g, '0')
-      .replace(/[IlM1|]bs\b/g, ' lbs');
-    const dateMatch = normalizedText.match(/\b(1[0-2]|0?[1-9])\s*[/.-]\s*(3[01]|[12]\d|0?[1-9])\b/);
-    if (!dateMatch) return null;
-    const prefix = normalizedText.slice(0, dateMatch.index);
-    const stateMatches = Array.from(prefix.matchAll(/\b([A-Z]{2})\b/gi))
-      .filter(match => stateCodes.has(match[1].toUpperCase()));
-    if (stateMatches.length < 2) return null;
-
-    const originStateMatch = stateMatches[0];
-    const destinationStateMatch = stateMatches[1];
-    const originPrefix = prefix.slice(0, originStateMatch.index);
-    const tripNumberMatches = Array.from(originPrefix.matchAll(/\b\d{3,8}\s+/g));
-    const originText = tripNumberMatches.length
-      ? originPrefix.slice(tripNumberMatches[tripNumberMatches.length - 1].index + tripNumberMatches[tripNumberMatches.length - 1][0].length)
-      : originPrefix;
-    const originCity = originText.replace(/[^A-Z\s.'-]/gi, ' ').replace(/\s+/g, ' ').trim();
-    const destinationCity = prefix
-      .slice(originStateMatch.index + originStateMatch[0].length, destinationStateMatch.index)
-      .replace(/[^A-Z\s.'-]/gi, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const tail = normalizedText.slice(dateMatch.index + dateMatch[0].length);
-    const equipment = tail.match(/\b(VT|VAN|VV|V|R|F|SD|VR|RZ|VZ|VE|FH|RG|ST|LB|AC|HS|HR|LA|SR|SS|TT|VA|VF|VS|DD|DT|FA|FB|FD|FN|FR|FT|GN|LS|LT|NB|NF|NG|NR|NS|OT|PD|PO|RA|RE|RF|RN|RO|RS|RT|SB|SC|SK|SL|SN|SO|SQ|SW|TA|TB|TC|TD|TE|TF|TG|TH|TK|TL|TM|TN|TO|TP|TR|TS|TU|TV|TW|TX|TY|TZ)\b/i)?.[0]?.toUpperCase().replace(/^VV$/, 'V') || '';
-    const weight = normalizedText.match(/([\d][\d,.]*)\s*lbs?\b/i)?.[1] || '';
-    const origin = getLocation(`${originCity}, ${originStateMatch[1]}`);
-    const destination = getLocation(`${destinationCity}, ${destinationStateMatch[1]}`);
-    const pickupDate = getDate(dateMatch[0]);
-    if (!origin || !destination || !pickupDate || !equipment || !(Number(weight.replace(/,/g, '')) > 0)) return null;
-    return { origin, destination, pickupDate, equipment, weightRaw: weight };
-  };
-  const loads = [];
-  rowsToRead.forEach((line, index) => {
-    if (!line.words?.length) return;
-    const textRow = getTextRow(line.text);
-    const origin = getLocation(getHeaderCell(line, 'origin')) || textRow?.origin;
-    const destination = getLocation(getHeaderCell(line, 'destination')) || textRow?.destination;
-    const pickupBounds = getCellBounds('pickup');
-    const rowCenterY = (line.bbox.y0 + line.bbox.y1) / 2;
-    const pickupWords = pickupBounds
-      ? allWords.filter(word => {
-        const centerX = (word.bbox.x0 + word.bbox.x1) / 2 / imageWidth;
-        const centerY = (word.bbox.y0 + word.bbox.y1) / 2;
-        return centerX >= pickupBounds.left && centerX < pickupBounds.right
-          && centerY > tripHeaderY
-          && Math.abs(centerY - rowCenterY) <= rowTolerance * 2;
-      })
-      : line.words;
-    const pickupCell = cleanCell(pickupWords) || getHeaderCell(line, 'pickup');
-    const pickupRange = pickupCell.match(/(\d{1,2}\s*\/\s*\d{1,2})\s*[-–—]\s*(\d{1,2}\s*\/\s*\d{1,2})/)
-      || line.text.match(/(\d{1,2}\s*\/\s*\d{1,2})\s*[-–—]\s*(\d{1,2}\s*\/\s*\d{1,2})/);
-    const pickupDate = getDate(pickupRange?.[1] || pickupCell) || textRow?.pickupDate || '';
-    const pickupEndDate = pickupRange ? getDate(pickupRange[2]) : '';
-    const equipmentText = getHeaderCell(line, 'equipment').toUpperCase().replace(/^VV$/, 'V');
-    const equipment = equipmentText.match(/\b(VT|VAN|V|R|F|SD|VR|RZ|VZ|VE|FH|RG|ST|LB|AC|HS|HR|LA|SR|SS|TT|VA|VF|VS|DD|DT|FA|FB|FD|FN|FR|FT|GN|LS|LT|NB|NF|NG|NR|NS|OT|PD|PO|RA|RE|RF|RN|RO|RS|RT|SB|SC|SK|SL|SN|SO|SQ|SW|TA|TB|TC|TD|TE|TF|TG|TH|TK|TL|TM|TN|TO|TP|TR|TS|TU|TV|TW|TX|TY|TZ)\b/)?.[0]
-      || textRow?.equipment
-      || reliableDominantEquipment
-      || 'V';
-    const weightText = getHeaderCell(line, 'weight').replace(/[Oo]/g, '0').replace(/[IlM1|]bs\b/g, ' lbs');
-    const rawWeight = weightText.match(/(\d[\d,.]*)\s*lbs?\b/i)?.[1]
-      || weightText.match(/\d[\d,.]*/)?.[0]
-      || textRow?.weightRaw
-      || '';
-    const weight = rawWeight.replace(/^(\d{1,3},\d{3})\d$/, '$1').replace(/,/g, '');
-    const trip = line.trip || getHeaderCell(line, 'trip').replace(/[Oo]/g, '0').match(/\b\d{2,5}\b/)?.[0] || '';
-    const positionedRateWords = rateBounds
-      ? allWords.filter(word => {
-        const centerX = (word.bbox.x0 + word.bbox.x1) / 2 / imageWidth;
-        const centerY = (word.bbox.y0 + word.bbox.y1) / 2;
-        const rowCenter = (line.bbox.y0 + line.bbox.y1) / 2;
-        return centerX >= rateBounds.left
-          && centerX < rateBounds.right
-          && Math.abs(centerY - rowCenter) <= rowTolerance;
-      })
-        .sort((a, b) => a.bbox.y0 - b.bbox.y0 || a.bbox.x0 - b.bbox.x0)
-      : [];
-    const positionedRateLines = [];
-    positionedRateWords.forEach(word => {
-      const centerY = (word.bbox.y0 + word.bbox.y1) / 2;
-      const previousLine = positionedRateLines[positionedRateLines.length - 1];
-      if (previousLine && Math.abs(previousLine.centerY - centerY) <= rowTolerance * 0.25) {
-        previousLine.words.push(word);
-      } else {
-        positionedRateLines.push({ centerY, words: [word] });
-      }
-    });
-    const positionedRate = positionedRateLines
-      .map(rateLine => cleanCell(rateLine.words))
-      .filter(rateLine => !/\/\s*mi\b/i.test(rateLine))
-      .map(rateLine => Number(
-        rateLine.match(/(?:\$\s*)(\d[\d,]*(?:\.\d{1,2})?)/)?.[1]?.replace(/,/g, '')
-          || rateLine.replace(/,/g, '').match(/(?:\$\s*)?(\d{3,})\b/)?.[1]
-          || 0
-      ))
-      .find(rateValue => rateValue >= 100) || 0;
-    const rateText = getHeaderCell(line, 'rate');
-    const directRate = /\$/.test(rateText)
-      ? Number(rateText.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/)?.[1]?.replace(/,/g, '') || 0)
-      : 0;
-    const rowCenter = (line.bbox.y0 + line.bbox.y1) / 2;
-    const nearestRate = rateObservations
-      .map(observation => ({ ...observation, distance: Math.abs(observation.y - rowCenter) }))
-      .filter(observation => observation.distance <= imageHeight * 0.045)
-      .sort((a, b) => a.distance - b.distance)[0];
-    const rate = positionedRate || directRate || nearestRate?.rate || 0;
-    const hasWeight = Number(weight?.replace(/,/g, '')) > 0;
-    const equipmentWasGuessed = !equipmentText.match(/\b(VT|VAN|V|R|F|SD|VR|RZ|VZ|VE|FH|RG)\b/) && !textRow?.equipment;
-    if (!origin || !destination || !pickupDate || !equipment) return;
-    if (!line.text.trim()) return;
-
-    const order = {
-      id: `DAT-${Date.now()}-${index}`,
-      eCode: equipment,
-      team: equipment === 'VT' ? 'true' : 'false',
-      status: 'OPEN',
-      tag: 'OPEN',
-      route: `${origin.city}, ${origin.state} → ${destination.city}, ${destination.state}`,
-      puDate: `PU: ${pickupDate}`,
-      delDate: 'DFL: Upcoming',
-      pickupTime: pickupEndDate
-        ? `${pickupDate} 0800 - ${pickupEndDate} 1600`
-        : `${pickupDate} 0800 - 1600`,
-      origCity: origin.city,
-      origSt: origin.state,
-      origZip: '',
-      weight: hasWeight ? `${weight} lbs` : '40000 lbs',
-      deliveryTime: isNolanCustomer(selectedBroker) ? '' : '0800 - 1600',
-      destCity: destination.city,
-      destSt: destination.state,
-      destZip: '',
-      miles: trip,
-      planningComment: [
-        'Imported from DAT screenshot',
-        !hasWeight && 'weight not visible — enter weight',
-        equipmentWasGuessed && 'equipment not read — confirm equipment'
-      ].filter(Boolean).join('; '),
-      carrier: '',
-      driver: '',
-      truck: '',
-      trailer: '',
-      rateInput: rate > 0 ? String(rate) : '',
-      ...(rate > 0 ? { rateSource: 'dat-screenshot' } : {}),
-      brokerable: 'false',
-      rateCrop: { centerY: (line.bbox.y0 + line.bbox.y1) / 2 },
-      notes: `DAT screenshot does not include ZIP codes. ${trip ? 'Trip value was imported as miles; verify it.' : 'Trip miles were not recognized; enter them before export.'}`
-    };
-    // Your saved rate for this lane beats the rate on the DAT screenshot.
-    const savedLaneRate = getSavedLaneRate(laneRates, selectedBroker, order);
-    if (savedLaneRate) {
-      order.rateInput = savedLaneRate;
-      order.rateSource = 'user-entered';
-    }
-    loads.push(order);
-  });
-  const lanes = {};
-  loads.forEach(load => {
-    const key = `${load.origCity}|${load.origSt}|${load.destCity}|${load.destSt}`;
-    (lanes[key] = lanes[key] || []).push(load);
-  });
-  Object.values(lanes).forEach(group => {
-    const counts = {};
-    group.forEach(load => { if (load.miles) counts[load.miles] = (counts[load.miles] || 0) + 1; });
-    const [common, commonCount] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0] || ['', 0];
-    if (commonCount < 2) return;
-    group.forEach(load => {
-      if (load.miles !== common && editDistance(load.miles, common) <= 1) load.miles = common;
-    });
-  });
-  const rowCenters = loads.map(load => load.rateCrop.centerY).sort((a, b) => a - b);
-  const spacings = rowCenters.slice(1).map((center, index) => center - rowCenters[index]).filter(gap => gap > 10).sort((a, b) => a - b);
-  const rowHeight = spacings[Math.floor(spacings.length / 2)] || imageHeight * 0.06;
-  const tripLeft = headerWords.trip
-    ? headerWords.trip.bbox.x0
-    : (tripAnchors.length ? Math.min(...tripAnchors.map(word => word.bbox.x0)) : imageWidth * 0.1);
-  const rateRight = tripLeft * 0.71;
-  loads.forEach(load => {
-    const { centerY } = load.rateCrop;
-    load.rateCrop = { centerY, rowHeight, x0: 0, x1: Math.round(rateRight) };
-  });
-  return loads;
-}
-
 function formatExcelDateTime(val) {
   if (val == null || val === '') return '10/18/2026 0800 - 1200';
   if (typeof val === 'number' && Number.isFinite(val) && val >= 0) {
@@ -1799,75 +625,6 @@ function formatExcelDateTime(val) {
     return formatRxoExcelDateTime(Number(str));
   }
   return str;
-}
-
-function formatRxoExcelDateTime(value) {
-  const text = String(value ?? '').trim();
-  let date;
-  if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    date = new Date(Date.UTC(
-      value.getUTCFullYear(),
-      value.getUTCMonth(),
-      value.getUTCDate(),
-      value.getUTCHours(),
-      value.getUTCMinutes()
-    ));
-  } else if (
-    (typeof value === 'number' && Number.isFinite(value) && value >= 0)
-    || (/^\d+(?:\.\d+)?$/.test(text) && Number(text) >= 0)
-  ) {
-    const serial = Number(value);
-    date = new Date(Date.UTC(1899, 11, 30) + Math.round(serial * 86400000));
-  } else {
-    const timeRange = text.match(
-      /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):?(\d{2})\s*(AM|PM)?\s*(?:-|–|—|to)\s*(\d{1,2}):?(\d{2})\s*(AM|PM)?$/i
-    );
-    if (timeRange) {
-      const to24 = (h, m, meridiem) => {
-        let hour = Number(h);
-        if (meridiem) {
-          if (hour < 1 || hour > 12) return null;
-          hour = hour % 12 + (meridiem.toUpperCase() === 'PM' ? 12 : 0);
-        }
-        return hour > 23 || Number(m) > 59 ? null : `${String(hour).padStart(2, '0')}${m}`;
-      };
-      const start = to24(timeRange[4], timeRange[5], timeRange[6]);
-      const end = to24(timeRange[7], timeRange[8], timeRange[9] || timeRange[6]);
-      const year = timeRange[3].length === 2 ? `20${timeRange[3]}` : timeRange[3];
-      if (start && end) {
-        return `${timeRange[1].padStart(2, '0')}/${timeRange[2].padStart(2, '0')}/${year} ${start} - ${end}`;
-      }
-      return text;
-    }
-    const usDateTime = text.match(
-      /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):?(\d{2})\s*(AM|PM)?$/i
-    );
-    const isoDateTime = text.match(
-      /^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/
-    );
-    if (!usDateTime && !isoDateTime) return text;
-
-    const month = Number(usDateTime ? usDateTime[1] : isoDateTime[2]);
-    const day = Number(usDateTime ? usDateTime[2] : isoDateTime[3]);
-    const yearText = usDateTime ? usDateTime[3] : isoDateTime[1];
-    const year = Number(yearText) < 100 ? 2000 + Number(yearText) : Number(yearText);
-    let hour = Number(usDateTime ? usDateTime[4] : isoDateTime[4]);
-    const minute = Number(usDateTime ? usDateTime[5] : isoDateTime[5]);
-    const meridiem = usDateTime?.[6]?.toUpperCase();
-    if (meridiem) {
-      if (hour < 1 || hour > 12) return text;
-      hour = hour % 12 + (meridiem === 'PM' ? 12 : 0);
-    }
-    date = new Date(Date.UTC(year, month - 1, day, hour, minute));
-    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1
-      || date.getUTCDate() !== day || hour > 23 || minute > 59) {
-      return text;
-    }
-  }
-
-  if (!Number.isFinite(date.getTime())) return '';
-  const pad = part => String(part).padStart(2, '0');
-  return `${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())}/${date.getUTCFullYear()} ${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}`;
 }
 
 function formatRxoBusinessHours(dateTime, endTime) {
@@ -1956,200 +713,6 @@ async function getGmailApiError(response, action) {
   return new Error(`Gmail ${action} failed (${response.status})${details ? `: ${details}` : '.'}`);
 }
 
-// ==========================================
-// C.H. ROBINSON LOAD-BOARD SCREENSHOT (date-grouped table with Weight and Bin/rate columns)
-// ==========================================
-function findChHeaders(lines) {
-  const words = lines.flatMap(line => line.words || []);
-  const find = pattern => words.filter(word => pattern.test(word.text)).sort((a, b) => a.bbox.y0 - b.bbox.y0)[0];
-  const headers = {
-    origin: find(/^origin$/i),
-    ost: find(/^ost$/i),
-    destination: find(/^destination$/i),
-    dst: find(/^dst$/i),
-    pickup: find(/^pickup$/i),
-    mode: find(/^mode$/i),
-    bin: find(/^bin$/i)
-  };
-  return Object.values(headers).every(Boolean) ? headers : null;
-}
-
-function getChColumnBounds(headers, imageWidth) {
-  const margin = imageWidth * 0.008;
-  return {
-    originLeft: headers.origin.bbox.x0 - margin * 1.5,
-    ostLeft: headers.ost.bbox.x0 - margin,
-    destinationLeft: headers.destination.bbox.x0 - margin,
-    dstLeft: headers.dst.bbox.x0 - margin,
-    pickupLeft: headers.pickup.bbox.x0 - margin,
-    modeLeft: headers.mode.bbox.x0 - margin,
-    binLeft: headers.bin.bbox.x0 - margin
-  };
-}
-
-// The board shows weights like "17.007.9 lbs" or "8.496 lbs" because OCR confuses commas and periods.
-function parseChWeight(text) {
-  const raw = String(text || '').match(/\d[\d.,]*/)?.[0]?.replace(/[.,]+$/, '');
-  if (!raw) return 0;
-  const parts = raw.split(/[.,]/);
-  if (parts.length === 1) return Number(parts[0]);
-  const last = parts[parts.length - 1];
-  const value = last.length === 3
-    ? Number(parts.join(''))
-    : Number(`${parts.slice(0, -1).join('')}.${last}`);
-  return Number.isFinite(value) ? Math.round(value) : 0;
-}
-
-function parseChScreenshotLines(lines, imageWidth, imageHeight, selectedBroker, laneRates, strips = {}) {
-  const headers = findChHeaders(lines);
-  if (!headers) return { loads: [], skippedLtl: 0, skippedNoDate: 0 };
-  const bounds = getChColumnBounds(headers, imageWidth);
-  const pad = value => String(value).padStart(2, '0');
-  const cellText = (line, left, right) => (line.words || [])
-    .filter(word => {
-      const center = (word.bbox.x0 + word.bbox.x1) / 2;
-      return center >= left && center < right;
-    })
-    .sort((a, b) => a.bbox.x0 - b.bbox.x0)
-    .map(word => word.text)
-    .join(' ');
-  const cleanCity = text => text.toUpperCase().replace(/[^A-Z\s.'-]/g, ' ').replace(/\s+/g, ' ').trim();
-  const sortedLines = [...lines].sort((a, b) => a.bbox.y0 - b.bbox.y0);
-  const rowCenters = sortedLines
-    .filter(line => /(?<!\d)\d{9}(?!\d)/.test(line.text))
-    .map(line => (line.bbox.y0 + line.bbox.y1) / 2);
-  const gaps = rowCenters.slice(1).map((center, index) => center - rowCenters[index]).filter(gap => gap > 4).sort((a, b) => a - b);
-  const rowGap = gaps[Math.floor(gaps.length / 2)] || imageHeight * 0.012;
-  const nearestStrip = (items, y) => (items || [])
-    .map(item => ({ ...item, distance: Math.abs(item.y - y) }))
-    .filter(item => item.distance <= rowGap * 0.55)
-    .sort((a, b) => a.distance - b.distance)[0];
-
-  let pickupDate = '';
-  let skippedLtl = 0;
-  let skippedNoDate = 0;
-  const seenIds = new Set();
-  const parsedRows = [];
-  sortedLines.forEach(line => {
-    const heading = line.text.match(/\b(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(20\d{2})\s*-\s*[A-Za-z]{3}/);
-    if (heading) {
-      pickupDate = `${pad(heading[1])}/${pad(heading[2])}/${heading[3]}`;
-      return;
-    }
-    const idMatch = line.text.match(/(?<!\d)(\d{9})(?!\d)/);
-    if (!idMatch || idMatch.index > 12 || seenIds.has(idMatch[1])) return;
-    if (!pickupDate) {
-      skippedNoDate += 1;
-      return;
-    }
-    const y = (line.bbox.y0 + line.bbox.y1) / 2;
-    const modeText = cellText(line, bounds.modeLeft, bounds.modeLeft + (bounds.binLeft - bounds.modeLeft) * 0.3)
-      .toUpperCase().replace(/[^A-Z,]/g, '');
-    const rowText = line.text.toUpperCase();
-    if (/LTL/.test(modeText) || /\sLTL\s/.test(` ${rowText} `)) {
-      skippedLtl += 1;
-      return;
-    }
-    seenIds.add(idMatch[1]);
-
-    const notes = ['Imported from CH screenshot; delivery date/time and miles are not on the board.'];
-    const origin = cleanCity(cellText(line, bounds.originLeft, bounds.ostLeft));
-    const destination = cleanCity(cellText(line, bounds.destinationLeft, bounds.dstLeft));
-    if (!origin || !destination) return;
-    const readState = (stripItems, left, right) => {
-      const fromStrip = nearestStrip(stripItems, y)?.text || '';
-      if (stateCodes.has(fromStrip)) return fromStrip;
-      const fromRow = cellText(line, left, right).toUpperCase().replace(/[^A-Z]/g, '');
-      return stateCodes.has(fromRow) ? fromRow : '';
-    };
-    const originState = readState(strips.ost, bounds.ostLeft, bounds.destinationLeft);
-    const destinationState = readState(strips.dst, bounds.dstLeft, bounds.pickupLeft);
-
-    const pickupCell = cellText(line, bounds.pickupLeft, bounds.modeLeft);
-    const time = pickupCell.match(/(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})/)
-      || line.text.match(/(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})/);
-    const validTime = time && Number(time[1]) <= 23 && Number(time[3]) <= 23 && Number(time[2]) <= 59 && Number(time[4]) <= 59;
-    if (!validTime) notes.push('Pickup hours could not be read; verify them.');
-    const pickupHours = validTime
-      ? `${pad(time[1])}${time[2]} - ${pad(time[3])}${time[4]}`
-      : '0800 - 1600';
-
-    const weight = parseChWeight(line.text.match(/(\d[\d.,]*)\s*[Il1|]bs\b/i)?.[1]);
-    if (!weight) notes.push('Weight could not be read; enter it before export.');
-
-    const binText = nearestStrip(strips.bin, y)?.text || '';
-    const rateText = binText.match(/\d{3,4}/)?.[0]
-      || line.text.match(/[Il1|]bs\s+(\d{3,4})\b/i)?.[1]
-      || '';
-    const rate = Number(rateText);
-    const hasRate = rate >= 100 && rate <= 20000;
-
-    const mode = /^R/.test(modeText) ? 'R' : /^F/.test(modeText) ? 'F,SD' : 'V';
-    const order = {
-      id: idMatch[1],
-      eCode: mode,
-      status: 'OPEN',
-      tag: 'OPEN',
-      route: '',
-      puDate: `PU: ${pickupDate}`,
-      delDate: 'DFL: Upcoming',
-      pickupTime: `${pickupDate} ${pickupHours}`,
-      deliveryTime: '',
-      origCity: origin,
-      origSt: originState,
-      origZip: '',
-      weight: weight ? `${weight} lbs` : '',
-      destCity: destination,
-      destSt: destinationState,
-      destZip: '',
-      miles: '',
-      planningComment: 'Imported from CH screenshot',
-      carrier: '',
-      driver: '',
-      truck: '',
-      trailer: '',
-      rateInput: hasRate ? String(rate) : '',
-      ...(hasRate ? { rateSource: 'user-entered' } : {}),
-      brokerable: 'false',
-      notes: notes.join(' ')
-    };
-    if (!order.rateInput) {
-      const savedLaneRate = getSavedLaneRate(laneRates, selectedBroker, order);
-      if (savedLaneRate) {
-        order.rateInput = savedLaneRate;
-        order.rateSource = 'user-entered';
-      }
-    }
-    parsedRows.push(order);
-  });
-
-  // A state the OCR could not read is taken from another row of this screenshot with the same city.
-  const statesByCity = {};
-  const record = (city, state) => {
-    if (!state) return;
-    const counts = statesByCity[city] = statesByCity[city] || {};
-    counts[state] = (counts[state] || 0) + 1;
-  };
-  parsedRows.forEach(order => {
-    record(order.origCity, order.origSt);
-    record(order.destCity, order.destSt);
-  });
-  const likelyState = city => Object.entries(statesByCity[city] || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || '';
-  const loads = parsedRows.map(order => {
-    const origSt = order.origSt || likelyState(order.origCity);
-    const destSt = order.destSt || likelyState(order.destCity);
-    const missingState = !origSt || !destSt;
-    return {
-      ...order,
-      origSt,
-      destSt,
-      route: `${order.origCity}${origSt ? `, ${origSt}` : ''} → ${order.destCity}${destSt ? `, ${destSt}` : ''}`,
-      notes: missingState ? `${order.notes} A state could not be read; enter it before export.` : order.notes
-    };
-  });
-  return { loads, skippedLtl, skippedNoDate };
-}
-
 async function readChScreenshot(worker, canvas, lines, brokerName, laneRates, scale) {
   const headers = findChHeaders(lines);
   if (!headers) return { loads: [], skippedLtl: 0, skippedNoDate: 0 };
@@ -2200,154 +763,6 @@ async function readChScreenshot(worker, canvas, lines, brokerName, laneRates, sc
   return parseChScreenshotLines(lines, canvas.width, canvas.height, brokerName, laneRates, strips);
 }
 
-function parseGmailLoadEmail(messageText, selectedBroker, laneRates) {
-  const isChCustomer = isCh593772Customer(selectedBroker);
-  const lines = String(messageText || '')
-    .replace(/\r/g, '\n')
-    .replace(/\t/g, '\n')
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean);
-  const loads = [];
-  let pickupDate = '';
-  const parseDate = text => {
-    const match = String(text || '').match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/);
-    if (!match) return '';
-    const [, month, day, yearText] = match;
-    const year = yearText.length === 2 ? `20${yearText}` : yearText;
-    return `${month}/${day}/${year}`;
-  };
-  const findState = text => /^[A-Z]{2,3}$/i.test(text);
-  const skipMetadata = text => /^(?:OPEN|INIT|WEB|COST|VIEW|UNBOOKED|HAZMAT)$/i.test(text);
-  // Hours cells look like "A 14:30 - 14:30", "O 08:00 - 15:00", or "00:00 - 23:59".
-  const parseHours = text => {
-    const match = String(text || '').match(/(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})/);
-    if (!match || Number(match[1]) > 23 || Number(match[3]) > 23
-      || Number(match[2]) > 59 || Number(match[4]) > 59) return '';
-    const pad = value => String(value).padStart(2, '0');
-    return `${pad(match[1])}${match[2]} - ${pad(match[3])}${match[4]}`;
-  };
-  const createLoad = (id, origin, originState, destination, destinationState, weightText, trailingText = '', schedule = {}) => {
-    const weight = weightText.match(/[\d,]+(?:\.\d+)?/)?.[0] || '';
-    if (!pickupDate || !origin || !destination || !weight) return;
-    const tailParts = trailingText.match(/[\d,]+(?:\.\d+)?/g) || [];
-    const miles = isChCustomer
-      ? ''
-      : tailParts.length ? tailParts[0].replace(/,/g, '') : '';
-    const eCode = /\bHAZMAT\b/i.test(messageText.slice(0, 500)) ? 'VZ' : 'VAN:VAN';
-    const deliveryDate = parseDate(schedule.deliveryDate);
-    const order = {
-      id,
-      eCode,
-      status: 'OPEN',
-      tag: 'OPEN',
-      route: `${origin.toUpperCase()}, ${originState.toUpperCase()} → ${destination.toUpperCase()}, ${destinationState.toUpperCase()}`,
-      puDate: `PU: ${pickupDate}`,
-      delDate: deliveryDate ? `DFL: ${deliveryDate}` : 'DFL: Upcoming',
-      pickupTime: `${pickupDate} ${parseHours(schedule.pickupHours) || '0800 - 1600'}`,
-      deliveryTime: deliveryDate ? `${deliveryDate} ${parseHours(schedule.deliveryHours) || '0800 - 1600'}` : '',
-      origCity: origin.toUpperCase(),
-      origSt: originState.toUpperCase(),
-      origZip: '',
-      weight: `${weight} lbs`,
-      destCity: destination.toUpperCase(),
-      destSt: destinationState.toUpperCase(),
-      destZip: '',
-      miles,
-      planningComment: 'Imported from Gmail',
-      carrier: '',
-      driver: '',
-      truck: '',
-      trailer: '',
-      rateInput: isChCustomer
-        ? String(Number(trailingText.trim().match(/^\$?([\d,]+(?:\.\d+)?)(?:\s|$)/)?.[1]?.replace(/,/g, '')) || 0)
-        : '',
-      ...(isChCustomer ? { rateSource: 'customer-bin' } : {}),
-      brokerable: 'false',
-      notes: deliveryDate ? '' : 'Delivery date/time not included in email; please enter before export.'
-    };
-    const savedLaneRate = !isChCustomer && getSavedLaneRate(laneRates, selectedBroker, order);
-    if (savedLaneRate) {
-      order.rateInput = savedLaneRate;
-      order.rateSource = 'user-entered';
-    }
-    loads.push(order);
-  };
-
-  const tableRows = String(messageText || '').split(/\r?\n/).map(line => line.split('\t').map(cell => cell.trim()));
-  if (isChCustomer && tableRows.some(cells => /^\d{8,10}$/.test(cells[0]) && cells.length >= 7)) {
-    // Column positions come from the header row: the customer added Pickup Hours (6th),
-    // Delivery Hours (11th), and Delivery Date (12th) columns, shifting Weight and Bin.
-    const headerCells = tableRows.find(cells => cells.some(cell => /^load\s*#/i.test(cell))
-      && cells.some(cell => /^bin\b/i.test(cell))) || [];
-    const findColumn = pattern => headerCells.findIndex(cell => pattern.test(cell));
-    const weightColumn = findColumn(/^weight\b/i);
-    const binColumn = findColumn(/^bin\b/i);
-    const pickupHoursColumn = findColumn(/^pickup\s*hours\b/i);
-    const deliveryHoursColumn = findColumn(/^delivery\s*hours\b/i);
-    const deliveryDateColumn = findColumn(/^delivery\s*date\b/i);
-    for (const cells of tableRows) {
-      const dateHeading = cells[0].match(/\b(\d{1,2}\/\d{1,2}\/(?:\d{2}|\d{4}))\s*-\s*[A-Za-z]{3,9}\b/);
-      if (dateHeading) pickupDate = parseDate(dateHeading[1]);
-      if (!/^\d{8,10}$/.test(cells[0]) || cells.length < 7) continue;
-      createLoad(cells[0], cells[1], cells[2], cells[3], cells[4],
-        cells[weightColumn >= 0 ? weightColumn : 5] || '',
-        cells[binColumn >= 0 ? binColumn : 6] || '',
-        {
-          pickupHours: pickupHoursColumn >= 0 ? cells[pickupHoursColumn] : '',
-          deliveryHours: deliveryHoursColumn >= 0 ? cells[deliveryHoursColumn] : '',
-          deliveryDate: deliveryDateColumn >= 0 ? cells[deliveryDateColumn] : ''
-        });
-    }
-    return autoFillLoadZipCodes(loads);
-  }
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const dateHeading = lines[index].match(/\b(\d{1,2}\/(\d{1,2})\/(?:\d{2}|\d{4}))\s*-\s*[A-Za-z]{3,9}\b/);
-    if (dateHeading) pickupDate = parseDate(dateHeading[1]);
-
-    const inlineRow = lines[index].match(
-      /^(\d{8,10})\s+(.+?)\s+([A-Z]{2,3})\s+(.+?)\s+([A-Z]{2,3})\s+([\d,]+(?:\.\d+)?)\s*lbs?\b(.*)$/i
-    );
-    if (inlineRow) {
-      createLoad(inlineRow[1], inlineRow[2], inlineRow[3], inlineRow[4], inlineRow[5], inlineRow[6], inlineRow[7]);
-      continue;
-    }
-    if (!/^\d{8,10}$/.test(lines[index])) continue;
-
-    const values = [];
-    let nextIndex = index + 1;
-    while (nextIndex < lines.length && values.length < 8) {
-      if (/^\d{8,10}$/.test(lines[nextIndex])
-        || /\b\d{1,2}\/\d{1,2}\/(?:\d{2}|\d{4})\s*-\s*[A-Za-z]{3,9}\b/.test(lines[nextIndex])) break;
-      if (!skipMetadata(lines[nextIndex])) values.push(lines[nextIndex]);
-      nextIndex += 1;
-    }
-
-    const originStateIndex = values.findIndex(findState);
-    if (originStateIndex < 1) continue;
-    const destinationStateIndex = values.findIndex(
-      (value, valueIndex) => valueIndex >= originStateIndex + 2 && findState(value)
-    );
-    if (destinationStateIndex < originStateIndex + 2) continue;
-    const weightIndex = values.findIndex((value, valueIndex) =>
-      valueIndex > destinationStateIndex && /[\d,]+(?:\.\d+)?\s*lbs?/i.test(value)
-    );
-    if (weightIndex < 0) continue;
-    createLoad(
-      lines[index],
-      values.slice(0, originStateIndex).join(' '),
-      values[originStateIndex],
-      values.slice(originStateIndex + 1, destinationStateIndex).join(' '),
-      values[destinationStateIndex],
-      values[weightIndex],
-      values.slice(weightIndex + 1).join(' ')
-    );
-    index = nextIndex - 1;
-  }
-  return autoFillLoadZipCodes(loads);
-}
-
 // Earliest pickup start Landstar will accept, as an Excel serial on the local clock:
 // now plus a lead time (for the upload bot's rate check and upload), rounded up to
 // the next quarter hour. Landstar rejects "Pickup Start Date cannot be in the past".
@@ -2383,32 +798,6 @@ function buildLandstarPosting(record) {
     deliveryThru: excelSerialToBoardTime(record['Delivery Date (Thru)(Required)']),
     weight: Number(record['Weight(Required)']) || 0
   };
-}
-
-// A load someone is actively working: a truck or driver on it, an offer out, a Landstar
-// truck assignment, or tracking under way. Imports never delete these and never take their
-// postings off Landstar, even when the customer's new list no longer shows them (safety
-// net, 2026-11-13: a load dispatched in Landstar but not yet BOOKED here must not vanish).
-function isLoadBeingWorked(load) {
-  return Boolean(String(load.truck || '').trim() || String(load.driver || '').trim()
-    || load.status === 'OFFER' || load.landstarAssignment
-    || load.paramountTracking?.freightBill
-    || ['At Pickup', 'Loaded', 'In Transit', 'At Delivery', 'Delivered'].includes(load.trackingStage));
-}
-
-// Loads that were posted to Landstar and are missing from a customer's new list. This
-// includes Nolan: any posted Nolan load not in the new screenshots is removed too.
-function findDroppedPostings(customer, importedLoads, existingLoads, equipmentScope = null) {
-  const importedIds = new Set(importedLoads.map(load => normalizeLoadId(getBaseLoadId(load))).filter(Boolean));
-  if (!importedIds.size) return [];
-  // Loads added by hand are never taken off Landstar for being missing from the list.
-  // With an equipment scope (RXO's separate van/flatbed/reefer/hazmat lists), only postings in
-  // the uploaded categories are candidates; the other lists' postings stay up.
-  return existingLoads.filter(load => load.landstarPosting && !load.manualEntry
-    && !String(load.needsCapacity || '').trim() && load.status !== 'BOOKED'
-    && !isLoadBeingWorked(load)
-    && (!equipmentScope || equipmentScope.has(getRxoEquipmentListCategory(load)))
-    && !importedIds.has(normalizeLoadId(getBaseLoadId(load))));
 }
 
 // Tabs of an Excel workbook that hold loads: the first tab always (as before), plus any
@@ -2462,110 +851,6 @@ function adjustPickupWindow(pickupFrom, pickupThru, earliestStart) {
   return { from: pickupFrom, ended: false, moved: false };
 }
 
-function toExcelDateTime(value, fallbackDateValue = '') {
-  const dateTime = String(value || '').replace(/[•·]/g, ' ').replace(/\s+/g, ' ').trim();
-  const fullMatch = dateTime.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,4})(?::(\d{2}))?\s*(AM|PM)?$/i);
-  if (fullMatch) {
-    const [, monthText, dayText, yearText, hourText, minuteText, meridiem] = fullMatch;
-    const month = Number(monthText);
-    const day = Number(dayText);
-    const year = yearText.length === 2 ? 2000 + Number(yearText) : Number(yearText);
-    let hour;
-    let minute;
-    if (minuteText !== undefined) {
-      hour = Number(hourText);
-      minute = Number(minuteText);
-    } else if (hourText.length > 2) {
-      hour = Number(hourText.slice(0, -2));
-      minute = Number(hourText.slice(-2));
-    } else {
-      hour = Number(hourText);
-      minute = 0;
-    }
-    if (meridiem) {
-      if (hour < 1 || hour > 12) return null;
-      hour = hour % 12 + (meridiem.toUpperCase() === 'PM' ? 12 : 0);
-    }
-    const date = new Date(Date.UTC(year, month - 1, day, hour, minute));
-    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1
-      || date.getUTCDate() !== day || hour > 23 || minute > 59) return null;
-    return (date.getTime() - Date.UTC(1899, 11, 30)) / 86400000;
-  }
-
-  const timeMatch = dateTime.match(/^(\d{1,4})(?::(\d{2}))?\s*(AM|PM)?$/i);
-  const fallbackMatch = String(fallbackDateValue || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/);
-  if (!timeMatch || !fallbackMatch) return null;
-  const [, timeText, minuteText, meridiem] = timeMatch;
-  let hour;
-  let minute;
-  if (minuteText !== undefined) {
-    hour = Number(timeText);
-    minute = Number(minuteText);
-  } else if (timeText.length > 2) {
-    hour = Number(timeText.slice(0, -2));
-    minute = Number(timeText.slice(-2));
-  } else {
-    hour = Number(timeText);
-    minute = 0;
-  }
-  if (meridiem) {
-    if (hour < 1 || hour > 12) return null;
-    hour = hour % 12 + (meridiem.toUpperCase() === 'PM' ? 12 : 0);
-  }
-  if (hour > 23 || minute > 59) return null;
-  const [, monthText, dayText, yearText] = fallbackMatch;
-  const month = Number(monthText);
-  const day = Number(dayText);
-  const year = yearText.length === 2 ? 2000 + Number(yearText) : Number(yearText);
-  const date = new Date(Date.UTC(year, month - 1, day, hour, minute));
-  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
-  return (date.getTime() - Date.UTC(1899, 11, 30)) / 86400000;
-}
-
-function parseSchedulePickerParts(value) {
-  const parts = splitScheduleRange(value);
-  const parse = text => {
-    const match = String(text || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s+(\d{1,2}):?(\d{2})/);
-    if (!match) return null;
-    const year = match[3].length === 2 ? 2000 + Number(match[3]) : Number(match[3]);
-    return {
-      date: `${year}-${String(Number(match[1])).padStart(2, '0')}-${String(Number(match[2])).padStart(2, '0')}`,
-      time: `${String(Number(match[4])).padStart(2, '0')}:${match[5]}`
-    };
-  };
-  const from = parse(parts[0]);
-  let to = parse(parts[1]);
-  if (!to && from) {
-    // "11/18/2026 0700 - 1500": the end has only a time, on the same day as the start.
-    const timeOnly = String(parts[1] || '').trim().match(/^(\d{1,2}):?(\d{2})$/);
-    if (timeOnly && Number(timeOnly[1]) <= 23 && Number(timeOnly[2]) <= 59) {
-      to = { date: from.date, time: `${String(Number(timeOnly[1])).padStart(2, '0')}:${timeOnly[2]}` };
-    }
-  }
-  return { from, to };
-}
-
-function formatSchedulePickerParts(from, to) {
-  const format = (part, fallbackTime) => {
-    if (!part?.date) return '';
-    const [year, month, day] = part.date.split('-');
-    const time = (part.time || fallbackTime).replace(':', '');
-    return `${Number(month)}/${Number(day)}/${year} ${time}`;
-  };
-  const fromText = format(from, '08:00');
-  const toText = format(to, '16:00');
-  return fromText && toText ? `${fromText} - ${toText}` : fromText || toText;
-}
-
-function normalizeMilesValue(value) {
-  const compact = String(value ?? '').replace(/[\s,]/g, '');
-  if (/^\d{1,4}(\.\d+)?$/.test(compact)) return compact;
-  const decimal = compact.match(/(\d{1,4})\.(\d)/);
-  if (decimal) return `${decimal[1]}.${decimal[2]}`;
-  const digits = compact.replace(/\D/g, '');
-  return digits.length >= 7 ? digits.slice(0, -6) : digits;
-}
-
 function hasLoadRate(load) {
   return Number(String(load?.rateInput || '').replace(/[$,]/g, '')) > 0;
 }
@@ -2617,16 +902,6 @@ function getRatePerMile(rate, miles) {
   return (rateValue / mileValue).toFixed(2);
 }
 
-// Weekly fuel surcharge ($/mile) by pickup region, the same four regions as the weekly
-// fuel email ("East .86 Midwest .88 West 1.03 New England .89"). The Gulf states use the
-// Midwest rate; anything not listed (Canada, blank) uses Midwest too.
-const fuelSurchargeRegions = {
-  east: { label: 'East', states: ['NY', 'NJ', 'PA', 'DE', 'MD', 'DC', 'VA', 'WV', 'NC', 'SC', 'GA', 'FL'] },
-  midwest: { label: 'Midwest (and Gulf: TX LA AR MS AL NM)', states: ['OH', 'MI', 'IN', 'IL', 'WI', 'MN', 'IA', 'MO', 'KY', 'TN', 'KS', 'NE', 'SD', 'ND', 'OK', 'TX', 'LA', 'AR', 'MS', 'AL', 'NM'] },
-  west: { label: 'West', states: ['CO', 'ID', 'MT', 'UT', 'WY', 'AZ', 'NV', 'CA', 'OR', 'WA', 'AK', 'HI'] },
-  newEngland: { label: 'New England', states: ['CT', 'ME', 'MA', 'NH', 'RI', 'VT'] }
-};
-
 const defaultFuelSurchargeRates = { east: '0.86', midwest: '0.88', west: '1.03', newEngland: '0.89' };
 
 function normalizeFuelSurchargeRates(value) {
@@ -2641,22 +916,6 @@ function normalizeFuelSurchargeRates(value) {
     rates[key] = parsed > 0 ? String(Math.round(parsed * 100) / 100) : '';
   });
   return rates;
-}
-
-function getFuelSurchargeRegion(state) {
-  const code = String(state || '').trim().toUpperCase();
-  const match = Object.entries(fuelSurchargeRegions)
-    .find(([, info]) => info.states.includes(code));
-  return match ? match[0] : 'midwest';
-}
-
-// $/mile for a pickup state; a blank regional rate falls back to the Midwest rate.
-function getFuelSurchargeRate(rates, state) {
-  if (!rates || typeof rates !== 'object') return null;
-  const parse = value => Number(String(value || '').replace(/[$,]/g, ''));
-  const regional = parse(rates[getFuelSurchargeRegion(state)]);
-  const rate = regional > 0 ? regional : parse(rates.midwest);
-  return rate > 0 ? rate : null;
 }
 
 // The weekly fuel email: "11/3/2026   East .86  Midwest .88   West 1.03 New England .89".
@@ -2674,13 +933,6 @@ function parseFuelSurchargeEmail(text) {
   return { date, rates };
 }
 
-// Team vans (VM/VT) are shown as a plain V; the Team flag carries the team part.
-// Equipment we don't haul: oversized/specialized trailers, and intermodal ("INT" in the
-// equipment box). These loads are never imported or exported, for every customer.
-function isSkippableEquipment(value) {
-  return /OVER\s*DIMENSIONAL|OVER\s*SIZE|OVERSIZE|REMOVABLE\s*GOOSE\s*NECK|GOOSE\s*NECK|\bRGN\b|LOW\s*BOY|DOUBLE\s*DROP|\bINT\b|INTER\s*MODAL/i.test(String(value || ''));
-}
-
 function getDisplayEquipmentCode(value) {
   const code = String(value || '').trim().toUpperCase();
   if (code === 'VE') return 'VAN';
@@ -2690,7 +942,12 @@ function getDisplayEquipmentCode(value) {
 // AMERI 18347- ATZ (exact account; Daniel 2026-11-27): one posting offers both trailers,
 // Equipment 1 VAN and Equipment 2 REFR, at the same contract rate. A REFR or other
 // alternate picked by hand on the load (equipment2) still wins.
-function getLandstarExportEquipment2(customer, ord, postingCode = '') {
+function getLandstarExportEquipment2(customer, ord, postingCode = '', rules = null) {
+  // ⚙ This customer's rules win (a 2nd equipment picked by hand on the load still wins over them).
+  if (ord?.equipment2 === undefined) {
+    const fromRules = ruleEquipment2(rules);
+    if (fromRules !== undefined) return fromRules;
+  }
   if (isAmeriCustomer(customer) && ord?.equipment2 === undefined
     && getLandstarEquipmentCode(ord?.eCode) === 'VAN') return 'REFR';
   // Agent AAQ's Phalanx loads post as flatbed only: no Step Deck alternate.
@@ -2723,38 +980,6 @@ const equipmentOptions = [
   ['24VN', '24-foot van'], ['28VN', '28-foot van'], ['48VN', '48-foot van'], ['53VN', '53-foot van'],
   ['48FL', '48-foot flatbed'], ['53FL', '53-foot flatbed'], ['53SD', '53-foot step deck']
 ];
-
-// Equipment bucket for scoping RXO list imports: the van, flatbed and reefer lists are
-// uploaded separately, so an import only replaces existing loads in the buckets it contains.
-function getEquipmentListCategory(eCode) {
-  const code = getLandstarEquipmentCode(eCode);
-  if (code === 'REFR') return 'reefer';
-  if (['FLAT', 'FH', 'STEP', 'FLCS'].includes(code)) return 'flatbed';
-  if (code === 'VAN' || /^\d{2}VN$/.test(code)) return 'van';
-  return 'other';
-}
-
-// RXO imports default blank equipment to VAN:VAN, so scope lookups do the same.
-// Hazmat is its own list: a hazmat upload never replaces van/reefer/flatbed loads,
-// and a van upload never replaces hazmat loads (VZ/RZ would otherwise count as van/reefer).
-function getRxoEquipmentListCategory(load) {
-  if (isHazmatLoad(load)) return 'hazmat';
-  const eCode = String(load?.eCode || '').trim();
-  return getEquipmentListCategory(eCode || 'VAN:VAN');
-}
-
-function getLandstarCommodity(value) {
-  const equipmentCode = String(value || '').trim().toUpperCase().split(':')[0];
-  // FH (flatbed hotshot) is not hazmat by itself; hazmat loads carry hazmat: 'true'.
-  // FV (flatbed/stepdeck hazmat) is hazmat by itself, like VZ/RZ.
-  if (['VZ', 'RZ', 'FV'].includes(equipmentCode)) {
-    return 'HAZMAT';
-  }
-  if (equipmentCode === 'VE') {
-    return 'CHEM';
-  }
-  return 'CGAPP';
-}
 
 function playExportSound() {
   try {
@@ -2835,18 +1060,6 @@ function speakWelcomeGreeting(postingCode) {
   }
 }
 
-function isHazmatLoad(load) {
-  if (['CGAPP', 'HAZMAT', 'CHEM'].includes(load?.commodity)) return load.commodity === 'HAZMAT';
-  return getLandstarCommodity(load?.eCode) === 'HAZMAT'
-    || String(load?.eCode || '').trim().toUpperCase() === 'FV'
-    || String(load?.hazmat || '').toLowerCase() === 'true'
-    || /\bhazmat\b/i.test(String(load?.planningComment || ''));
-}
-
-function isTankerLoad(load) {
-  return String(load?.tanker || '').toLowerCase() === 'true' || /tanker/i.test(String(load?.planningComment || ''));
-}
-
 // Customer lists mark hazmat and tanker freight in the equipment type ("Van Hazmat",
 // "Tanker") or the commodity ("HAZMAT CHEMICALS"). "NON-HAZMAT ..." is not hazmat.
 function getImportedHazmatTanker(equipment, commodities = []) {
@@ -2907,39 +1120,10 @@ function toLandstarCity(value) {
   return abbreviated.length > 18 ? abbreviated.slice(0, 18).trim() : abbreviated;
 }
 
-// Customer rules match one exact account. Accounts can share a name and number and differ
-// only by the letter at the end ("Para 1522166 - ATZ" vs "Para 1522166 - ATZ H"): those
-// are separate accounts, so a rule for one must never check just the name or number.
-function isNolanCustomer(name) {
-  return normalizeCustomerName(name) === ntgCustomerName;
-}
-
 function getImportedLoadSelection(customer, importedLoads) {
   return isNolanCustomer(customer)
     ? Array.from(new Set(importedLoads.map(load => load.id)))
     : [];
-}
-
-function isRxoCustomer(name) {
-  const normalized = normalizeCustomerName(name);
-  return normalized === rxoCustomerName || normalized === rxoPayerCustomerName;
-}
-
-// R X O 2429200 - ATZ only (not ATZ P): van freight picking up in these states is
-// skipped on import and never exported. Reefer and other equipment, and hazmat or tanker
-// loads, are unaffected. Empty since 2026-11-25 (Daniel: "Remove the skip"; it was WI, IN,
-// OH, MI, MN, SD, ND, UT and ID from 11/04), so every RXO van load imports and posts.
-const rxoSkippedVanOriginStates = new Set([]);
-const vanEquipmentCodes = new Set(['VAN', '24VN', '28VN', '48VN', '53VN']);
-
-function isRxoSkippedVanLoad(customer, load) {
-  if (normalizeCustomerName(customer) !== rxoCustomerName) return false;
-  // Hazmat and tanker freight is always kept, whatever the pickup state.
-  if (isHazmatLoad(load) || isTankerLoad(load)) return false;
-  const originState = String(load?.origSt || '').trim().toUpperCase();
-  if (!rxoSkippedVanOriginStates.has(originState)) return false;
-  // getLandstarEquipmentCode maps V, VZ, VT and Van-or-Reefer (VR) to VAN.
-  return vanEquipmentCodes.has(getLandstarEquipmentCode(load?.eCode));
 }
 
 // R X O 2429200 - ATZ only (not ATZ P): van loads priced from DAT post under the DAT rate.
@@ -2966,51 +1150,8 @@ function isRxoSameCityLoad(customer, load) {
   return origin !== '|' && !origin.startsWith('|') && origin === place(load?.destCity, load?.destSt);
 }
 
-// Loads picking up in or delivering to Mexico are never imported or exported, for every
-// customer. Customer lists mark Mexico with a MX/MEX country code or a Mexican state code
-// (EM, JA, GJ, BJ, NX, CH, CU, ...): any two-letter region that is not a US state or a
-// Canadian province counts.
-function isMexicoPlace(state, country) {
-  const countryCode = String(country || '').trim().toUpperCase();
-  if (countryCode === 'MX' || countryCode === 'MEX' || countryCode === 'MEXICO') return true;
-  const region = String(state || '').trim().toUpperCase();
-  return /^[A-Z]{2}$/.test(region) && !stateCodes.has(region);
-}
-
-function isMexicoLoad(load) {
-  return isMexicoPlace(load?.origSt, load?.origCountry) || isMexicoPlace(load?.destSt, load?.destCountry);
-}
-
 function isParaCustomer(name) {
-  return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === 'PARA1522166ATZ';
-}
-
-// Customers whose screenshots mark loads on hold with a red order number: a red order #
-// imports as ON HOLD, any other as OPEN. Para 1522166 - ATZ and Para 1522166 - ATZ H.
-const redHoldScreenshotCustomers = new Set(['PARA1522166ATZ', 'PARA1522166ATZH']);
-
-function holdsRedScreenshotLoads(name) {
-  return redHoldScreenshotCustomers.has(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
-}
-
-function isCh593772Customer(name) {
-  return /^CH593772(?:ATZ[A-Z]?)?$/.test(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
-}
-
-// Accounts whose imports are the customer's full list: a re-import replaces the list, so
-// loads that dropped off it are deleted (and their Landstar postings taken down).
-const importStatusPreservationCustomers = new Set([
-  'PARA1522166ATZ',
-  'PARA1522166ATZH',
-  'RXO2429200ATZ',
-  'RXO2429200ATZP',
-  'NOLAN965974ATZ',
-  'NOLAN965974ATZH'
-]);
-
-function preservesImportedLoadStatus(name) {
-  const normalized = normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '');
-  return importStatusPreservationCustomers.has(normalized);
+  return accountKey(normalizeCustomerName(name)) === 'PARA1522166ATZ';
 }
 
 // When Google Routes can't answer, driving miles are estimated from the two ZIP codes:
@@ -3193,12 +1334,6 @@ async function applyDatRatesForImport(loads, selectedBroker, laneRates, setLaneR
   return rateError;
 }
 
-function normalizeLoadId(value) {
-  const text = String(value || '').trim().replace(/-ALT[A-Z]+$/i, '');
-  const digits = text.replace(/\D/g, '');
-  return digits || text.toUpperCase();
-}
-
 function getExportedRecordsForCustomer(registry, customer) {
   const customerKey = normalizeCustomerName(customer).toUpperCase().replace(/[^A-Z0-9]/g, '');
   const matchingEntries = Object.entries(registry || {}).filter(([key]) =>
@@ -3208,23 +1343,6 @@ function getExportedRecordsForCustomer(registry, customer) {
     ids: [...records.ids, ...(Array.isArray(value?.ids) ? value.ids : []).map(normalizeLoadId)],
     laneDays: [...records.laneDays, ...(Array.isArray(value?.laneDays) ? value.laneDays : [])]
   }), { ids: [], laneDays: [] });
-}
-
-function createLaneDayKey(order) {
-  const normalize = value => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const origin = normalize(order.origCity);
-  const destination = normalize(order.destCity);
-  const originState = normalize(order.origSt);
-  const destinationState = normalize(order.destSt);
-  const dateText = String(order.pickupTime || order.puDate || '');
-  const usDate = dateText.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/);
-  const isoDate = dateText.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-  if (!origin || !destination || !usDate && !isoDate) return '';
-
-  const pickupDate = usDate
-    ? `${usDate[3].length === 2 ? `20${usDate[3]}` : usDate[3]}-${usDate[1].padStart(2, '0')}-${usDate[2].padStart(2, '0')}`
-    : `${isoDate[1]}-${isoDate[2].padStart(2, '0')}-${isoDate[3].padStart(2, '0')}`;
-  return JSON.stringify([origin, originState, destination, destinationState, pickupDate]);
 }
 
 // Earliest pickup first; loads without a readable pickup date go last.
@@ -3290,15 +1408,6 @@ function getReimportedLoadStatus(existingLoad, wasPreviouslyExported) {
   return { status: 'OPEN', tag: 'OPEN' };
 }
 
-function getImportedLoadKey(load) {
-  const baseId = getBaseLoadId(load);
-  const key = normalizeLoadId(baseId);
-  if (!key || /^(?:IMG|IMP|NTG|DAT)-\d+-\d+$/i.test(baseId)) {
-    throw new Error('An imported load has no readable load number. Use a list with load numbers. Existing loads were not deleted.');
-  }
-  return key;
-}
-
 function deduplicateDatImports(importedLoads, existingLoads) {
   const existingByLaneDay = new Map(existingLoads.map(load => [createLaneDayKey(load), load]).filter(([key]) => key));
   const seenLaneDays = new Set();
@@ -3327,171 +1436,6 @@ function deduplicateDatImports(importedLoads, existingLoads) {
   return { loads, skippedDuplicateCount, unreadableRows };
 }
 
-function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
-  additive = !preservesImportedLoadStatus(customer), allowGeneratedIds = additive, now = Date.now(), keepManualEnt = false,
-  // false for partial lists (DAT rate screenshots, screenshots with unreadable rows)
-  reportDroppedPostings = true
-} = {}) {
-  if (!importedLoads.length) {
-    throw new Error('The imported load list is empty. Existing loads were not deleted.');
-  }
-  // RXO ATZ van loads picking up in skipped states are not imported (see isRxoSkippedVanLoad).
-  const skippedRxoVanCount = importedLoads.filter(load => isRxoSkippedVanLoad(customer, load)).length;
-  importedLoads = importedLoads.filter(load => !isRxoSkippedVanLoad(customer, load));
-  // Loads to or from Mexico are never imported.
-  const skippedMexicoCount = importedLoads.filter(isMexicoLoad).length;
-  importedLoads = importedLoads.filter(load => !isMexicoLoad(load));
-  // Intermodal ("INT") and oversized equipment is never imported, from any source.
-  const skippedEquipmentCount = importedLoads.filter(load => isSkippableEquipment(load.eCode)).length;
-  importedLoads = importedLoads.filter(load => !isSkippableEquipment(load.eCode));
-  if (!importedLoads.length) {
-    throw new Error('Every load in this list goes to or from Mexico or uses equipment we skip (INT/oversized), so nothing was imported. Existing loads were not deleted.');
-  }
-  // RXO's van, flatbed, reefer and hazmat lists are uploaded separately: a full-list import only
-  // replaces existing loads in the equipment categories the file contains. Loads of other
-  // equipment stay, and their Landstar postings are never dropped.
-  const equipmentScope = !additive && isRxoCustomer(customer)
-    ? new Set(importedLoads.map(load => getRxoEquipmentListCategory(load)))
-    : null;
-  const loadKey = load => normalizeLoadId(getBaseLoadId(load));
-  const importedById = new Map();
-  let duplicateCount = 0;
-  importedLoads.forEach(load => {
-    const id = allowGeneratedIds ? getBaseLoadId(load) : getImportedLoadKey(load);
-    if (!id) throw new Error('An imported load has no readable load number. Existing loads were not deleted.');
-    const key = JSON.stringify([id, createLaneDayKey(load)]);
-    if (importedById.has(key)) {
-      duplicateCount += 1;
-      return;
-    }
-    importedById.set(key, { ...load, id, sourceLoadId: id });
-  });
-  const importedLaneDays = new Set();
-  const matchedIds = new Set();
-  const mergedLoads = [];
-  let laneDayDuplicateCount = 0;
-  for (const load of importedById.values()) {
-    const laneDay = createLaneDayKey(load);
-    if (laneDay && importedLaneDays.has(laneDay)) {
-      laneDayDuplicateCount += 1;
-      console.warn(`[import] skipped same-lane/pickup-day duplicate #${getBaseLoadId(load)}: ${load.origCity}, ${load.origSt} → ${load.destCity}, ${load.destSt} pickup ${load.pickupTime || load.puDate || ''}`);
-      continue;
-    }
-    if (laneDay) importedLaneDays.add(laneDay);
-    const existing = existingLoads.find(order => loadKey(order) === loadKey(load) && !isNewDayForExistingLoad(order, load))
-      || (allowGeneratedIds && existingLoads.find(order => laneDay && createLaneDayKey(order) === laneDay))
-      || existingLoads.find(order => loadKey(order) === loadKey(load));
-    const populatedFields = Object.fromEntries(Object.entries(load).filter(([, value]) =>
-      value !== undefined && value !== null && String(value).trim() !== ''
-    ));
-    const merged = { ...existing, ...populatedFields, status: 'OPEN', tag: 'OPEN' };
-    if (existing) {
-      ['rateInput', 'rateSource', 'carrier', 'driver', 'driverPhone', 'truck', 'trailer', 'pickupEta', 'emptyLocation', 'notes', 'landstarComment', 'needsCapacity', 'commodity'].forEach(field => {
-        if (String(existing[field] || '').trim()) merged[field] = existing[field];
-      });
-      // The load still carries a DAT rate but you have typed a rate for this lane since: use yours.
-      if (load.rateSource === 'user-entered' && Number(load.rateInput) > 0 && isDatRateSource(existing.rateSource)) {
-        merged.rateInput = load.rateInput;
-        merged.rateSource = 'user-entered';
-      }
-      if (allowGeneratedIds && load.rateSource === 'dat-screenshot' && existing.rateSource !== 'user-entered'
-        && Number(load.rateInput) > 0) {
-        merged.rateInput = load.rateInput;
-        merged.rateSource = load.rateSource;
-      }
-      if (!isNewDayForExistingLoad(existing, load)) {
-        merged.id = existing.id;
-        merged.sourceLoadId = existing.sourceLoadId || getBaseLoadId(existing);
-        matchedIds.add(String(existing.id));
-      }
-    }
-    const fixedLaneRate = getFixedLaneRate(customer, merged);
-    if (fixedLaneRate && (!existing || existing.rateSource !== 'user-entered')) {
-      merged.rateInput = fixedLaneRate;
-      merged.rateSource = 'user-entered';
-    }
-    if (isCh593772Customer(customer) && load.rateSource === 'customer-bin') {
-      merged.rateInput = load.rateInput;
-      merged.rateSource = load.rateSource;
-    }
-    delete merged.landstarExportedAt;
-    if (holdsRedScreenshotLoads(customer) && load.screenshotStatus === 'ON HOLD') {
-      merged.status = 'ON HOLD';
-      merged.tag = 'HOLD';
-    }
-    delete merged.screenshotStatus;
-    // Pickup date already passed: the load goes (or stays) on ENT, new or re-imported.
-    if (hasPastPickupDate(merged)) {
-      merged.status = 'ENT';
-      merged.tag = 'ENT';
-    }
-    if (existing?.status === 'OFFER' && !isNewDayForExistingLoad(existing, load)) {
-      merged.status = 'OFFER';
-      merged.tag = 'OFFER';
-    }
-    // A booked load stays booked when the customer's list is imported again.
-    if (existing?.status === 'BOOKED' && !isNewDayForExistingLoad(existing, load)) {
-      merged.status = 'BOOKED';
-      merged.tag = 'BOOKED';
-      merged.bookedAt = existing.bookedAt;
-    }
-    const reservedLoads = existingLoads.filter(order => additive || (order.status === 'ENT'
-      && Number.isFinite(Date.parse(order.landstarExportedAt))
-      && now - Date.parse(order.landstarExportedAt) < exportedLoadRetentionMs));
-    mergedLoads.push(assignImportedLoadIdentity(merged, reservedLoads, mergedLoads));
-  }
-  const rawImportedIds = new Set(importedLoads.map(load => normalizeLoadId(getBaseLoadId(load))).filter(Boolean));
-  const retained = existingLoads.filter(load => {
-    if (matchedIds.has(String(load.id))) return false;
-    // Booked loads are covered; keep them even when the customer drops them from the list.
-    if (load.status === 'BOOKED') return true;
-    // A load being worked (truck, driver, offer, assignment or tracking) that is genuinely
-    // missing from the new list is kept too: it may be dispatched in Landstar before anyone
-    // marks it BOOKED here. Same-lane duplicates of imported rows still consolidate.
-    if (isLoadBeingWorked(load) && !rawImportedIds.has(normalizeLoadId(getBaseLoadId(load)))) return true;
-    // Loads added by hand stay until you delete them.
-    if (load.manualEntry || String(load.needsCapacity || '').trim()) return true;
-    // Loads from before the RXO van state rule was added are cleared out on the next import.
-    if (isRxoSkippedVanLoad(customer, load)) return false;
-    // Same for loads to or from Mexico imported before that rule.
-    if (isMexicoLoad(load)) return false;
-    if (isSkippableEquipment(load.eCode)) return false;
-    // RXO separate lists: equipment categories not in this file are left alone.
-    if (equipmentScope && !equipmentScope.has(getRxoEquipmentListCategory(load))) return true;
-    const exportedAt = Date.parse(load.landstarExportedAt);
-    // A full customer list is the truth: anything not on it is deleted (exported ENT loads
-    // too; their rates stay in the rate history). Booked and hand-added loads stay (above),
-    // and screenshot imports keep loads you moved to ENT by hand (never exported).
-    if (!additive) return load.status === 'ENT' && !Number.isFinite(exportedAt) && keepManualEnt;
-    // Screenshot imports also keep loads moved to ENT by hand (no export date).
-    const retainedArchive = load.status === 'ENT' && (Number.isFinite(exportedAt)
-      ? now - exportedAt < exportedLoadRetentionMs
-      : keepManualEnt);
-    if (retainedArchive) return true;
-    if (importedLaneDays.has(createLaneDayKey(load))) return false;
-    return retainedArchive || (additive && !(load.status === 'ENT' && Number.isFinite(exportedAt)
-      && now - exportedAt >= exportedLoadRetentionMs));
-  });
-  // Posted loads missing from this (full) list: the upload bot removes their Landstar
-  // postings. Each is handed over once, so its saved posting details are cleared here.
-  const dropped = reportDroppedPostings ? findDroppedPostings(customer, importedLoads, existingLoads, equipmentScope) : [];
-  const droppedIds = new Set(dropped.map(load => String(load.id)));
-  const droppedPostings = dropped.map(load => ({ customer, loadId: String(load.id), posting: load.landstarPosting }));
-  const loads = [...mergedLoads, ...retained].map(load => {
-    if (!droppedIds.has(String(load.id))) return load;
-    const { landstarPosting, ...rest } = load;
-    return rest;
-  });
-  return {
-    loads, additive, processedLoads: mergedLoads, droppedPostings, skippedRxoVanCount, skippedMexicoCount, skippedEquipmentCount,
-    laneDayDuplicateCount, equipmentScope,
-    usesScreenshotStatus: holdsRedScreenshotLoads(customer)
-      && importedLoads.some(load => ['ON HOLD', 'OPEN'].includes(load.screenshotStatus)),
-    duplicateCount,
-    removedCount: existingLoads.filter(load => !matchedIds.has(String(load.id)) && !retained.includes(load)).length
-  };
-}
-
 function getImportReplacementMessage(replacement) {
   const scopeLabel = replacement?.equipmentScope ? [...replacement.equipmentScope].join('/') : '';
   return replacement
@@ -3503,12 +1447,6 @@ function getImportReplacementMessage(replacement) {
       + (replacement.skippedEquipmentCount ? `• Skipped ${replacement.skippedEquipmentCount} intermodal (INT) or oversized load(s).\n` : '')
       + (replacement.droppedPostings?.length ? `• No longer on the list: ${replacement.droppedPostings.length} posted load(s); the upload bot will remove them from Landstar.\n` : '')
     : '';
-}
-
-function isNewDayForExistingLoad(existingLoad, importedLoad) {
-  const existingKey = createLaneDayKey(existingLoad);
-  const importedKey = createLaneDayKey(importedLoad);
-  return Boolean(existingKey && importedKey && existingKey !== importedKey);
 }
 
 function normalizeScheduleValue(value) {
@@ -3553,66 +1491,11 @@ function markDifferentScheduleLoadsEnt(loads, existingLoads = [], customer) {
   return loads.map(load => ({ ...load, status: 'OPEN', tag: 'OPEN' }));
 }
 
-function toAlphabeticalSuffix(index) {
-  let value = Number(index);
-  let suffix = '';
-  while (value >= 0) {
-    suffix = String.fromCharCode(65 + (value % 26)) + suffix;
-    value = Math.floor(value / 26) - 1;
-  }
-  return suffix;
-}
-
-function getBaseLoadId(order) {
-  return String(order?.sourceLoadId || order?.id || '').trim().replace(/-ALT[A-Z]+$/i, '');
-}
-
-// Returns true when the load's pickup date is before today (past-dated imports become ENT).
-// A pickup window over several days counts by its last day, so it stays open until then.
-function hasPastPickupDate(load) {
-  const text = String(load?.pickupTime || load?.puDate || '');
-  const match = [...text.matchAll(/(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})\b/g)].pop();
-  if (!match) return false;
-  const year = match[3].length === 2 ? 2000 + Number(match[3]) : Number(match[3]);
-  const pickup = new Date(year, Number(match[1]) - 1, Number(match[2]));
-  if (Number.isNaN(pickup.getTime())) return false;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return pickup < today;
-}
-
 // Past-dated pickups import as ENT, new loads and re-imported ones alike
 // (booked loads stay booked: replaceImportedCustomerLoads checks that last).
 function applyPastPickupEntStatus(importedLoad, existingLoads) {
   if (!hasPastPickupDate(importedLoad)) return importedLoad;
   return { ...importedLoad, status: 'ENT', tag: 'ENT' };
-}
-
-function assignImportedLoadIdentity(importedLoad, existingLoads, stagedLoads) {
-  const fallbackId = String(importedLoad?.id || '').trim();
-  const baseId = getBaseLoadId(importedLoad) || fallbackId;
-  if (!baseId) return importedLoad;
-
-  const normalizedLoad = {
-    ...importedLoad,
-    sourceLoadId: baseId
-  };
-  const relatedLoads = [...existingLoads, ...stagedLoads].filter(load => getBaseLoadId(load) === baseId);
-  const sameLaneDayLoad = relatedLoads.find(load => !isNewDayForExistingLoad(load, normalizedLoad));
-  if (sameLaneDayLoad) {
-    return { ...normalizedLoad, id: String(sameLaneDayLoad.id) };
-  }
-
-  const usedIds = new Set([...existingLoads, ...stagedLoads].map(load => String(load.id)));
-  if (!usedIds.has(baseId)) return { ...normalizedLoad, id: baseId };
-
-  let variantIndex = 0;
-  let variantId = `${baseId}-ALT${toAlphabeticalSuffix(variantIndex)}`;
-  while (usedIds.has(variantId)) {
-    variantIndex += 1;
-    variantId = `${baseId}-ALT${toAlphabeticalSuffix(variantIndex)}`;
-  }
-  return { ...normalizedLoad, id: variantId };
 }
 
 // Landstar export columns that depend on the account. AMERI 18347- ATZ loads are brokerable
@@ -3876,8 +1759,6 @@ function scheduleUnversionedLoadListHeal() {
   }, 2500);
 }
 
-const isDatRateSource = source => /^dat/i.test(String(source || ''));
-
 // Persist a rate for a lane so the next load in the same lane reuses it.
 // Only rates you type are saved for reuse: DAT rates go to the rate history but never
 // into laneRates, so a saved lane rate always means your own rate and beats DAT.
@@ -4042,6 +1923,22 @@ function moveCustomer(list, name, targetName) {
 
 const customerDragType = 'text/x-tms-customer';
 
+// Sort choices for the load list ('' = pickup date, earliest first).
+const LANE_SORT_CHOICES = [
+  ['', 'Pickup date, earliest first'], ['pickup-desc', 'Pickup date, latest first'],
+  ['origin-asc', 'Pickup city A–Z'], ['origin-desc', 'Pickup city Z–A'],
+  ['destination-asc', 'Delivery city A–Z'], ['destination-desc', 'Delivery city Z–A'],
+  ['origin-state-asc', 'Pickup state A–Z'], ['origin-state-desc', 'Pickup state Z–A'],
+  ['destination-state-asc', 'Delivery state A–Z'], ['destination-state-desc', 'Delivery state Z–A']
+];
+
+// Today (0), tomorrow (1)... as YYYY-MM-DD in local time.
+function pickupDayFromToday(offset) {
+  const date = new Date();
+  date.setDate(date.getDate() + offset);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 function normalizeBrokerList(value) {
   const brokerList = Array.isArray(value) ? value : ['Para 1522166 - ATZ', rxoCustomerName];
   const normalizedBrokers = Array.from(new Set(brokerList.map(normalizeCustomerName).filter(Boolean)));
@@ -4134,7 +2031,11 @@ function getUserProfile() {
       visibilityGroup: String(saved.visibilityGroup || ''),
       flag: saved.flag === 'NONE' || countryFlags[saved.flag] ? saved.flag : 'CO',
       teamLogo: normalizeTeamLogo(saved.teamLogo),
-      fuelSurcharge: normalizeFuelSurchargeRates(saved.fuelSurcharge)
+      fuelSurcharge: normalizeFuelSurchargeRates(saved.fuelSurcharge),
+      // ⚙ Customer rules and the Google Chat list-name answers are kept too (both were lost on
+      // every reload before, 2026-11-27).
+      customerRules: saved.customerRules && typeof saved.customerRules === 'object' && !Array.isArray(saved.customerRules) ? saved.customerRules : {},
+      chatSheetAccounts: saved.chatSheetAccounts && typeof saved.chatSheetAccounts === 'object' && !Array.isArray(saved.chatSheetAccounts) ? saved.chatSheetAccounts : {}
     };
   } catch (error) {
     console.error('Could not load My Settings:', error);
@@ -4150,55 +2051,6 @@ const defaultCustomerDatasets = {
     { id: '24424438', visibilityGroup: 'RXO', eCode: 'VAN:VAN', status: 'OPEN', tag: 'OPEN', route: 'BOLINGBROOK, IL → SCOTTSVILLE, KY', puDate: 'PU: Today', delDate: 'DFL: Upcoming', pickupTime: '10/18/2026 0800 - 1200', origCity: 'BOLINGBROOK', origSt: 'IL', origZip: '60440', weight: '20000 lbs', deliveryTime: '10/20/2026 0800 - 1700', destCity: 'SCOTTSVILLE', destSt: 'KY', destZip: '42164', miles: '431', planningComment: 'Imported from Excel', carrier: '', driver: '', truck: '', trailer: '', rateInput: '', brokerable: 'false', notes: '' }
   ]
 };
-
-// Search box match: load #, freight bill, cities, states, ZIPs, driver, truck, notes.
-// City names forgive small misspellings ("Shepardsville" finds SHEPHERDSVILLE).
-function loadMatchesSearch(order, searchQuery) {
-  const query = String(searchQuery || '').trim().toLowerCase();
-  if (!query) return true;
-  // A bare 2-letter query is a state search: match the state code exactly, not the
-  // substring "ca" inside "CAnton". Check this before the loose field substring match.
-  if (/^[a-z]{2}$/.test(query)) {
-    const states = [order.origSt, order.destSt].map(value => String(value || '').toLowerCase());
-    return states.includes(query);
-  }
-
-  const fields = [
-    order.id, order.route, order.origCity, order.origSt, order.origZip,
-    order.destCity, order.destSt, order.destZip, order.planningComment,
-    order.driver, order.truck, order.trailer,
-    order.paramountTracking?.freightBill, order.landstarAssignment?.landstarLoadId
-  ].map(value => String(value || '').toLowerCase());
-  if (fields.some(value => value.includes(query))) return true;
-
-  // "City ST" / "City, ST" typed together: match the city and state as a pair, since no
-  // single field holds the whole string.
-  const stateMatch = query.match(/^(.*?)[\s,]+([a-z]{2})$/);
-  if (stateMatch) {
-    const cityPart = stateMatch[1].trim();
-    const statePart = stateMatch[2];
-    const pairs = [
-      [order.origCity, order.origSt],
-      [order.destCity, order.destSt]
-    ].map(([city, st]) => [String(city || '').toLowerCase(), String(st || '').toLowerCase()]);
-    if (pairs.some(([city, st]) => st === statePart && (!cityPart || city.includes(cityPart)))) return true;
-  }
-
-  const letters = query.replace(/[^a-z]/g, '');
-  if (letters.length < 6 || letters.length !== query.replace(/\s/g, '').length) return false;
-  const allowed = letters.length >= 9 ? 2 : 1;
-  return [order.origCity, order.destCity]
-    .map(value => String(value || '').toLowerCase().replace(/[^a-z]/g, ''))
-    .some(city => city.length >= 5 && Math.abs(city.length - letters.length) <= allowed && editDistance(letters, city) <= allowed);
-}
-
-function getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery, allCustomers = false) {
-  const query = searchQuery.trim().toLowerCase();
-  const customers = query || allCustomers ? Object.entries(customerOrdersMap) : [[selectedBroker, customerOrdersMap[selectedBroker] || []]];
-  return customers.flatMap(([customer, loads]) => loads
-    .filter(order => loadMatchesSearch(order, query))
-    .map(order => ({ customer, order })));
-}
 
 function getPastedImage(event) {
   if (event.target?.isContentEditable || event.target?.closest?.('input, textarea, select')) return null;
@@ -4659,121 +2511,6 @@ function getLandstarExportComment(load) {
   return landstarCommentOptions.find(option => option.toLowerCase() === comment) || '';
 }
 
-// ==========================================
-// LOAD-LIST HISTORY
-// ==========================================
-// The cloud keeps dated copies of each user's load list for 3 days (see
-// supabase/app-data-history.sql): hourly, and the old list right before any save that
-// cuts it by more than half. The History window lists them and rolls back to one.
-const loadListHistoryReasons = {
-  hourly: 'Hourly copy',
-  'before-shrink': 'Before the list shrank',
-  'before-restore': 'Before a restore'
-};
-
-// "RXO ATZ: 2,463 loads (1 booked) · Para: 27 loads"
-function describeLoadListSummary(summary) {
-  if (!summary || typeof summary !== 'object') return 'No details';
-  const parts = Object.entries(summary)
-    .filter(([, info]) => Number(info?.loads) > 0)
-    .sort(([, a], [, b]) => Number(b.loads) - Number(a.loads))
-    .map(([customer, info]) => `${customer}: ${Number(info.loads).toLocaleString('en-US')} load${Number(info.loads) === 1 ? '' : 's'}`
-      + (Number(info.booked) > 0 ? ` (${info.booked} booked)` : ''));
-  return parts.length ? parts.join(' · ') : 'Empty list';
-}
-
-function LoadListHistory({ onRestore }) {
-  const [open, setOpen] = useState(false);
-  const [rows, setRows] = useState([]);
-  const [status, setStatus] = useState('');
-  const [busyId, setBusyId] = useState(null);
-
-  const loadRows = async () => {
-    setStatus('Loading saved copies…');
-    const { data, error } = await supabase.from('app_data_history')
-      .select('id, reason, saved_at, summary')
-      .eq('key', 'landstar_customerOrdersMap')
-      .order('saved_at', { ascending: false })
-      .limit(200);
-    if (error) {
-      setStatus(/relation|does not exist|schema cache/i.test(error.message)
-        ? 'History is not set up yet: run supabase/app-data-history.sql in Supabase first.'
-        : `Could not load history: ${error.message}`);
-      return;
-    }
-    setRows(data || []);
-    setStatus(data?.length ? '' : 'No saved copies yet. The first one is made on your next save.');
-  };
-
-  const restore = async row => {
-    const when = new Date(row.saved_at).toLocaleString();
-    if (!window.confirm(`Replace your whole load list with the copy from ${when}?\n\n${describeLoadListSummary(row.summary)}\n\nYour current list is saved to History first, so this can be undone.`)) return;
-    setBusyId(row.id);
-    try {
-      const { data, error } = await supabase.from('app_data_history').select('value').eq('id', row.id).single();
-      if (error) throw error;
-      const { data: userData } = await supabase.auth.getUser();
-      const current = localStorage.getItem('landstar_customerOrdersMap');
-      if (userData?.user?.id && current) {
-        const { error: saveError } = await supabase.from('app_data_history').insert({
-          user_id: userData.user.id, key: 'landstar_customerOrdersMap', value: current, reason: 'before-restore'
-        });
-        if (saveError) throw new Error(`Could not save your current list first (${saveError.message}); nothing was changed.`);
-      }
-      if (!onRestore(data.value)) throw new Error('The restored list could not be saved in this browser.');
-      alert(`Restored the load list from ${when}.`);
-      setOpen(false);
-    } catch (error) {
-      alert(`Restore failed: ${error.message}`);
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  if (!supabase) return null;
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => { setOpen(true); void loadRows(); }}
-        className="tms-tool"
-        data-accent="slate"
-        title="Roll your load list back to a saved copy from the last 3 days"
-      >
-        🕘 History
-      </button>
-      {open && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" role="dialog" aria-label="Load list history">
-          <div className="w-[40rem] max-w-full max-h-[80vh] overflow-y-auto bg-[#121829] border border-slate-500 rounded-lg shadow-2xl p-3 normal-case tracking-normal text-left">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-sm font-bold text-white">🕘 Load list history (last 3 days)</h2>
-              <button type="button" onClick={() => setOpen(false)} className="text-gray-300 hover:text-white text-sm px-2 cursor-pointer" aria-label="Close history">✕</button>
-            </div>
-            <p className="text-[11px] text-gray-300 mb-2">Copies are saved every hour, and right before any save that cuts your list by more than half. Restoring replaces your whole load list.</p>
-            {status && <p className="text-xs text-gray-300">{status}</p>}
-            {rows.map(row => (
-              <div key={row.id} className="border border-[#1c2541] rounded p-2 mb-2 text-xs text-white flex items-start justify-between gap-2">
-                <div>
-                  <div className="font-bold">{new Date(row.saved_at).toLocaleString()} <span className="font-normal text-gray-400">· {loadListHistoryReasons[row.reason] || row.reason}</span></div>
-                  <div className="text-gray-300">{describeLoadListSummary(row.summary)}</div>
-                </div>
-                <button
-                  type="button"
-                  disabled={busyId !== null}
-                  onClick={() => restore(row)}
-                  className="bg-blue-700 hover:bg-blue-600 disabled:opacity-50 px-2 py-1 text-[10px] font-bold rounded text-white cursor-pointer shrink-0"
-                >
-                  {busyId === row.id ? 'Restoring…' : 'Restore'}
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
 // Full-height list: hides everything above the load list (logo, tools, customers,
 // filters) so the loads fill the whole sidebar. Remembered per browser.
 const listFocusKey = 'landstar_listFocus';
@@ -4795,79 +2532,6 @@ const truckLights = [
 const truckStacks = [[41, 27.6], [56.3, 22.8]];
 const smokePuffs = 12;
 const truckFlashMs = 6000;
-
-// Import/Data tools and the customer list live in a drawer that slides out from the
-// left. The sidebar keeps one button showing the selected customer; picking a customer,
-// clicking outside, Esc or ✕ closes it.
-// Pinned (📌, the default): the drawer stays open while switching customers and using the page,
-// and is open again after a reload. Unpinned: picking a customer closes it, as before.
-const toolsPinnedKey = 'landstar_toolsPinned';
-// On a phone the drawer covers the whole screen, so it never stays pinned open there.
-const isPhoneScreen = () => typeof window !== 'undefined' && Boolean(window.matchMedia?.('(max-width: 767px)').matches);
-const readToolsPinned = () => {
-  if (isPhoneScreen()) return false;
-  try { return localStorage.getItem(toolsPinnedKey) !== 'false'; } catch { return true; }
-};
-
-function ToolsDrawer({ selected, count, children }) {
-  const [pinned, setPinned] = useState(readToolsPinned);
-  const [open, setOpen] = useState(readToolsPinned);
-  const togglePinned = () => setPinned(current => {
-    const next = !current;
-    try { localStorage.setItem(toolsPinnedKey, String(next)); } catch { /* this visit only */ }
-    return next;
-  });
-  useEffect(() => {
-    if (typeof document === 'undefined') return undefined;
-    // The sidebar's blur would trap the fixed drawer inside it, so drop it while open.
-    if (open) {
-      document.body.classList.add('tms-drawer-open');
-      const onKey = event => { if (event.key === 'Escape') setOpen(false); };
-      window.addEventListener('keydown', onKey);
-      return () => window.removeEventListener('keydown', onKey);
-    }
-    const timer = setTimeout(() => document.body.classList.remove('tms-drawer-open'), 320);
-    return () => clearTimeout(timer);
-  }, [open]);
-  return (
-    <>
-      <button type="button" className="tms-drawer-trigger" onClick={() => setOpen(true)} aria-expanded={open}>
-        <span className="tms-drawer-burger" aria-hidden="true">☰</span>
-        <span className="tms-drawer-trigger-text">
-          <span>Tools &amp; Customers ({count})</span>
-          <strong>{selected || 'Pick a customer'}</strong>
-        </span>
-        <span className="tms-drawer-chevron" aria-hidden="true">›</span>
-      </button>
-      <div className={`tms-drawer${open ? ' is-open' : ''}${pinned ? ' is-pinned' : ''}`}>
-        {/* Pinned: no dark backdrop, so the page next to the drawer stays usable. */}
-        {!pinned && <div className="tms-drawer-backdrop" onClick={() => setOpen(false)} />}
-        <aside
-          className="tms-drawer-panel tms-sidebar-header"
-          aria-label="Tools and customers"
-          onClick={event => { if (!pinned && event.target?.closest?.('[data-close-drawer]')) setOpen(false); }}
-        >
-          <div className="tms-drawer-head">
-            <span>Tools &amp; Customers</span>
-            <span className="inline-flex items-center gap-1">
-              <button
-                type="button"
-                onClick={togglePinned}
-                aria-pressed={pinned}
-                title={pinned ? 'Pinned: stays open when you switch customers. Click to close it after each pick.' : 'Click to keep this panel open while you switch customers.'}
-                className={`text-xs px-2 py-0.5 rounded cursor-pointer ${pinned ? 'bg-sky-600 text-white' : 'bg-slate-700 text-slate-200'}`}
-              >
-                📌 {pinned ? 'Kept open' : 'Keep open'}
-              </button>
-              <button type="button" className="tms-drawer-close" onClick={() => setOpen(false)} aria-label="Close">✕</button>
-            </span>
-          </div>
-          {children}
-        </aside>
-      </div>
-    </>
-  );
-}
 
 function TruckLights() {
   const [flashing, setFlashing] = useState(true);
@@ -5373,6 +3037,7 @@ const paramountBusy = new Set();
 const paramountResultSeen = new Map();
 // Duplicated freight bills already shown as a banner (the helper repeats them while they exist).
 const duplicateBillSeen = new Map();
+const refreshIssueSeen = new Map();
 // The fuel surcharge email last applied (Gmail message id).
 const fuelEmailSeenKey = 'landstar_fuelEmailSeen';
 // Freight bills from recent BCO Load Detail emails (refreshed every few minutes).
@@ -5539,7 +3204,7 @@ const chatAutoExportAccounts = new Set([
   'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P'
 ].map(name => name.toUpperCase().replace(/[^A-Z0-9]/g, '')));
 function isChatAutoExportAccount(customer) {
-  return chatAutoExportAccounts.has(normalizeCustomerName(customer).toUpperCase().replace(/[^A-Z0-9]/g, ''));
+  return chatAutoExportAccounts.has(accountKey(normalizeCustomerName(customer)));
 }
 
 // Lists in LANDJA18 for agent SNB (Ivan): "LOWES" and the one marked "$$" import into
@@ -5585,7 +3250,17 @@ function getChatInboxChoices(item, brokers = []) {
     return brokers.filter(name => /^\s*R\s*X\s*O\b/i.test(normalizeCustomerName(name)))
       .map((customer, index) => ({ label: customer, customer, className: colors[index % colors.length] }));
   }
-  return isSheet ? pasteImportChoices.filter(choice => choice.customer) : pasteImportChoices;
+  const choices = getPasteImportChoices(brokers);
+  return isSheet ? choices.filter(choice => choice.customer) : choices;
+}
+
+// The Para choices under the names in the customer list ("Para 1522166 - N HAZ" for the old
+// "Para 1522166 - ATZ"), so a renamed account still gets its pictures.
+function getPasteImportChoices(brokers = []) {
+  return pasteImportChoices.map(choice => {
+    const customer = choice.customer ? findListedAccount(choice.customer, brokers) || choice.customer : '';
+    return customer === choice.customer ? choice : { ...choice, customer, label: `${customer} Â· ${choice.label.split(' Â· ').pop()}` };
+  });
 }
 
 // ---------- MercuryGate (Landstar's TMS) for booked Paramount loads ----------
@@ -5744,188 +3419,6 @@ function LocalBotsSwitch() {
   );
 }
 
-// Weekly and monthly booking totals from the booking log: how many loads were booked,
-// for which customers, and the total line haul.
-function BookingsReportPage({ onBack, fuelRates = null }) {
-  const [log, setLog] = useState([]);
-  useEffect(() => {
-    const read = () => {
-      try {
-        setLog(JSON.parse(localStorage.getItem(bookingLogKey) || '[]'));
-      } catch {
-        setLog([]);
-      }
-    };
-    read();
-    // Stays current while open: removals, new bookings and cloud sync all re-read the log.
-    window.addEventListener('landstar-data-changed', read);
-    const timer = setInterval(read, 5000);
-    return () => {
-      window.removeEventListener('landstar-data-changed', read);
-      clearInterval(timer);
-    };
-  }, []);
-  const { weeks, months } = summarizeBookings(log, fuelRates);
-  const money = value => `$${(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const dayLabel = time => {
-    const date = new Date(time);
-    return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
-  };
-  const weekLabel = start => `${dayLabel(start)} - ${dayLabel(start + 6 * 86400000)}/${String(new Date(start + 6 * 86400000).getFullYear()).slice(2)}`;
-  const monthLabel = key => {
-    const [year, month] = key.split('-').map(Number);
-    return new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' });
-  };
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold tracking-wide">📊 Bookings Report</h2>
-        <button type="button" onClick={onBack} className="bg-slate-700 hover:bg-slate-600 text-white px-3 py-1 rounded text-xs font-semibold cursor-pointer">Back to loads</button>
-      </div>
-      {!weeks.length && <p className="text-gray-400 text-sm">No bookings recorded yet. Book a load and it shows up here.</p>}
-      <div className="space-y-4">
-        {weeks.map(week => (
-          <div key={week.start} className="bg-[#161f36]/40 border border-[#1c2541] rounded-xl p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-              <h3 className="font-bold text-sky-300">Week {weekLabel(week.start)}</h3>
-              <span className="text-sm text-gray-100 font-semibold">{week.loads} load{week.loads === 1 ? '' : 's'} booked · Line haul {money(week.lineHaul)} · Total booked {money(week.total)} · Potential {money(week.potential)}</span>
-            </div>
-            <table className="w-full text-xs text-left">
-              <thead>
-                <tr className="text-gray-400"><th className="py-1 font-semibold">Customer</th><th className="py-1 font-semibold text-right">Loads</th><th className="py-1 font-semibold text-right">Line haul</th><th className="py-1 font-semibold text-right" title="Line haul + miles × the pickup region's fuel surcharge rate">Total booked</th><th className="py-1 font-semibold text-right" title="5% of the line haul; straight trucks (D-ST, D-LG, D-RF) pay 11%">Potential</th></tr>
-              </thead>
-              <tbody>
-                {week.customers.map(entry => (
-                  <tr key={entry.customer} className="border-t border-[#1c2541]">
-                    <td className="py-1">{entry.customer}</td>
-                    <td className="py-1 text-right">{entry.loads}</td>
-                    <td className="py-1 text-right">{money(entry.lineHaul)}</td>
-                    <td className="py-1 text-right">{money(entry.total)}</td>
-                    <td className="py-1 text-right">{money(entry.potential)}</td>
-                  </tr>
-                ))}
-                <tr className="border-t border-[#1c2541] font-bold text-gray-100">
-                  <td className="py-1">Week total</td>
-                  <td className="py-1 text-right">{week.loads}</td>
-                  <td className="py-1 text-right">{money(week.lineHaul)}</td>
-                  <td className="py-1 text-right">{money(week.total)}</td>
-                  <td className="py-1 text-right">{money(week.potential)}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        ))}
-      </div>
-      {months.length > 0 && (
-        <div className="bg-[#161f36]/40 border border-[#1c2541] rounded-xl p-4 mt-6">
-          <h3 className="font-bold text-emerald-300 mb-2">Monthly totals</h3>
-          <table className="w-full text-xs text-left">
-            <thead>
-              <tr className="text-gray-400"><th className="py-1 font-semibold">Month</th><th className="py-1 font-semibold text-right">Loads booked</th><th className="py-1 font-semibold text-right">Line haul</th><th className="py-1 font-semibold text-right" title="Line haul + miles × the pickup region's fuel surcharge rate">Total booked</th><th className="py-1 font-semibold text-right" title="5% of the line haul; straight trucks (D-ST, D-LG, D-RF) pay 11%">Potential</th></tr>
-            </thead>
-            <tbody>
-              {months.map(month => (
-                <tr key={month.month} className="border-t border-[#1c2541]">
-                  <td className="py-1">{monthLabel(month.month)}</td>
-                  <td className="py-1 text-right">{month.loads}</td>
-                  <td className="py-1 text-right">{money(month.lineHaul)}</td>
-                  <td className="py-1 text-right">{money(month.total)}</td>
-                  <td className="py-1 text-right">{money(month.potential)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ⚙ My Settings → Team: invite a teammate by email (api/invite-user.js) and see who is on the TMS.
-// Its own component so its state never shifts the App's (tests address App state by position).
-function TeamInvite({ sharing }) {
-  const [email, setEmail] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState(null);
-  const [teammates, setTeammates] = useState([]);
-  const loadTeammates = () => {
-    if (!sharing?.listTeammates) return;
-    sharing.listTeammates().then(list => setTeammates(Array.isArray(list) ? list : [])).catch(() => {});
-  };
-  useEffect(loadTeammates, [sharing]);
-  const invite = async () => {
-    const address = email.trim();
-    if (!address) return;
-    setBusy(true);
-    setMessage(null);
-    try {
-      const { data } = await supabase.auth.getSession();
-      const token = data?.session?.access_token;
-      if (!token) throw new Error('Sign in to the TMS first.');
-      const response = await fetch('/api/invite-user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ email: address })
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || 'The teammate could not be added.');
-      setMessage({
-        ok: true,
-        password: result.tempPassword,
-        text: `${result.existed ? `New temporary password for ${result.email}` : `Account created for ${result.email}`}. `
-          + 'Text them this password. They sign in at the TMS website and choose their own password right away. Then share customers with them from the customer list.'
-      });
-      setEmail('');
-      loadTeammates();
-    } catch (error) {
-      setMessage({ ok: false, text: error.message });
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <fieldset className="border border-[#1c2541] rounded p-3 space-y-2">
-      <legend className="px-1 text-xs font-bold text-gray-300">👥 Team</legend>
-      <p className="text-[11px] text-gray-400">Add a teammate: you get a temporary password to text them (no email is sent). Forgot their password? Type their email again for a new one.</p>
-      <div className="flex gap-2">
-        <input
-          type="email"
-          value={email}
-          onChange={e => setEmail(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void invite(); } }}
-          placeholder="teammate@email.com"
-          aria-label="Teammate email"
-          className="flex-1 min-w-0 bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
-        />
-        <button
-          type="button"
-          onClick={() => void invite()}
-          disabled={busy || !email.trim()}
-          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-3 py-1.5 text-xs rounded font-bold whitespace-nowrap"
-        >
-          {busy ? 'Saving…' : 'Add teammate'}
-        </button>
-      </div>
-      {message && <p role={message.ok ? 'status' : 'alert'} className={`text-[11px] ${message.ok ? 'text-emerald-300' : 'text-red-400'}`}>{message.text}</p>}
-      {message?.password && (
-        <div className="flex items-center gap-2">
-          <code aria-label="Temporary password" className="flex-1 bg-[#0b132b] border border-emerald-600 rounded px-2 py-1.5 text-base text-white font-mono tracking-wider select-all">{message.password}</code>
-          <button
-            type="button"
-            onClick={() => { void navigator.clipboard?.writeText(message.password).catch(() => {}); }}
-            className="bg-slate-700 hover:bg-slate-600 text-white px-2.5 py-1.5 rounded text-xs"
-          >
-            📋 Copy
-          </button>
-        </div>
-      )}
-      {teammates.length > 0 && (
-        <p className="text-[11px] text-gray-400">On the TMS: {teammates.map(person => person.email).join(', ')}</p>
-      )}
-    </fieldset>
-  );
-}
-
 export function BotStatusLight() {
   const [status, setStatus] = useState({ state: 'off', message: 'Upload bot is not running' });
   const startRequestedAt = useRef(0);
@@ -5978,7 +3471,11 @@ export function BotStatusLight() {
           duplicateBillSeen.set(duplicate.bill, duplicate.at);
           window.dispatchEvent(new CustomEvent('landstar-duplicate-bill', { detail: duplicate }));
         });
+        // Each important-load refresh problem is shown once (Daniel 2026-11-27: the same three
+        // warnings came back every 3 seconds after ✕).
         (Array.isArray(next.postingRefresh) ? next.postingRefresh : []).forEach(issue => {
+          if (refreshIssueSeen.get(issue.key) === issue.at) return;
+          refreshIssueSeen.set(issue.key, issue.at);
           window.dispatchEvent(new CustomEvent('landstar-refresh-issue', { detail: issue }));
         });
       } catch {
@@ -6240,126 +3737,6 @@ function EmailWorkerStatus({ store, drafts }) {
         {drafts.some(draft => !draft.error && !draft.sending) && <p>Emails awaiting approval are in Booked Loads.</p>}
       </div>
     </details>
-  );
-}
-
-// Morning system check (header): TMS, watchdog, every bot, the bot switch, a recent PC
-// restart (from /api/health, bot/health.js) and this tab's email checks. Opens by itself
-// once a day when something needs attention. Polls on its own, so it never redraws the App.
-const SYSTEM_CHECK_URL = '/api/health';
-const systemCheckShownKey = 'landstar_systemCheckShownOn';
-const systemCheckColors = { ok: 'bg-emerald-400', info: 'bg-sky-400', warn: 'bg-amber-400', bad: 'bg-red-500' };
-const systemCheckRank = { ok: 0, info: 1, warn: 2, bad: 3 };
-
-function emailCheckRow(status = {}) {
-  if (status.state === 'blocked') {
-    return { id: 'email', label: 'Email checks', level: 'warn', detail: status.message || 'Some checks need attention',
-      fix: (status.issues || []).map(issue => `${issue.task}: ${issue.message}`).join(' · ') || 'Open the email worker chip for details.' };
-  }
-  if (status.state === 'standby') return { id: 'email', label: 'Email checks', level: 'info', detail: 'Another TMS tab runs the email checks' };
-  if (status.state === 'view-only') return { id: 'email', label: 'Email checks', level: 'info', detail: 'Email checks run only on the local TMS' };
-  return { id: 'email', label: 'Email checks', level: 'ok', detail: status.message || 'Running' };
-}
-
-function mergeSystemCheck(report, emailStatus) {
-  if (!report) {
-    return { worst: 'bad', rows: [{ id: 'tms', label: 'TMS server', level: 'bad', detail: 'Not answering', fix: 'The watchdog restarts it within a minute. If it does not, double-click "Start TMS".' }] };
-  }
-  const rows = [...(report.rows || []), emailCheckRow(emailStatus)];
-  const worst = rows.reduce((level, row) => (systemCheckRank[row.level] > systemCheckRank[level] ? row.level : level), 'ok');
-  return { ...report, rows, worst };
-}
-
-function SystemCheck({ emailStore }) {
-  const [report, setReport] = useState(undefined);
-  const [emailStatus, setEmailStatus] = useState(emailStore.get);
-  const [open, setOpen] = useState(false);
-  const [refresh, setRefresh] = useState(0);
-  useEffect(() => {
-    setEmailStatus(emailStore.get());
-    return emailStore.subscribe(setEmailStatus);
-  }, [emailStore]);
-  // Daniel checked Gmail for a send that never finished: it went out, or it may be sent again.
-  const settleEmail = async (key, wentOut) => {
-    try {
-      const response = await fetch('/api/email-record', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'settle', key, wentOut })
-      });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
-    } catch (error) {
-      alert(`Could not update the email record: ${error.message}`);
-    }
-    setRefresh(value => value + 1);
-  };
-  useEffect(() => {
-    let cancelled = false;
-    const check = async () => {
-      try {
-        const response = await fetch(SYSTEM_CHECK_URL, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const next = await response.json();
-        if (!cancelled) setReport(current => (JSON.stringify(current) === JSON.stringify({ ...next, at: current?.at }) ? current : next));
-      } catch {
-        if (!cancelled) setReport(null);
-      }
-    };
-    void check();
-    const timer = setInterval(check, 30000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [refresh]);
-  const merged = report === undefined ? null : mergeSystemCheck(report, emailStatus);
-  // First look of the day with something to fix: open the panel by itself.
-  useEffect(() => {
-    if (!merged || systemCheckRank[merged.worst] < systemCheckRank.warn) return;
-    const today = new Date().toDateString();
-    try {
-      if (localStorage.getItem(systemCheckShownKey) === today) return;
-      localStorage.setItem(systemCheckShownKey, today);
-    } catch { /* storage blocked: still open once for this page */ }
-    setOpen(true);
-  }, [merged?.worst]);
-  const worst = merged?.worst || 'info';
-  const problems = merged ? merged.rows.filter(row => systemCheckRank[row.level] >= systemCheckRank.warn).length : 0;
-  return (
-    <div className="relative normal-case tracking-normal text-left text-xs">
-      <button
-        type="button"
-        onClick={() => setOpen(value => !value)}
-        aria-expanded={open}
-        className="bg-slate-800 border border-slate-600 rounded px-2.5 py-1 cursor-pointer flex items-center gap-1.5"
-      >
-        <span className={`inline-block w-2.5 h-2.5 rounded-full ${systemCheckColors[worst]}`} aria-hidden="true" />
-        <span role="status">{!merged ? 'System check…' : problems ? `System check: ${problems} to fix` : 'System check: all good'}</span>
-      </button>
-      {open && merged && (
-        <div role="dialog" aria-label="System check" className="absolute right-0 top-full mt-2 z-50 w-96 max-w-[92vw] max-h-[70vh] overflow-y-auto bg-slate-900 border border-slate-600 rounded p-3 shadow-xl space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="font-bold text-white">System check</p>
-            <button type="button" onClick={() => setOpen(false)} className="text-gray-400 hover:text-white cursor-pointer" aria-label="Close system check">✕</button>
-          </div>
-          {merged.rows.map(row => (
-            <div key={row.id} className="flex items-start gap-2">
-              <span className={`mt-1 inline-block w-2.5 h-2.5 shrink-0 rounded-full ${systemCheckColors[row.level]}`} aria-hidden="true" />
-              <div>
-                <p className="text-white"><span className="font-semibold">{row.label}:</span> {row.detail}</p>
-                {row.fix && <p className={row.level === 'bad' ? 'text-red-300' : 'text-amber-300'}>{row.fix}</p>}
-                {(row.emails || []).map(email => (
-                  <div key={email.key} className="mt-1 bg-slate-800 rounded p-1.5">
-                    <p className="text-white">{email.label}{email.at ? ` · started ${new Date(email.at).toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ''}</p>
-                    <div className="flex gap-2 mt-1">
-                      <button type="button" onClick={() => settleEmail(email.key, true)} className="bg-emerald-700 hover:bg-emerald-600 text-white px-2 py-0.5 rounded cursor-pointer">It went out</button>
-                      <button type="button" onClick={() => settleEmail(email.key, false)} className="bg-slate-600 hover:bg-slate-500 text-white px-2 py-0.5 rounded cursor-pointer">Not sent, allow again</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-          {merged.at && <p className="text-gray-500">Checked {new Date(merged.at).toLocaleTimeString()} · refreshes every 30 seconds</p>}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -7304,6 +4681,9 @@ export default function App({ sharing = null, userId = null } = {}) {
   const handleSaveProfile = (e) => {
     e.preventDefault();
     const nextProfile = {
+      // Kept as they are: ⚙ customer rules and Google Chat list-name answers (set elsewhere).
+      customerRules: profile.customerRules || {},
+      chatSheetAccounts: profile.chatSheetAccounts || {},
       phone: profileDraft.phone.replace(/\D/g, ''),
       postingCode: profileDraft.postingCode.trim().toUpperCase(),
       visibilityGroup: profileDraft.visibilityGroup.trim().toUpperCase(),
@@ -7700,6 +5080,9 @@ export default function App({ sharing = null, userId = null } = {}) {
         }
         if (!loadFiles.length) return;
         files = loadFiles;
+        // ⚙ This customer's rules (src/app/customerRules.js): column names, equipment, rates.
+        const importRules = getCustomerRules(profile.customerRules, selectedBroker);
+        const ruleColumns = importRules.excelColumns;
         const isRxoPayerImport = normalizeCustomerName(selectedBroker) === rxoPayerCustomerName;
         const isRxoImport = isRxoCustomer(selectedBroker);
         // Every data row of every load tab, with that tab's column positions.
@@ -7724,29 +5107,32 @@ export default function App({ sharing = null, userId = null } = {}) {
             };
             // "Early P/U dt" / "Late P/U dt" / "Early del dt" / "Late del dt": the Phalanx list
             // (Pha 882255 - ATZ, Daniel 2026-11-25), dates like "11/30/2026 1200".
-            const pickupTimeCol = findColIndex(['Pickup Date (From)', 'Pickup Time', 'PU Time', 'Early P/U dt'], -1);
-            const deliveryTimeCol = findColIndex(['Delivery Date (From)', 'Delivery Time', 'Del Time', 'Early del dt'], -1);
-            const pickupLateCol = findColIndex(['Late P/U dt'], -1);
-            const deliveryLateCol = findColIndex(['Late del dt'], -1);
+            // A column matched in this customer's ⚙ Rules wins over the usual names.
+            const ruleCol = (field, names, defaultIdx) => (ruleColumns[field] ? findColIndex([ruleColumns[field]], defaultIdx) : findColIndex(names, defaultIdx));
+            const pickupTimeCol = ruleCol('pickup', ['Pickup Date (From)', 'Pickup Time', 'PU Time', 'Early P/U dt'], -1);
+            const deliveryTimeCol = ruleCol('delivery', ['Delivery Date (From)', 'Delivery Time', 'Del Time', 'Early del dt'], -1);
+            const pickupLateCol = ruleCol('pickupLate', ['Late P/U dt'], -1);
+            const deliveryLateCol = ruleCol('deliveryLate', ['Late del dt'], -1);
             const hasRxoTimeColumns = pickupTimeCol >= 0 && deliveryTimeCol >= 0;
             // A list with named city columns but no ZIP columns has no ZIPs: don't read whatever
             // sits in the usual ZIP position (Phalanx has pickup and commodity there).
-            const hasNamedCities = findColIndex(['Origin City', 'Orig City', 'Origin - City'], -1) >= 0;
-            const rateCol = findColIndex(['Early P/U dt'], -1) >= 0 ? findColIndex(['Rate'], -1) : -1;
+            const hasNamedCities = Boolean(ruleColumns.origCity) || findColIndex(['Origin City', 'Orig City', 'Origin - City'], -1) >= 0;
+            const rateCol = ruleColumns.rate ? findColIndex([ruleColumns.rate], -1)
+              : findColIndex(['Early P/U dt'], -1) >= 0 ? findColIndex(['Rate'], -1) : -1;
             const columns = {
-              colA: findColIndex(['Order #', 'Load ID', 'Order Number', 'Load Posting Code'], 0),
-              colB: findColIndex(['Equipment', 'Equipment Type', 'Equipment 1', 'Equip', 'Equip type'], 1),
-              colG: findColIndex(['Origin City', 'Orig City', 'Origin', 'Origin - City'], 6),
-              colH: findColIndex(['Origin State', 'Origin St', 'Orig State', 'Origin - State'], 7),
-              colI: findColIndex(['Origin Zipcode', 'Origin Zip', 'Orig Zip', 'Origin - Zip'], hasNamedCities ? -1 : 8),
-              colL: findColIndex(['Destination City', 'Dest City', 'Destination', 'Destination - City'], 11),
-              colM: findColIndex(['Destination State', 'Destination St', 'Dest State', 'Destination - State'], 12),
-              colN: findColIndex(['Destination Zipcode', 'Destination Zip', 'Dest Zip', 'Destination - Zip'], hasNamedCities ? -1 : 13),
-              colO: findColIndex(['Weight', 'Wgt', 'Weight (lbs)'], 14),
-              useRxoDateTimeFormat: isRxoImport || hasRxoTimeColumns,
-              colQ: isRxoImport && !hasRxoTimeColumns ? 16 : pickupTimeCol >= 0 ? pickupTimeCol : 16,
-              colR: isRxoImport && !hasRxoTimeColumns ? 17 : deliveryTimeCol >= 0 ? deliveryTimeCol : 17,
-              colS: findColIndex(['Bill as Miles', 'Miles', 'Distance', 'Loaded Miles'], 18),
+              colA: ruleCol('loadId', ['Order #', 'Load ID', 'Order Number', 'Load Posting Code'], 0),
+              colB: ruleCol('equipment', ['Equipment', 'Equipment Type', 'Equipment 1', 'Equip', 'Equip type'], 1),
+              colG: ruleCol('origCity', ['Origin City', 'Orig City', 'Origin', 'Origin - City'], 6),
+              colH: ruleCol('origSt', ['Origin State', 'Origin St', 'Orig State', 'Origin - State'], 7),
+              colI: ruleCol('origZip', ['Origin Zipcode', 'Origin Zip', 'Orig Zip', 'Origin - Zip'], hasNamedCities ? -1 : 8),
+              colL: ruleCol('destCity', ['Destination City', 'Dest City', 'Destination', 'Destination - City'], 11),
+              colM: ruleCol('destSt', ['Destination State', 'Destination St', 'Dest State', 'Destination - State'], 12),
+              colN: ruleCol('destZip', ['Destination Zipcode', 'Destination Zip', 'Dest Zip', 'Destination - Zip'], hasNamedCities ? -1 : 13),
+              colO: ruleCol('weight', ['Weight', 'Wgt', 'Weight (lbs)'], 14),
+              useRxoDateTimeFormat: isRxoImport || hasRxoTimeColumns || Boolean(ruleColumns.pickup),
+              colQ: ruleColumns.pickup && pickupTimeCol >= 0 ? pickupTimeCol : isRxoImport && !hasRxoTimeColumns ? 16 : pickupTimeCol >= 0 ? pickupTimeCol : 16,
+              colR: ruleColumns.delivery && deliveryTimeCol >= 0 ? deliveryTimeCol : isRxoImport && !hasRxoTimeColumns ? 17 : deliveryTimeCol >= 0 ? deliveryTimeCol : 17,
+              colS: ruleCol('miles', ['Bill as Miles', 'Miles', 'Distance', 'Loaded Miles'], 18),
               pickupLateCol,
               deliveryLateCol,
               rateCol,
@@ -7839,14 +5225,21 @@ export default function App({ sharing = null, userId = null } = {}) {
 
           // The Phalanx list carries its own rate; a rate you saved for the lane still wins.
           const listRate = rateCol >= 0 ? Number(String(row[rateCol] ?? '').replace(/[$,]/g, '')) : 0;
-          const rateVal = getSavedLaneRate(laneRates, selectedBroker, tempOrder) || (listRate > 0 ? String(Math.round(listRate)) : '');
+          // ⚙ Rules: a fixed lane rate always wins; then the rate source (as usual: your saved
+          // lane rate, then the file's rate; DAT fills anything left blank below).
+          const ruleRate = ruleLaneRate(importRules, tempOrder);
+          const starting = startingRate(importRules, { fileRate: listRate, savedRate: getSavedLaneRate(laneRates, selectedBroker, tempOrder) });
+          const rateVal = ruleRate || starting.rate;
           const rateSrc = rateVal ? 'user-entered' : undefined;
+          const waitForHigher = !ruleRate && starting.waitForDat;
 
           const hazmatTanker = getImportedHazmatTanker(rawEquip, commodityCols.map(index => row[index]));
           importedRows.push({
             id: loadId,
             eCode: eCodeVal,
             ...hazmatTanker,
+            // "Higher of the customer's rate and DAT": the file's rate, compared once DAT is in.
+            ...(waitForHigher ? { ruleFileRate: listRate } : {}),
             status: 'OPEN',
             tag: 'OPEN',
             route: laneKey,
@@ -7881,6 +5274,10 @@ export default function App({ sharing = null, userId = null } = {}) {
           skippedNotFlatbed = importedRows.length - flatbeds.length;
           importedRows = flatbeds;
         }
+        // ⚙ Rules: only the equipment this customer's rules allow.
+        const equipmentRule = filterByImportEquipment(importedRows, importRules);
+        importedRows = equipmentRule.kept;
+        const skippedByRules = equipmentRule.skipped;
         // Run ZIP code auto-fill on Excel import rows
         importedRows = autoFillLoadZipCodes(importedRows);
         importedRows = applyRxoPayerBusinessHours(importedRows, selectedBroker);
@@ -7888,6 +5285,13 @@ export default function App({ sharing = null, userId = null } = {}) {
         // Logged in the rate history only; your typed rates are what get reused.
         const excelDatRateError = await applyDatRatesForImport(importedRows, selectedBroker, laneRates, setLaneRates);
         if (excelDatRateError && !datRateError) datRateError = excelDatRateError;
+        // ⚙ Rules, "higher of the two": the bigger of DAT and the customer's rate in the file.
+        importedRows.forEach(load => {
+          if (load.ruleFileRate === undefined) return;
+          const best = higherRate(load.rateInput, load.ruleFileRate);
+          if (best && best !== load.rateInput) { load.rateInput = best; load.rateSource = 'user-entered'; }
+          delete load.ruleFileRate;
+        });
         const { mileageError: excelMileageError } = await applyGoogleRoadMiles(importedRows, null, 'Imported from Excel');
 
         const latestRegistry = getLatestExportedRegistry();
@@ -7976,6 +5380,7 @@ export default function App({ sharing = null, userId = null } = {}) {
           (duplicatesRemoved > 0 ? `• Skipped duplicates: ${duplicatesRemoved}\n` : '') +
           (skippedEquipmentCount > 0 ? `• Skipped oversized/specialized equipment: ${skippedEquipmentCount}\n` : '') +
           (skippedNotFlatbed > 0 ? `• Not imported (not F / flatbed; this Phalanx account takes flatbeds only): ${skippedNotFlatbed}\n` : '') +
+          (skippedByRules > 0 ? `• Not imported (equipment this customer's ⚙ Rules leave out): ${skippedByRules}\n` : '') +
           (datRateError ? `• DAT rates could not be fetched; enter rates manually. DAT reported: ${datRateError}\n` : '') +
           (excelMileageError ? `• Driving miles could not be calculated for some loads; enter them manually. Google Routes reported: ${excelMileageError}\n` : '') +
           (saved ? '• Status: Saved successfully in browser storage.' : '• Warning: Save failed, check browser storage.')
@@ -8832,12 +6237,16 @@ export default function App({ sharing = null, userId = null } = {}) {
   // Info notices clear themselves after 45 seconds, Undo offers after 10 minutes; warnings stay
   // until closed (✕). action = { label, run } draws a button (↩ Undo).
   const pushNotice = (text, level = 'warn', action = null) => {
+    // Plain news is not shown (Daniel 2026-11-27: no corner notices); problems and Undo are.
+    if (level === 'info') return;
     const id = `${Date.now()}-${Math.random()}`;
+    // 'auto': what the bots did by themselves (chat list imported, auto-export), shown so you
+    // can tell it happened (Daniel 2026-11-27: "I can't tell"); clears itself.
     setNotices(current => [
       ...current.filter(item => item.text !== text),
       { id, text, level, action, at: new Date().toISOString() }
     ].slice(-6));
-    const clearAfter = level === 'info' ? NOTICE_INFO_MS : level === 'undo' ? UNDO_OFFER_MS : 0;
+    const clearAfter = level === 'info' || level === 'auto' ? NOTICE_INFO_MS : level === 'undo' ? UNDO_OFFER_MS : 0;
     if (clearAfter) setTimeout(() => setNotices(current => current.filter(item => item.id !== id)), clearAfter);
   };
   // Every message that used to be an notify() pop-up (Daniel 2026-11-27: "fewer pop-ups"): a
@@ -8993,8 +6402,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       pushNotice(`💬 A load message from Google Chat${item.chat ? ` (${item.chat})` : ''} could not be read; add it by hand.`, 'info');
       return;
     }
-    const account = brokers.find(name => normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '')
-      === chatLoadAccount(load).toUpperCase().replace(/[^A-Z0-9]/g, ''));
+    const account = findListedAccount(chatLoadAccount(load), brokers);
     if (!account) {
       pushNotice(`💬 Load ${load.loadNumber} from Google Chat goes to ${chatLoadAccount(load)}, which is not in your customer list. Add that customer, then add the load by hand.`, 'info');
       return;
@@ -9035,13 +6443,16 @@ export default function App({ sharing = null, userId = null } = {}) {
       .then(imported => { if (autoExport && imported) setAutoExportFor(customer); })
       .catch(error => console.error('Chat list import failed:', error));
   }, [pendingChatSheet, selectedBroker]);
+  // Starts once the imported list is on screen (Daniel 2026-11-27: it waited for checked loads,
+  // but a list import checks none, so RXO lists never exported by themselves). With nothing
+  // checked it exports the open list, like the Export button; a single chat load is checked.
   useEffect(() => {
     if (!autoExportFor) return;
-    if (autoExportFor !== selectedBroker || !selectedIds.length) return;
+    if (autoExportFor !== selectedBroker) return;
     setAutoExportFor('');
-    pushNotice(`🚀 Exporting the new ${autoExportFor} list to Landstar automatically (${selectedIds.length} loads)...`, 'info');
+    pushNotice(`🚀 Exporting the new ${autoExportFor} list to Landstar automatically${selectedIds.length ? ` (${selectedIds.length} load${selectedIds.length === 1 ? '' : 's'})` : ''}...`, 'auto');
     void handleAutoExport();
-  }, [autoExportFor, selectedBroker, selectedIds]);
+  }, [autoExportFor, selectedBroker, selectedIds, customerOrdersMap]);
   // Checks the Google Chat inbox every 30 seconds while nothing else is on screen.
   useEffect(() => {
     if (pastedImage || chatItem || chatSheet || pendingChatSheet || isImportingScreenshot) return undefined;
@@ -9066,10 +6477,10 @@ export default function App({ sharing = null, userId = null } = {}) {
           finishChatItem(item.name);
           importHotLanes(await readOrderExportRows(file), file);
         } else if (item.type === 'spreadsheet') {
-          const known =getChatSheetAccount(paramountLatest.profile?.chatSheetAccounts, item.label);
+          const known = findListedAccount(getChatSheetAccount(paramountLatest.profile?.chatSheetAccounts, item.label), brokers);
           if (known && brokers.includes(known)) {
             finishChatItem(item.name);
-            pushNotice(`💬 "${item.label}" list from Google Chat${item.chat ? ` (${item.chat})` : ''} imported into ${known}.`, 'info');
+            pushNotice(`💬 "${item.label}" list from Google Chat${item.chat ? ` (${item.chat})` : ''} imported into ${known}.`, 'auto');
             if (known !== selectedBroker) handleSelectBroker(known);
             setPendingChatSheet({ file, customer: known });
           } else {
@@ -9333,6 +6744,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     let cancelled = false;
     let emailWorker;
     let maintenanceError = '';
+    let maintenanceFailures = 0;
     const syncPostingMaintenance = async () => {
       if (!canStartBotHere()) return;
       try {
@@ -9343,7 +6755,12 @@ export default function App({ sharing = null, userId = null } = {}) {
         });
         if (!response.ok) throw new Error(`posting bot returned HTTP ${response.status}; restart it to load the posting protections and refresh worker`);
         maintenanceError = '';
+        maintenanceFailures = 0;
       } catch (error) {
+        // One slow answer while the bot is busy uploading is normal (Daniel 2026-11-27: "signal
+        // timed out" while lists imported): warn only after 3 failures in a row (30 seconds).
+        maintenanceFailures += 1;
+        if (maintenanceFailures < 3) return;
         const message = `Posting protection / important-load refresh is not connected: ${error.message}`;
         if (!cancelled && message !== maintenanceError) pushNotice(message);
         maintenanceError = message;
@@ -10170,7 +7587,7 @@ export default function App({ sharing = null, userId = null } = {}) {
   // options.quiet (automatic exports of Google Chat lists, Daniel 2026-11-27): messages show as
   // TMS notices instead of pop-ups, so the export never waits for a click.
   const runExportToLandstar = async (options = {}) => {
-    const say = message => (options.quiet ? pushNotice(`🚀 Auto-export: ${String(message).replace(/\s*\n+\s*/g, ' ')}`, 'info') : notify(message));
+    const say = message => (options.quiet ? pushNotice(`🚀 Auto-export: ${String(message).replace(/\s*\n+\s*/g, ' ')}`, noticeLevel(message) === 'warn' ? 'warn' : 'auto') : notify(message));
     setExportErrorIds([]);
     const exportPhone = profile.phone.replace(/\D/g, '');
     const exportVisibilityGroup = profile.visibilityGroup.trim().toUpperCase();
@@ -10443,7 +7860,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         rowErrors.push('delivery start must be later than pickup start');
       }
       if (!equipment) rowErrors.push('valid equipment');
-      const equipment2 = getLandstarExportEquipment2(selectedBroker, ord, profile.postingCode);
+      const equipment2 = getLandstarExportEquipment2(selectedBroker, ord, profile.postingCode, getCustomerRules(profile.customerRules, selectedBroker));
       const equipmentChoices = [equipment, equipment2, ord.equipment3].filter(Boolean);
       if (new Set(equipmentChoices).size !== equipmentChoices.length) rowErrors.push('distinct equipment choices (remove duplicate alternates)');
       if (equipment === 'D-LG' && equipmentChoices.includes('D-ST')) rowErrors.push('liftgate-required loads cannot offer D-ST as an alternate');
@@ -10877,7 +8294,7 @@ export default function App({ sharing = null, userId = null } = {}) {
   const { rateCountOrders, withRateCount, noRateCount, visibleOrderEntries } = useMemo(() => {
   const statusOrderEntries = getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery, filter === 'OFFER')
     .filter(({ order: ord }) => isGlobalSearch || filter === 'ALL' || ord.status === filter);
-  const rateCountOrders = statusOrderEntries.filter(({ customer }) => filter === 'OFFER' || customer === selectedBroker).map(({ order }) => order);
+  const rateCountOrders = statusOrderEntries.filter(({ customer }) => isAllCustomersView || customer === selectedBroker).map(({ order }) => order);
   const withRateCount = rateCountOrders.filter(hasLoadRate).length;
   const noRateCount = rateCountOrders.length - withRateCount;
   const minMilesFilter = Number(loadFilters.minMiles);
@@ -10886,7 +8303,8 @@ export default function App({ sharing = null, userId = null } = {}) {
   const hasMaxMiles = loadFilters.maxMiles !== '' && Number.isFinite(maxMilesFilter);
   const visibleOrderEntries = statusOrderEntries.filter(({ order: ord }) => {
     if (loadFilters.pickupDate && getPickupDay(ord) !== loadFilters.pickupDate) return false;
-    if (isGlobalSearch) return true;
+    // Searching all customers still honors the state, rate and miles filters (Daniel 2026-11-27:
+    // "searching Chicago, the Texas drop-down doesn't work").
     if (loadFilters.pickupState && String(ord.origSt || '').trim().toUpperCase() !== loadFilters.pickupState) return false;
     if (loadFilters.deliveryState && String(ord.destSt || '').trim().toUpperCase() !== loadFilters.deliveryState) return false;
     if (loadFilters.rate === 'with' && !hasLoadRate(ord)) return false;
@@ -10934,6 +8352,14 @@ export default function App({ sharing = null, userId = null } = {}) {
   const [listLimit, setListLimit] = useState(LOAD_LIST_PAGE);
   const listEndRef = useRef(null);
   useEffect(() => { setListLimit(LOAD_LIST_PAGE); }, [selectedBroker, searchQuery, filter, loadFilters, laneSort]);
+  // The filters that are on, as tags under the day row (tap one to turn it off).
+  const activeFilterTags = [
+    loadFilters.pickupDate && { key: 'date', label: `Pickup ${loadFilters.pickupDate.slice(5).replace('-', '/')}`, clear: () => setLoadFilters(prev => ({ ...prev, pickupDate: '' })) },
+    (loadFilters.pickupState || loadFilters.deliveryState) && { key: 'states', label: `${loadFilters.pickupState || 'Any'} → ${loadFilters.deliveryState || 'Any'}`, clear: () => setLoadFilters(prev => ({ ...prev, pickupState: '', deliveryState: '' })) },
+    loadFilters.rate && { key: 'rate', label: loadFilters.rate === 'with' ? 'With rate' : 'No rate', clear: () => setLoadFilters(prev => ({ ...prev, rate: '' })) },
+    (loadFilters.minMiles || loadFilters.maxMiles) && { key: 'miles', label: `${loadFilters.minMiles || 0}–${loadFilters.maxMiles || '∞'} mi`, clear: () => setLoadFilters(prev => ({ ...prev, minMiles: '', maxMiles: '' })) },
+    laneSort && laneSort !== 'pickup-asc' && { key: 'sort', label: (LANE_SORT_CHOICES.find(([value]) => value === laneSort) || [, 'Sorted'])[1], clear: () => setLaneSort('') }
+  ].filter(Boolean);
   const selectedCardIndex = selectedOrder
     ? visibleOrderEntries.findIndex(({ customer, order }) => customer === selectedBroker && order.id === selectedOrder.id)
     : -1;
@@ -10966,6 +8392,23 @@ export default function App({ sharing = null, userId = null } = {}) {
     }
   };
 
+  // ⚙ Rules for the open customer (src/app/CustomerRulesPanel.jsx), saved in My Settings.
+  const [showRules, setShowRules] = useState(false);
+  const saveCustomerRules = rules => {
+    const nextRules = { ...(profile.customerRules || {}) };
+    if (hasCustomerRules(rules)) nextRules[selectedBroker] = rules;
+    else delete nextRules[selectedBroker];
+    const nextProfile = { ...profile, customerRules: nextRules };
+    try {
+      if (writeSyncedKey('landstar_profile', JSON.stringify(nextProfile))) setProfile(nextProfile);
+      else notify('Your settings were changed on another device; open ⚙ Rules again and save once more.');
+    } catch (error) {
+      notify(`Could not save the rules: ${error.message}`);
+      return;
+    }
+    setShowRules(false);
+  };
+
   const [listView, setListView] = useState(readListView);
   useEffect(() => {
     if (typeof document !== 'undefined') document.body.classList.toggle('tms-table-view', listView === 'table');
@@ -10975,6 +8418,11 @@ export default function App({ sharing = null, userId = null } = {}) {
   // ⌨ Keyboard shortcuts (Daniel 2026-11-27). Ignored while typing in a box or with a window
   // open; the two that send something to Landstar need Shift so a stray key never does.
   const [showShortcuts, setShowShortcuts] = useState(false);
+  // ⋯ menu on a customer row, and the Import list (kept last: tests read state by position).
+  const [customerMenu, setCustomerMenu] = useState(null);
+  const [showImportMenu, setShowImportMenu] = useState(false);
+  const [showDataMenu, setShowDataMenu] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
   const shortcutActions = useRef({});
   shortcutActions.current = {
     move(step) {
@@ -11112,6 +8560,14 @@ export default function App({ sharing = null, userId = null } = {}) {
   return (
     <div className="tms-shell flex flex-col md:flex-row min-h-screen md:h-screen text-white overflow-x-hidden md:overflow-hidden font-sans">
       <ProblemBanner problems={today?.problems || []} />
+      {showRules && selectedBroker && (
+        <CustomerRulesPanel
+          customer={selectedBroker}
+          rules={getCustomerRules(profile.customerRules, selectedBroker)}
+          onSave={saveCustomerRules}
+          onClose={() => setShowRules(false)}
+        />
+      )}
       <TruckLights />
       {/* Left Sidebar - Order List */}
       <div className="tms-sidebar w-full md:w-96 border-b md:border-b-0 md:border-r border-[#1c2541] flex flex-col">
@@ -11128,9 +8584,37 @@ export default function App({ sharing = null, userId = null } = {}) {
             </button>
             {showTools && (
             <div className="tms-toolbox">
-              <div className="tms-tool-group">
-                <span className="tms-tool-label">Import</span>
-                <div className="tms-tool-row">
+              {/* Import and Data: two menus side by side (Daniel 2026-11-27: slim, professional). The
+                  choices stay on the page while closed (only hidden), so a file picked from the list
+                  is still read and a Data window that is open stays open. */}
+              <div className="tms-menu-pair">
+                <button
+                  type="button"
+                  onClick={() => { setShowImportMenu(open => !open); setShowDataMenu(false); }}
+                  aria-expanded={showImportMenu}
+                  className="tms-slim-btn tms-menu-toggle"
+                  data-active={showImportMenu}
+                  data-tone="emerald"
+                >
+                  <span>{isImportingScreenshot ? (screenshotImportProgress || 'Importing…') : 'Import'}</span>
+                  <span className="tms-caret" aria-hidden="true">▾</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowDataMenu(open => !open); setShowImportMenu(false); }}
+                  aria-expanded={showDataMenu}
+                  className="tms-slim-btn tms-menu-toggle"
+                  data-active={showDataMenu}
+                  data-tone="violet"
+                >
+                  <span>Data</span>
+                  <span className="tms-caret" aria-hidden="true">▾</span>
+                </button>
+              </div>
+                <div
+                  className={`tms-import-menu${showImportMenu ? '' : ' hidden'}`}
+                  onClick={event => { if (event.target?.closest?.('button, label')) setShowImportMenu(false); }}
+                >
                   <button
                     type="button"
                     onClick={handleAddManualLoad}
@@ -11141,7 +8625,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                     ＋ Add Load
                   </button>
                   <label className={`tms-tool cursor-pointer ${isImportingScreenshot ? 'opacity-60 cursor-wait' : ''}`} data-accent="emerald" title="Import the customer's list from one or more screenshots. Pick several pictures at once (Ctrl+click) when the list is longer than one screen; they are imported together as one list.">
-                    <span>{isImportingScreenshot && screenshotImportMode === 'ai' ? screenshotImportProgress : '✨ Customer Screenshot'}</span>
+                    <span>{isImportingScreenshot && screenshotImportMode === 'ai' ? screenshotImportProgress : 'Customer Screenshot'}</span>
                     <input type="file" accept="image/*" multiple onChange={handleScreenshotImport} className="hidden" disabled={isImportingScreenshot} />
                   </label>
                   <button
@@ -11169,7 +8653,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                     data-accent="sky"
                     title={`Import an Excel or OpenOffice (.ods) spreadsheet. An RXO order export (orderSearch_Export) of loads other agents booked becomes 🔥 hot lanes instead${hotLanes?.lanes ? ` (now ${Object.keys(hotLanes.lanes).length} from ${hotLanes.file || 'an order export'}, ${new Date(hotLanes.importedAt).toLocaleDateString('en-US')})` : ''}.`}
                   >
-                    <span>📂 Import Excel</span>
+                    <span>Import Excel</span>
                     <input type="file" accept=".xlsx, .xls, .ods, .csv" multiple onChange={handleExcelImport} className="hidden" />
                   </label>
                   <button
@@ -11191,10 +8675,10 @@ export default function App({ sharing = null, userId = null } = {}) {
                     Paste Text List
                   </button>
                 </div>
-              </div>
-              <div className="tms-tool-group">
-                <span className="tms-tool-label">Data</span>
-                <div className="tms-tool-row">
+                <div
+                  className={`tms-data-menu${showDataMenu ? '' : ' is-closed'}`}
+                  onClick={event => { if (!event.target?.closest?.('[role="dialog"]') && event.target?.closest?.('button, label')) setShowDataMenu(false); }}
+                >
                   <button
                     type="button"
                     onClick={handleBackupExport}
@@ -11202,17 +8686,16 @@ export default function App({ sharing = null, userId = null } = {}) {
                     data-accent="slate"
                     title="Download all customers, loads and rates as a backup file"
                   >
-                    💾 Backup
+                    Backup
                   </button>
                   <label className="tms-tool cursor-pointer" data-accent="slate" title="Restore customers, loads and rates from a backup file">
-                    <span>📤 Restore</span>
+                    <span>Restore</span>
                     <input type="file" accept=".json,application/json" onChange={handleBackupImport} className="hidden" />
                   </label>
                   <LoadListHistory onRestore={restoreLoadListSnapshot} />
                   <Prospects />
                   <ChOffers onAddToTms={handleAddChOffersToTms} newLanes={chOffersNewLanes} inTmsKeys={chOffersInTmsKeys} onOpenLoad={openChOffersLoad} />
                 </div>
-              </div>
             </div>
             )}
           </div>
@@ -11307,26 +8790,21 @@ export default function App({ sharing = null, userId = null } = {}) {
             >
               {showCustomers ? '▾' : '▸'} Customers / Brokers ({brokers.length})
             </button>
-            {showCustomers && brokers.map(broker => (
-              editingBroker === broker ? (
-                <form key={broker} onSubmit={(e) => handleSaveEditBroker(broker, e)} className="flex items-center space-x-1 w-full">
-                  <input
-                    type="text"
-                    value={editBrokerInput}
-                    onChange={(e) => setEditBrokerInput(e.target.value)}
-                    autoFocus
-                    className="bg-[#0b132b] border border-blue-500 rounded px-2 py-1 text-[11px] text-white outline-none flex-1"
-                  />
-                  <button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-1 text-[11px] rounded font-bold">Save</button>
-                  <button type="button" onClick={() => setEditingBroker(null)} className="bg-gray-600 hover:bg-gray-500 text-white px-1.5 py-1 text-[11px] rounded">Cancel</button>
-                </form>
-              ) : (
+            {showCustomers && groupCustomers(brokers).map(row => {
+              // One line per account (Daniel 2026-11-27): the short name, a tab per account
+              // (VAN, REEFER, ...), and ⋯ for Share / Edit / Delete.
+              const names = row.members.map(member => member.name);
+              const isGroup = names.length > 1;
+              const menuOpen = customerMenu === row.key;
+              const editing = names.includes(editingBroker) ? editingBroker : null;
+              const single = splitCustomerName(names[0]);
+              return (
                 <div
-                  key={broker}
-                  draggable
+                  key={row.key}
+                  draggable={!editing}
                   title="Drag to change the order"
                   onDragStart={event => {
-                    event.dataTransfer.setData(customerDragType, broker);
+                    event.dataTransfer.setData(customerDragType, JSON.stringify(names));
                     event.dataTransfer.effectAllowed = 'move';
                     event.currentTarget.classList.add('is-dragging');
                   }}
@@ -11341,49 +8819,99 @@ export default function App({ sharing = null, userId = null } = {}) {
                   onDrop={event => {
                     event.preventDefault();
                     event.currentTarget.classList.remove('is-drop-target');
-                    const dragged = event.dataTransfer.getData(customerDragType);
-                    if (dragged && dragged !== broker) setBrokers(current => moveCustomer(current, dragged, broker));
+                    const raw = event.dataTransfer.getData(customerDragType);
+                    let dragged;
+                    try { dragged = JSON.parse(raw); } catch { dragged = [raw]; }
+                    if (!Array.isArray(dragged)) dragged = [raw];
+                    setBrokers(current => moveCustomers(current, dragged, names[0]));
                   }}
-                  className={`tms-customer flex items-center justify-between px-2.5 py-1.5 text-[11px] rounded font-medium border transition-colors ${selectedBroker === broker ? 'bg-blue-600/30 border-blue-500 text-white' : 'bg-[#1c2541] border-[#253259] text-gray-300 hover:bg-[#253259]'}`}
-                  data-selected={selectedBroker === broker}
+                  className="tms-account-row"
+                  data-selected={names.includes(selectedBroker)}
                 >
-                  <span className="tms-drag-handle" aria-hidden="true">⠿</span>
-                  <span
-                    className="truncate flex-1 cursor-pointer"
-                    data-close-drawer
-                    onClick={() => handleSelectBroker(broker)}
-                    title={sharedCustomers[broker] ? 'Shared customer – teammates see the same loads' : undefined}
-                  >
-                    {sharedCustomers[broker] && '🤝 '}{broker} {selectedBroker === broker && ' ✓'}
-                  </span>
-                  <div className="flex items-center space-x-1 ml-2">
-                    {sharing && (
+                  <div className="tms-account-line">
+                    <span className="tms-drag-handle" aria-hidden="true">⠿</span>
+                    {isGroup ? (
+                      <>
+                        <span className="tms-account-name" title={row.base}>{shortAccountName(row.base)}</span>
+                        <span className="tms-account-tabs">
+                          {row.members.map(member => (
+                            <button
+                              key={member.name}
+                              type="button"
+                              data-close-drawer
+                              onClick={() => handleSelectBroker(member.name)}
+                              aria-pressed={selectedBroker === member.name}
+                              title={sharedCustomers[member.name] ? `${member.name} (shared with teammates)` : member.name}
+                              className="tms-account-tab"
+                              data-kind={accountTagKind(member.tag)}
+                            >
+                              {member.tag}{sharedCustomers[member.name] && <span className="tms-shared-dot" aria-label="shared" />}
+                            </button>
+                          ))}
+                        </span>
+                      </>
+                    ) : (
                       <button
-                        onClick={() => openShareDialog(broker)}
-                        title="Share this customer with teammates"
-                        className="bg-slate-700 hover:bg-emerald-600 text-gray-200 hover:text-white px-1.5 py-0.5 rounded text-[10px]"
+                        type="button"
+                        className="tms-account-single"
+                        data-close-drawer
+                        aria-pressed={selectedBroker === names[0]}
+                        onClick={() => handleSelectBroker(names[0])}
+                        title={sharedCustomers[names[0]] ? `${names[0]} (shared with teammates)` : names[0]}
                       >
-                        🤝 Share
+                        <span className="truncate">{single.tag ? single.base : names[0]}</span>
+                        {single.tag && <span className="tms-account-tag">{single.tag}</span>}
+                        {sharedCustomers[names[0]] && <span className="tms-shared-dot" aria-label="shared" />}
                       </button>
                     )}
                     <button
-                      onClick={() => { setEditingBroker(broker); setEditBrokerInput(broker); }}
-                      title="Edit Customer"
-                      className="bg-slate-700 hover:bg-blue-600 text-gray-200 hover:text-white px-1.5 py-0.5 rounded text-[10px]"
+                      type="button"
+                      onClick={() => setCustomerMenu(menuOpen ? null : row.key)}
+                      aria-expanded={menuOpen}
+                      aria-label={`Share, edit or delete ${row.base}`}
+                      title="Share, edit or delete"
+                      className="tms-account-more"
                     >
-                      ✏️ Edit
-                    </button>
-                    <button
-                      onClick={(e) => handleDeleteBroker(broker, e)}
-                      title="Delete Customer"
-                      className="bg-slate-700 hover:bg-red-600 text-gray-200 hover:text-white px-1.5 py-0.5 rounded text-[10px]"
-                    >
-                      ✕
+                      ⋯
                     </button>
                   </div>
+                  {menuOpen && (
+                    <div className="tms-account-menu">
+                      {row.members.map(member => (
+                        <div key={member.name} className="tms-account-menu-line">
+                          <span className="tms-account-menu-name">{member.name}</span>
+                          {sharing && (
+                            <button type="button" onClick={() => { setCustomerMenu(null); openShareDialog(member.name); }} title="Share this customer with teammates" className="tms-slim-btn" data-tone="emerald">
+                              Share
+                            </button>
+                          )}
+                          <button type="button" onClick={() => { setCustomerMenu(null); setEditingBroker(member.name); setEditBrokerInput(member.name); }} title="Edit Customer" className="tms-slim-btn" data-tone="blue">
+                            Rename
+                          </button>
+                          <button type="button" onClick={event => { setCustomerMenu(null); handleDeleteBroker(member.name, event); }} title="Delete Customer" className="tms-slim-btn tms-danger" data-tone="red">
+                            Delete
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {editing && (
+                    <form onSubmit={event => handleSaveEditBroker(editing, event)} className="tms-account-menu-line mt-2">
+                      <input
+                        type="text"
+                        value={editBrokerInput}
+                        onChange={event => setEditBrokerInput(event.target.value)}
+                        autoFocus
+                        aria-label="Customer name"
+                        className="tms-slim-input flex-1 min-w-[10rem]"
+                      />
+                      <button type="submit" className="tms-slim-btn tms-primary">Save</button>
+                      <button type="button" onClick={() => setEditingBroker(null)} className="tms-slim-btn">Cancel</button>
+                    </form>
+                  )}
                 </div>
-              )
-            ))}
+              );
+            })}
 
             {showCustomers && (isAddingBroker ? (
               <form onSubmit={handleAddBroker} className="flex items-center space-x-1 mt-1 w-full">
@@ -11393,15 +8921,15 @@ export default function App({ sharing = null, userId = null } = {}) {
                   value={newBrokerInput}
                   onChange={(e) => setNewBrokerInput(e.target.value)}
                   autoFocus
-                  className="bg-[#0b132b] border border-blue-500 rounded px-2 py-1 text-[11px] text-white outline-none flex-1"
+                  className="tms-slim-input flex-1"
                 />
-                <button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-1 text-[11px] rounded font-bold">Add</button>
-                <button type="button" onClick={() => setIsAddingBroker(false)} className="bg-gray-600 hover:bg-gray-500 text-white px-1.5 py-1 text-[11px] rounded">Cancel</button>
+                <button type="submit" className="tms-slim-btn tms-primary">Add</button>
+                <button type="button" onClick={() => setIsAddingBroker(false)} className="tms-slim-btn">Cancel</button>
               </form>
             ) : (
               <button
                 onClick={() => setIsAddingBroker(true)}
-                className="mt-1 px-2.5 py-1 text-[11px] rounded font-medium bg-[#1c2541] hover:bg-blue-600 text-blue-300 hover:text-white transition-colors text-left"
+                className="tms-slim-btn tms-add-customer"
               >
                 + Add Customer
               </button>
@@ -11422,7 +8950,7 @@ export default function App({ sharing = null, userId = null } = {}) {
           </div>
           {isGlobalSearch && (
             <p className="mb-2 text-[10px] text-gray-400">
-              All customers · All folders and load statuses · Pickup date applies while searching; other filters are ignored. Click a result to open its customer.
+              All customers · All folders and load statuses · Filters narrow the search too. Click a result to open its customer.
               Bulk selection and export apply to the selected customer only.
             </p>
           )}
@@ -11434,237 +8962,263 @@ export default function App({ sharing = null, userId = null } = {}) {
             </span>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
-            <div className="flex flex-wrap gap-1">
-              {['ALL', 'OPEN', 'ON HOLD', 'OFFER', 'ENT', 'BOOKED'].map(tab => (
+          {/* Slim filter area (Daniel 2026-11-27: "futuristic and classic ... professional"): one
+              status bar, one day row with a Filters button, the active filters as tags. */}
+          <div className="tms-status-bar" role="group" aria-label="Load status">
+            {['ALL', 'OPEN', 'ON HOLD', 'OFFER', 'ENT', 'BOOKED'].map(tab => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => {
+                  // BOOKED opens its page; OFFER filters this list across all customers.
+                  if (tab === 'BOOKED') {
+                    setView('booked');
+                  } else {
+                    setFilter(tab);
+                    setView('loads');
+                  }
+                }}
+                title={tab === 'BOOKED' ? 'Open the Booked Loads page: every load with a driver, all customers' : tab === 'OFFER' ? 'Show offers across all customers' : undefined}
+                aria-pressed={tab !== 'BOOKED' && filter === tab}
+                data-status={tab.replace(' ', '-')}
+                className="tms-status-tab"
+              >
+                {tab === 'BOOKED' ? `BOOKED (${allBookedCount})` : tab === 'OFFER' ? `OFFER (${offerCount})` : tab}
+              </button>
+            ))}
+          </div>
+
+          <div className="tms-day-row" role="group" aria-label="Quick pickup dates">
+            <button
+              type="button"
+              onClick={() => { setLoadFilters(prev => ({ ...prev, pickupDate: '' })); setSelectedIds([]); }}
+              aria-label="Clear pickup date filter"
+              data-tone="slate"
+              aria-pressed={!loadFilters.pickupDate}
+              className="tms-slim-btn tms-toggle"
+            >
+              All days
+            </button>
+            {[['Today', 0], ['Tomorrow', 1]].map(([label, offset]) => (
+              <button
+                key={label}
+                type="button"
+                data-tone={offset ? 'sky' : 'emerald'}
+                aria-pressed={loadFilters.pickupDate === pickupDayFromToday(offset)}
+                onClick={() => {
+                  setLoadFilters(prev => ({ ...prev, pickupDate: pickupDayFromToday(offset) }));
+                  setSelectedIds([]);
+                }}
+                className="tms-slim-btn tms-toggle"
+              >
+                {label}
+              </button>
+            ))}
+            <span className="tms-date-pick">
+              <input
+                id="pickup-date-filter"
+                type="date"
+                value={loadFilters.pickupDate}
+                onClick={event => {
+                  if (typeof event.currentTarget.showPicker === 'function') event.currentTarget.showPicker();
+                }}
+                onChange={e => { setLoadFilters(prev => ({ ...prev, pickupDate: e.target.value })); setSelectedIds([]); }}
+                className="tms-date-input focus-visible:ring-2"
+                title="Show only loads picking up on this day"
+                tabIndex={-1}
+              />
+              <button
+                type="button"
+                aria-label="Open pickup date calendar"
+                data-tone="violet"
+                aria-controls="pickup-date-filter"
+                aria-pressed={Boolean(loadFilters.pickupDate) && ![0, 1].some(offset => pickupDayFromToday(offset) === loadFilters.pickupDate)}
+                title="Pick a pickup day"
+                onClick={event => {
+                  const input = event.currentTarget.parentElement.querySelector('input');
+                  input.focus();
+                  if (typeof input.showPicker === 'function') input.showPicker();
+                }}
+                className="tms-slim-btn tms-toggle"
+              >
+                Date
+              </button>
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowFilters(open => !open)}
+              aria-expanded={showFilters}
+              className="tms-slim-btn tms-filters-toggle"
+              data-tone="cyan"
+              data-active={showFilters || activeFilterTags.length > 0}
+            >
+              Filters{activeFilterTags.length ? ` · ${activeFilterTags.length}` : ''}
+              <span className="tms-caret" aria-hidden="true">▾</span>
+            </button>
+          </div>
+
+          <div className={`tms-filter-panel${showFilters ? '' : ' hidden'}`}>
+            <div className="tms-filter-line">
+              <span className="tms-filter-label">Rate</span>
+              {[
+                ['', `All (${rateCountOrders.length})`],
+                ['with', `With rate (${withRateCount})`],
+                ['without', `No rate (${noRateCount})`]
+              ].map(([value, label]) => (
                 <button
-                  key={tab}
-                  onClick={() => {
-                    // BOOKED opens its page; OFFER filters this list across all customers.
-                    if (tab === 'BOOKED') {
-                      setView('booked');
-                    } else {
-                      setFilter(tab);
-                      setView('loads');
-                    }
-                  }}
-                  title={tab === 'BOOKED' ? 'Open the Booked Loads page: every load with a driver, all customers' : tab === 'OFFER' ? 'Show offers across all customers' : undefined}
-                  className={`px-2 py-1 text-[11px] rounded font-semibold ${tab === 'OPEN' ? `tms-open ${filter === tab ? 'ring-2 ring-emerald-200' : ''}` : tab === 'ENT' ? `tms-ent ${filter === tab ? 'ring-2 ring-yellow-200' : ''}` : tab === 'ON HOLD' ? filter === tab ? 'bg-red-600 text-white ring-2 ring-red-300' : 'bg-red-700 hover:bg-red-600 text-white' : tab === 'BOOKED' ? filter === tab ? 'bg-purple-600 text-white ring-2 ring-purple-300' : 'bg-purple-700 hover:bg-purple-600 text-white' : filter === tab ? 'bg-blue-600 text-white' : 'bg-[#1c2541] text-gray-400'}`}
+                  key={value || 'all'}
+                  type="button"
+                  data-tone={value === 'with' ? 'emerald' : value === 'without' ? 'amber' : 'blue'}
+                  aria-pressed={loadFilters.rate === value}
+                  onClick={() => { setLoadFilters(prev => ({ ...prev, rate: value })); setSelectedIds([]); }}
+                  className="tms-slim-btn tms-toggle"
                 >
-                  {tab === 'BOOKED' ? `BOOKED (${allBookedCount})` : tab === 'OFFER' ? `OFFER (${offerCount})` : tab}
+                  {label}
                 </button>
               ))}
+            </div>
+            <div className="tms-filter-line">
+              <span className="tms-filter-label">States</span>
+              <select
+                aria-label="Filter by pickup state"
+                value={loadFilters.pickupState}
+                onChange={e => { setLoadFilters(prev => ({ ...prev, pickupState: e.target.value })); setSelectedIds([]); }}
+                className="tms-slim-input flex-1 min-w-[6rem]"
+              >
+                <option value="">Pickup: any</option>
+                {sortedStateCodes.map(state => (
+                  <option key={state} value={state}>{state}</option>
+                ))}
+              </select>
+              <span className="tms-filter-arrow" aria-hidden="true">→</span>
+              <select
+                aria-label="Filter by delivery state"
+                value={loadFilters.deliveryState}
+                onChange={e => { setLoadFilters(prev => ({ ...prev, deliveryState: e.target.value })); setSelectedIds([]); }}
+                className="tms-slim-input flex-1 min-w-[6rem]"
+              >
+                <option value="">Delivery: any</option>
+                {sortedStateCodes.map(state => (
+                  <option key={state} value={state}>{state}</option>
+                ))}
+              </select>
+            </div>
+            <div className="tms-filter-line">
+              <span className="tms-filter-label">Miles</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="Min"
+                aria-label="Minimum miles"
+                value={loadFilters.minMiles}
+                onChange={e => { setLoadFilters(prev => ({ ...prev, minMiles: e.target.value.replace(/[^\d]/g, '') })); setSelectedIds([]); }}
+                className="tms-slim-input w-24"
+              />
+              <span className="tms-filter-arrow" aria-hidden="true">–</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="Max"
+                aria-label="Maximum miles"
+                value={loadFilters.maxMiles}
+                onChange={e => { setLoadFilters(prev => ({ ...prev, maxMiles: e.target.value.replace(/[^\d]/g, '') })); setSelectedIds([]); }}
+                className="tms-slim-input w-24"
+              />
+            </div>
+            <div className="tms-filter-line">
+              <span className="tms-filter-label">Sort</span>
+              <select
+                aria-label="Sort loads by city and state"
+                value={laneSort === 'pickup-asc' ? '' : laneSort}
+                onChange={e => setLaneSort(e.target.value)}
+                className="tms-slim-input flex-1"
+              >
+                {LANE_SORT_CHOICES.map(([value, label]) => <option key={value || 'default'} value={value}>{label}</option>)}
+              </select>
+            </div>
+            <div className="tms-filter-line tms-filter-actions">
               <button
                 type="button"
                 onClick={() => setView('report')}
                 title="Weekly and monthly booking totals: loads booked, per customer, and total line haul"
-                className="px-2 py-1 text-[11px] rounded font-semibold bg-sky-700 hover:bg-sky-600 text-white cursor-pointer"
+                className="tms-slim-btn"
+                data-tone="sky"
               >
-                📊 BOOKINGS
-              </button>
-            </div>
-            {selectedIds.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1 w-full">
-                <span className="text-[10px] text-gray-400">Move to:</span>
-                {['OPEN', 'ON HOLD', 'OFFER', 'ENT'].map(status => (
-                  <button
-                    key={status}
-                    onClick={() => handleMoveSelected(status)}
-                    title={`Move ${selectedIds.length} selected load${selectedIds.length === 1 ? '' : 's'} to ${status}`}
-                    className={`text-white text-[10px] px-2 py-1 rounded font-bold cursor-pointer ${status === 'OPEN' ? 'bg-emerald-600 hover:bg-emerald-500' : status === 'ENT' ? 'bg-yellow-600 hover:bg-yellow-500' : 'bg-red-700 hover:bg-red-600'}`}
-                  >
-                    {status}
-                  </button>
-                ))}
-                <button
-                  onClick={handleDeleteSelected}
-                  className="bg-red-600 hover:bg-red-700 text-white text-[10px] px-2 py-1 rounded font-bold cursor-pointer"
-                >
-                  Delete Selected ({selectedIds.length})
-                </button>
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between mt-1 mb-1 px-1">
-            <div className="flex items-center space-x-2">
-              <input
-                type="checkbox"
-                onChange={() => handleSelectAll(filteredOrders)}
-                checked={filter === 'OFFER'
-                  ? visibleOrderEntries.length > 0 && visibleOrderEntries.every(({ customer, order }) => selectedIds.includes(selectionKey(customer, order.id)))
-                  : filteredOrders.length > 0 && filteredOrders.every(o => selectedIds.includes(o.id))}
-                className="cursor-pointer accent-blue-600"
-              />
-              <span className="text-[11px] text-gray-400">{filter === 'OFFER' ? 'Select All (all customers)' : isAllCustomersView ? 'Select All (current customer)' : 'Select All'}</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                disabled={selectedIds.length === 0}
-                onClick={() => copyToClipboard(
-                  visibleOrderEntries.filter(({ customer, order }) => (filter === 'OFFER' || customer === selectedBroker) && selectedIds.includes(selectionKey(customer, order.id)))
-                    .map(({ order }) => `${order.id} ${order.route || ''}`.trim()).join('\n'),
-                  'Selected loads'
-                )}
-                title="Copy load number and pickup/delivery city/state for every checked load"
-                className="bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
-              >
-                📋 Copy Selected ({visibleOrderEntries.filter(({ customer, order }) => (filter === 'OFFER' || customer === selectedBroker) && selectedIds.includes(selectionKey(customer, order.id))).length})
+                Bookings report
               </button>
               <button
                 type="button"
                 onClick={handleClearAllFilters}
                 disabled={!searchQuery.trim() && !loadFilters.rate && !loadFilters.minMiles && !loadFilters.maxMiles && !loadFilters.pickupState && !loadFilters.deliveryState && !loadFilters.pickupDate && !laneSort}
                 title="Clear the search box and all lane filters and sorting"
-                className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer"
+                className="tms-slim-btn"
+                data-tone="amber"
               >
-                ✕ Clear All Filters
+                Clear All Filters
               </button>
             </div>
-          </div>
-          <div className="flex items-center gap-1.5 mb-1 px-1">
-            <span className="text-[11px] text-gray-400">Show:</span>
-            {[
-              ['', `All (${rateCountOrders.length})`, 'bg-blue-600 border-blue-400'],
-              ['with', `With rate (${withRateCount})`, 'bg-emerald-600 border-emerald-300'],
-              ['without', `No rate (${noRateCount})`, 'bg-amber-600 border-amber-300']
-            ].map(([value, label, activeClass]) => (
-              <button
-                key={value || 'all'}
-                type="button"
-                aria-pressed={loadFilters.rate === value}
-                onClick={() => { setLoadFilters(prev => ({ ...prev, rate: value })); setSelectedIds([]); }}
-                className={`text-white text-[10px] font-bold px-2 py-0.5 rounded cursor-pointer border ${loadFilters.rate === value ? `${activeClass} ring-2 ring-white/60` : 'bg-slate-700 border-transparent hover:bg-slate-600'}`}
-              >
-                {label}
-              </button>
-            ))}
           </div>
 
-          <div className="tms-pickup-date-filter mt-2">
-            <label htmlFor="pickup-date-filter" className="block mb-2 text-base font-semibold text-slate-100">Pickup date:</label>
-            <div className="flex flex-col gap-2">
-            <input
-              id="pickup-date-filter"
-              type="date"
-              value={loadFilters.pickupDate}
-              onClick={event => {
-                if (typeof event.currentTarget.showPicker === 'function') event.currentTarget.showPicker();
-              }}
-              onChange={e => { setLoadFilters(prev => ({ ...prev, pickupDate: e.target.value })); setSelectedIds([]); }}
-              className={`flex-1 min-w-0 min-h-[44px] rounded-lg border px-2 py-2 text-sm text-white outline-none focus-visible:ring-2 focus-visible:ring-sky-300 [color-scheme:dark] ${loadFilters.pickupDate ? 'bg-blue-600 border-blue-400' : 'bg-[#0b132b] border-slate-500 focus:border-sky-300'}`}
-              title="Show only loads picking up on this day"
-            />
+          {activeFilterTags.length > 0 && (
+            <div className="tms-tag-row">
+              {activeFilterTags.map(tag => (
+                <button key={tag.key} type="button" onClick={() => { tag.clear(); setSelectedIds([]); }} aria-label={`Remove filter ${tag.label}`} className="tms-filter-tag">
+                  {tag.label}<span aria-hidden="true">✕</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="tms-select-row">
+            <label className="tms-select-all">
+              <input
+                type="checkbox"
+                onChange={() => handleSelectAll(filteredOrders)}
+                checked={filter === 'OFFER'
+                  ? visibleOrderEntries.length > 0 && visibleOrderEntries.every(({ customer, order }) => selectedIds.includes(selectionKey(customer, order.id)))
+                  : filteredOrders.length > 0 && filteredOrders.every(o => selectedIds.includes(o.id))}
+                className="w-6 h-6 cursor-pointer accent-blue-600"
+              />
+              <span>{filter === 'OFFER' ? 'Select All (all customers)' : isAllCustomersView ? 'Select All (current customer)' : 'Select All'}</span>
+            </label>
             <button
               type="button"
-              aria-label="Open pickup date calendar"
-              aria-controls="pickup-date-filter"
-              onClick={event => {
-                const input = event.currentTarget.parentElement.querySelector('input');
-                input.focus();
-                if (typeof input.showPicker === 'function') input.showPicker();
-              }}
-              className="shrink-0 min-h-[44px] min-w-[44px] rounded-lg bg-blue-600 hover:bg-blue-500 px-3 py-2 text-sm font-semibold text-white cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
+              disabled={selectedIds.length === 0}
+              onClick={() => copyToClipboard(
+                visibleOrderEntries.filter(({ customer, order }) => (filter === 'OFFER' || customer === selectedBroker) && selectedIds.includes(selectionKey(customer, order.id)))
+                  .map(({ order }) => `${order.id} ${order.route || ''}`.trim()).join('\n'),
+                'Selected loads'
+              )}
+              title="Copy load number and pickup/delivery city/state for every checked load"
+              className="tms-slim-btn"
+              data-tone="blue"
             >
-              Open calendar
+              Copy Selected ({visibleOrderEntries.filter(({ customer, order }) => (filter === 'OFFER' || customer === selectedBroker) && selectedIds.includes(selectionKey(customer, order.id))).length})
             </button>
-            </div>
-            <div className="mt-2 flex flex-wrap gap-2" role="group" aria-label="Quick pickup dates">
-              {[['Today', 0], ['Tomorrow', 1]].map(([label, offset]) => (
+          </div>
+          {selectedIds.length > 0 && (
+            <div className="tms-select-row">
+              <span className="tms-filter-label">Move to</span>
+              {['OPEN', 'ON HOLD', 'OFFER', 'ENT'].map(status => (
                 <button
-                  key={label}
-                  type="button"
-                  onClick={() => {
-                    const date = new Date();
-                    date.setDate(date.getDate() + offset);
-                    const pickupDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-                    setLoadFilters(prev => ({ ...prev, pickupDate }));
-                    setSelectedIds([]);
-                  }}
-                  className="flex-1 rounded-lg bg-slate-700 hover:bg-slate-600 px-3 py-2 text-white cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+                  key={status}
+                  onClick={() => handleMoveSelected(status)}
+                  title={`Move ${selectedIds.length} selected load${selectedIds.length === 1 ? '' : 's'} to ${status}`}
+                  data-status={status.replace(' ', '-')}
+                  className="tms-slim-btn tms-move-btn"
                 >
-                  {label}
+                  {status}
                 </button>
               ))}
               <button
-                type="button"
-                onClick={() => { setLoadFilters(prev => ({ ...prev, pickupDate: '' })); setSelectedIds([]); }}
-                aria-label="Clear pickup date filter"
-                aria-pressed={!loadFilters.pickupDate}
-                className="flex-1 text-white bg-slate-700 hover:bg-slate-600 rounded-lg px-3 py-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+                onClick={handleDeleteSelected}
+                className="tms-slim-btn tms-danger"
+                data-tone="red"
               >
-                All dates
+                Delete Selected ({selectedIds.length})
               </button>
             </div>
-          </div>
-          <div className="mt-1.5">
-            <select
-              aria-label="Sort loads by city and state"
-              value={laneSort === 'pickup-asc' ? '' : laneSort}
-              onChange={e => setLaneSort(e.target.value)}
-              className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1.5 text-xs text-white outline-none focus:border-blue-500"
-            >
-              <option value="">Sort: pickup date, earliest first (default)</option>
-              <option value="pickup-desc">Pickup date: latest first</option>
-              <option value="origin-asc">Pickup city: A to Z</option>
-              <option value="origin-desc">Pickup city: Z to A</option>
-              <option value="destination-asc">Delivery city: A to Z</option>
-              <option value="destination-desc">Delivery city: Z to A</option>
-              <option value="origin-state-asc">Pickup state: A to Z</option>
-              <option value="origin-state-desc">Pickup state: Z to A</option>
-              <option value="destination-state-asc">Delivery state: A to Z</option>
-              <option value="destination-state-desc">Delivery state: Z to A</option>
-            </select>
-          </div>
-          <div className="flex items-center gap-2 mt-1.5 px-1">
-            <span className="text-sm text-gray-300 font-semibold">States:</span>
-            <select
-              aria-label="Filter by pickup state"
-              value={loadFilters.pickupState}
-              onChange={e => { setLoadFilters(prev => ({ ...prev, pickupState: e.target.value })); setSelectedIds([]); }}
-              className="w-full bg-[#0b132b] border-2 border-[#2c3a5f] rounded-lg px-2 py-2.5 text-base text-white outline-none focus:border-blue-400 cursor-pointer"
-            >
-              <option value="">Pickup state (all)</option>
-              {sortedStateCodes.map(state => (
-                <option key={state} value={state}>{state}</option>
-              ))}
-            </select>
-            <span className="text-base text-gray-400 font-bold">→</span>
-            <select
-              aria-label="Filter by delivery state"
-              value={loadFilters.deliveryState}
-              onChange={e => { setLoadFilters(prev => ({ ...prev, deliveryState: e.target.value })); setSelectedIds([]); }}
-              className="w-full bg-[#0b132b] border-2 border-[#2c3a5f] rounded-lg px-2 py-2.5 text-base text-white outline-none focus:border-blue-400 cursor-pointer"
-            >
-              <option value="">Delivery state (all)</option>
-              {sortedStateCodes.map(state => (
-                <option key={state} value={state}>{state}</option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-center gap-1.5 mt-1.5 px-1">
-            <span className="text-[11px] text-gray-400">Miles:</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              placeholder="Min"
-              aria-label="Minimum miles"
-              value={loadFilters.minMiles}
-              onChange={e => { setLoadFilters(prev => ({ ...prev, minMiles: e.target.value.replace(/[^\d]/g, '') })); setSelectedIds([]); }}
-              className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1 text-xs text-white placeholder-gray-500 outline-none focus:border-blue-500"
-            />
-            <span className="text-[11px] text-gray-500">–</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              placeholder="Max"
-              aria-label="Maximum miles"
-              value={loadFilters.maxMiles}
-              onChange={e => { setLoadFilters(prev => ({ ...prev, maxMiles: e.target.value.replace(/[^\d]/g, '') })); setSelectedIds([]); }}
-              className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-1 text-xs text-white placeholder-gray-500 outline-none focus:border-blue-500"
-            />
-          </div>
+          )}
         </div>
 
         <div className="tms-list-bar">
@@ -11678,6 +9232,16 @@ export default function App({ sharing = null, userId = null } = {}) {
           >
             {listView === 'table' ? '▤ Cards' : '▦ Table'}
           </button>
+          {selectedBroker && (
+            <button
+              type="button"
+              onClick={() => setShowRules(true)}
+              title={`Rules for ${selectedBroker}: equipment, rates, lane rates, Excel columns`}
+              className={`tms-list-bar-button${hasCustomerRules(getCustomerRules(profile.customerRules, selectedBroker)) ? ' !text-emerald-300' : ''}`}
+            >
+              ⚙ Rules
+            </button>
+          )}
           <ListFocusToggle />
         </div>
         <div className="tms-load-list flex-1 overflow-y-auto p-2 space-y-2">
@@ -11900,7 +9464,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                   {chatItem?.from && <p className="text-xs text-purple-200 mb-1">From {chatItem.from}</p>}
                   <p className="text-xs text-gray-300 mb-3">The picture is imported into the account you pick.</p>
                   <div className="flex flex-col gap-2">
-                    {(chatItem ? getChatInboxChoices(chatItem, brokers) : pasteImportChoices).map(choice => (
+                    {(chatItem ? getChatInboxChoices(chatItem, brokers) : getPasteImportChoices(brokers)).map(choice => (
                       <button
                         key={choice.label}
                         type="button"
@@ -11980,11 +9544,13 @@ export default function App({ sharing = null, userId = null } = {}) {
                 ))}
               </div>
             )}
+            {/* No notices in the bottom-right corner (Daniel 2026-11-27): only problems (⚠) and Undo
+                offers show, in a slim strip at the top center; plain news is not shown at all. */}
             {notices.length > 0 && (
-              <div className="fixed right-2 bottom-12 z-50 w-[26rem] max-w-[calc(100vw-1rem)] space-y-2 normal-case tracking-normal text-left">
+              <div className="fixed top-2 left-1/2 -translate-x-1/2 z-[61] w-[40rem] max-w-[calc(100vw-1rem)] space-y-1 normal-case tracking-normal text-left">
                 {notices.map(notice => (
-                  <div key={notice.id} role="alert" className={`rounded-lg shadow-2xl border p-2.5 text-xs flex items-start gap-2 ${notice.level === 'info' ? 'bg-sky-950 border-sky-500 text-sky-100' : notice.level === 'undo' ? 'bg-slate-900 border-slate-400 text-slate-100' : 'bg-amber-950 border-amber-400 text-amber-100'}`}>
-                    <p className="flex-1 whitespace-pre-wrap">{['info', 'undo'].includes(notice.level) ? '' : '⚠ '}{notice.text}</p>
+                  <div key={notice.id} role="alert" className={`rounded-md shadow-2xl border px-2.5 py-1.5 text-xs flex items-start gap-2 ${notice.level === 'undo' ? 'bg-slate-900/95 border-slate-400 text-slate-100' : notice.level === 'auto' ? 'bg-emerald-950/95 border-emerald-400 text-emerald-100' : 'bg-amber-950/95 border-amber-400 text-amber-100'}`}>
+                    <p className="flex-1 whitespace-pre-wrap">{notice.level === 'undo' || notice.level === 'auto' ? '' : '⚠ '}{notice.text}</p>
                     {notice.action && (
                       <button
                         type="button"
@@ -12502,7 +10068,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                   </select>
                   {[2, 3].map(slot => {
                     const field = `equipment${slot}`;
-                    const value = slot === 2 ? getLandstarExportEquipment2(selectedBroker, selectedOrder, profile.postingCode) : selectedOrder.equipment3 || '';
+                    const value = slot === 2 ? getLandstarExportEquipment2(selectedBroker, selectedOrder, profile.postingCode, getCustomerRules(profile.customerRules, selectedBroker)) : selectedOrder.equipment3 || '';
                     const choices = [...new Map(equipmentOptions.map(([code, label]) => [getLandstarEquipmentCode(code), label])).entries()];
                     return (
                       <div key={field} className="mt-2">
@@ -12514,7 +10080,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                           {value && !choices.some(([code]) => code === value) && <option value={value}>{value}</option>}
                           {choices.filter(([code]) => code && code !== getLandstarEquipmentCode(selectedOrder.eCode)
                             && !(getLandstarEquipmentCode(selectedOrder.eCode) === 'D-LG' && code === 'D-ST')
-                            && (slot === 2 || code !== getLandstarExportEquipment2(selectedBroker, selectedOrder, profile.postingCode)))
+                            && (slot === 2 || code !== getLandstarExportEquipment2(selectedBroker, selectedOrder, profile.postingCode, getCustomerRules(profile.customerRules, selectedBroker))))
                             .map(([code, label]) => <option key={code} value={code}>{code} - {label}</option>)}
                         </select>
                       </div>

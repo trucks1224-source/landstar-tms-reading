@@ -41,7 +41,15 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '127.0.0.1',
       watch: {
-        ignored: (file) => file.includes('browser-profile')
+        // The bots write status files, logs, inbox files and exports every few seconds; watching
+        // them kept the TMS server busy (Daniel 2026-11-27: pages took 30 s, "signal timed out").
+        // Only the bot files the TMS imports (automation-policy.json) are still watched.
+        ignored: (file) => {
+          const name = String(file).replace(/\\/g, '/');
+          if (name.includes('browser-profile') || name.includes('/teammate-setup/out/')) return true;
+          if (!name.includes('/bot/')) return false;
+          return !name.endsWith('/bot/automation-policy.json') && /\/bot\/(logs|chat-inbox|refresh-exports|node_modules)\/|\.(json|log|tmp|png|xlsx|lock)$/.test(name);
+        }
       }
     },
     plugins: [

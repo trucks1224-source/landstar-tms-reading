@@ -106,3 +106,21 @@ test('seen list remembers which chats had their first look', () => {
   assert.equal(again.started.has('https://chat.google.com/room/AAAA'), true);
   assert.equal(again.keys.has('k1'), true);
 });
+
+test('a file with no name right below a named list is its next part, merged into one list', () => {
+  const { groupSheetParts, mergeSheetParts } = require('./chat-bot');
+  const XLSX = require('xlsx');
+  const sheet = (fileName, label) => ({ fileName, label, key: fileName });
+  const page = [sheet('a.xlsx', 'haz'), sheet('b.xlsx', 'panels'), sheet('c.xlsx', ''), sheet('d.xlsx', 'reefer')];
+  const groups = groupSheetParts(page, page.slice(1));
+  assert.deepEqual(groups.map(group => [group.label, group.sheets.map(item => item.fileName)]),
+    [['panels', ['b.xlsx', 'c.xlsx']], ['reefer', ['d.xlsx']]]);
+  const book = rows => {
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), 'Sheet1');
+    return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  };
+  const merged = mergeSheetParts([book([['Order'], ['1'], ['2']]), book([['Order'], ['3']])]);
+  const rows = XLSX.utils.sheet_to_json(XLSX.read(merged).Sheets.Sheet1, { header: 1 });
+  assert.deepEqual(rows.map(row => String(row[0])), ['Order', '1', '2', '3']);
+});

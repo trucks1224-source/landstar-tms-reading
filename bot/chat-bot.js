@@ -224,10 +224,21 @@ async function writeFileDebug(page, chat) {
 async function downloadByClick(page, file) {
   const chip = await file.frame.$(`[data-chat-bot-file="${file.chipIndex}"]`);
   if (!chip) throw new Error('the file left the page before it could be saved');
+  // A file preview still open from the last download covers the chat (2026-11-27 4:35 PM:
+  // "spareFrame1 intercepts pointer events", 8 RXO lists missed): close it first, and if the
+  // click is still blocked, close again and click through.
+  await page.keyboard.press('Escape').catch(() => {});
   await chip.scrollIntoViewIfNeeded().catch(() => {});
   const downloaded = page.waitForEvent('download', { timeout: 30000 });
   downloaded.catch(() => {});
-  await chip.click();
+  try {
+    await chip.click({ timeout: 8000 });
+  } catch {
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(600);
+    await page.keyboard.press('Escape').catch(() => {});
+    await chip.click({ timeout: 8000, force: true });
+  }
   // The preview's Download button (in whichever frame Gmail draws it).
   let clicked = false;
   for (let tries = 0; tries < 20 && !clicked; tries += 1) {
@@ -242,10 +253,20 @@ async function downloadByClick(page, file) {
     }
   }
   if (!clicked) {
+    await page.screenshot({ path: path.join(__dirname, 'logs', 'chat-download-fail.png') }).catch(() => {});
     await page.keyboard.press('Escape').catch(() => {});
     throw new Error('the file preview showed no Download button');
   }
-  const download = await downloaded;
+  let download;
+  try {
+    download = await downloaded;
+  } catch (error) {
+    // What the window showed when no file came (logs/chat-download-fail.png).
+    await page.screenshot({ path: path.join(__dirname, 'logs', 'chat-download-fail.png') }).catch(() => {});
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.keyboard.press('Escape').catch(() => {});
+    throw error;
+  }
   const fs = require('fs');
   const bytes = fs.readFileSync(await download.path());
   // Close the preview so the chat shows again.
@@ -277,6 +298,44 @@ function newAfterLastSeen(items, isSeen) {
 }
 
 const contentKeyByAddress = new Map();
+
+// Spreadsheets that could not be saved yet: key -> tries so far.
+const sheetFailures = new Map();
+const SHEET_TRIES = 5;
+// The newest file in a chat waits one check (its second part may still be coming).
+const sheetHeldOnce = new Set();
+
+// New spreadsheets in posting order, grouped into lists: a file with no name right below
+// another file is that file's next part. sheets = every file on the page, top to bottom.
+function groupSheetParts(sheets, newSheets) {
+  const groups = [];
+  for (const sheet of newSheets) {
+    const previous = sheets[sheets.indexOf(sheet) - 1];
+    const last = groups[groups.length - 1];
+    if (!sheet.label && last && previous && last.sheets.includes(previous)) {
+      last.sheets.push(sheet);
+      continue;
+    }
+    groups.push({ label: sheet.label || '', sheets: [sheet] });
+  }
+  return groups;
+}
+
+// Parts of one list -> one workbook: the first part's header row, then every part's rows.
+function mergeSheetParts(parts) {
+  const XLSX = require('xlsx');
+  const rowsOf = bytes => {
+    const workbook = XLSX.read(bytes, { type: 'buffer' });
+    return XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, raw: true, defval: '' });
+  };
+  const all = parts.map(rowsOf);
+  const header = all[0][0] || [];
+  const rows = [header];
+  all.forEach(part => part.slice(1).forEach(row => { if (row.some(cell => String(cell).trim())) rows.push(row); }));
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), 'Sheet1');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
 
 // A picture's identity by what it shows (its bytes), not its address.
 function pictureContentKey(bytes) {
@@ -452,15 +511,43 @@ async function checkChat(context, tab, seen) {
     seen.keys.add(message.key);
     writeSeen(seen);
   }
-  for (const sheet of newSheets) {
+  // A file posted right below a named list with no name of its own is the same list's next
+  // part (Daniel 2026-11-27: "the panels list comes in two different spreadsheets"): the parts
+  // go to the TMS as ONE list, since a second part on its own would replace the first. The
+  // newest file waits one check, in case its second part is still being posted.
+  const groups = groupSheetParts(sheets, newSheets);
+  const newest = sheets[sheets.length - 1];
+  const lastGroup = groups[groups.length - 1];
+  if (lastGroup && newest && lastGroup.sheets.includes(newest) && !sheetHeldOnce.has(newest.key)) {
+    sheetHeldOnce.add(newest.key);
+    groups.pop();
+  }
+  for (const group of groups) {
+    const first = group.sheets[0];
+    const names = group.sheets.map(sheet => sheet.fileName).join(' + ');
     try {
-      const bytes = await downloadSpreadsheet(context, sheet, page);
-      const name = addToInbox(bytes, '', { ...sheet, chat: chat.name, kind: chat.kind });
-      log(`${chat.name}: new spreadsheet ${sheet.label ? `"${sheet.label}" ` : ''}(${sheet.fileName})${sheet.sender ? ` from ${sheet.sender}` : ''}, saved for the TMS (${name}).`);
+      const parts = [];
+      for (const sheet of group.sheets) parts.push(await downloadSpreadsheet(context, sheet, page));
+      const bytes = parts.length > 1 ? mergeSheetParts(parts) : parts[0];
+      const meta = parts.length > 1
+        ? { ...first, label: group.label, fileName: `${first.fileName.replace(/\.xlsx?$/i, '')} (${parts.length} parts).xlsx` }
+        : first;
+      const name = addToInbox(bytes, '', { ...meta, chat: chat.name, kind: chat.kind });
+      log(`${chat.name}: new spreadsheet ${group.label ? `"${group.label}" ` : ''}(${names})${first.sender ? ` from ${first.sender}` : ''}, saved for the TMS (${name}).`);
+      sheetFailures.delete(first.key);
     } catch (error) {
-      log(`${chat.name}: could not save spreadsheet ${sheet.fileName}: ${error.message}. It is skipped.`);
+      // Tried again on the next checks (a list later in the chat waits, so the order holds and
+      // nothing above the newest saved list is taken for old history). Skipped after 5 tries.
+      const tries = (sheetFailures.get(first.key) || 0) + 1;
+      sheetFailures.set(first.key, tries);
+      if (tries < SHEET_TRIES) {
+        log(`${chat.name}: could not save spreadsheet ${names} (try ${tries} of ${SHEET_TRIES}): ${error.message}. Trying again on the next check.`);
+        break;
+      }
+      log(`${chat.name}: could not save spreadsheet ${names} after ${SHEET_TRIES} tries: ${error.message}. It is skipped; import it by hand.`);
+      sheetFailures.delete(first.key);
     }
-    seen.keys.add(sheet.key);
+    group.sheets.forEach(sheet => seen.keys.add(sheet.key));
     writeSeen(seen);
   }
   for (const image of newImages) {
@@ -490,6 +577,32 @@ async function main() {
   const { context, page: firstPage } = await openChatBrowser(chromium, config.chats[0].url);
   // Test:  node chat-bot.js --test-download <folder>   lists the first chat's spreadsheets with
   // their list names and saves only the newest one into <folder>. Nothing goes to the TMS.
+  // Recover:  node chat-bot.js --recover <text>   sends every RXO-chat spreadsheet whose file name
+  // contains <text> to the TMS inbox, as if it had just come in (2026-11-27: lists missed while
+  // the window was stuck). Then it closes.
+  const recoverAt = process.argv.indexOf('--recover');
+  if (recoverAt >= 0) {
+    const match = String(process.argv[recoverAt + 1] || '');
+    const chat = config.chats.find(item => item.kind === 'rxo') || config.chats[0];
+    if (firstPage.url() !== chat.url) await firstPage.goto(chat.url, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await firstPage.waitForTimeout(8000);
+    const seen = readSeen();
+    const wanted = pickSpreadsheets(await readPageFiles(firstPage)).filter(sheet => match && sheet.fileName.includes(match));
+    for (const sheet of wanted) {
+      try {
+        const bytes = await downloadSpreadsheet(context, sheet, firstPage);
+        const name = addToInbox(bytes, '', { ...sheet, chat: chat.name, kind: chat.kind });
+        log(`Recover: "${sheet.label || '(no name above)'}" (${sheet.fileName}) saved for the TMS (${name}).`);
+      } catch (error) {
+        log(`Recover: could not save ${sheet.fileName}: ${error.message}`);
+      }
+      seen.keys.add(sheet.key);
+      writeSeen(seen);
+    }
+    log(`Recover: ${wanted.length} spreadsheet(s) matched "${match}".`);
+    await context.close();
+    return;
+  }
   const testAt = process.argv.indexOf('--test-download');
   if (testAt >= 0) {
     const fs = require('fs');
@@ -537,6 +650,13 @@ async function main() {
       }
       const reload = Date.now() - lastReload > RELOAD_MS;
       for (const tab of tabs) {
+        if (tab.page.isClosed()) {
+          log(`${tab.chat.name}: its tab was closed; opening it again.`);
+          tab.page = await context.newPage();
+          await tab.page.goto(tab.chat.url, { waitUntil: 'domcontentloaded' }).catch(() => {});
+          await tab.page.waitForTimeout(8000);
+          await waitForSignIn(tab.page);
+        }
         if (reload) {
           await tab.page.goto(tab.chat.url, { waitUntil: 'domcontentloaded' }).catch(() => {});
           await waitForSignIn(tab.page);
@@ -568,4 +688,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { pickListImages, imageKey, fullSizeUrl, pickSpreadsheets, attachmentId, spreadsheetDownloadUrl, pickListLabel, isSignedInUrl, newAfterLastSeen };
+module.exports = { pickListImages, imageKey, fullSizeUrl, pickSpreadsheets, attachmentId, spreadsheetDownloadUrl, pickListLabel, isSignedInUrl, newAfterLastSeen, groupSheetParts, mergeSheetParts };

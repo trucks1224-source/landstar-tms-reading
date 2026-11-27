@@ -2,6 +2,7 @@
 // RXO and paperwork emails are due, their text, and how a sent email is recorded on a load.
 // Pure functions only: no browser storage, network or timers, so a Node process can use them.
 // Moved out of App.jsx unchanged (stage 1 of the email-bot plan).
+import { accountKey } from './accountAliases.js';
 
 // Splits a schedule into start/end parts, handling ranges with a full date on both
 // sides even when the dash has no spaces (10/29/2026 09:00-10/30/2026 16:00).
@@ -142,7 +143,7 @@ export const paramountEmailKinds = ['initial', 'arrived', 'departed'];
 export const paramountSignatureName = 'Daniel Gomez';
 
 export function isParamountTrackingCustomer(name) {
-  return paramountTrackingCustomers.has(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
+  return paramountTrackingCustomers.has(accountKey(normalizeCustomerName(name)));
 }
 
 // A booked load is tracked in Clarity until it is delivered. Loads booked days ahead of pickup and
@@ -655,7 +656,7 @@ export const rxoTrackingCustomers = new Set(['RXO2429200ATZ', 'RXO2429200ATZP', 
 export const RXO_ETA_BLANK = '____';
 
 export function isRxoTrackingCustomer(name) {
-  return rxoTrackingCustomers.has(normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, ''));
+  return rxoTrackingCustomers.has(accountKey(normalizeCustomerName(name)));
 }
 
 // Every RXO account (R X O 2429200 - ATZ, ATZ H, ATZ P, ATZ V, ATZ F, ATZ R...): their booked loads

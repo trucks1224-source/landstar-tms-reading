@@ -19,6 +19,7 @@ import * as teamData from './lib/teamData.js';
 import * as chOffers from './lib/chOffers.js';
 import * as chatLoads from './lib/chatLoads.js';
 import * as undoLib from './lib/undo.js';
+import * as accountAliases from './lib/accountAliases.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
 
@@ -88,7 +89,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
-  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, noticeLevel, getLoadCardFacts, getLoadUrgency, isFlatbedOnlyPhalanx, isFlatbedLoad, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
+  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, noticeLevel, getLoadCardFacts, getLoadUrgency, isFlatbedOnlyPhalanx, isFlatbedLoad, getCustomerRules, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
@@ -113,7 +114,10 @@ class TestDate extends Date {
 const trackingEmailsSource = await readFile(new URL('./lib/trackingEmails.js', import.meta.url), 'utf8');
 const { code: trackingEmailsCode } = await transform(trackingEmailsSource, { loader: 'js', format: 'cjs' });
 const trackingEmailsModule = { exports: {} };
-vm.runInNewContext(trackingEmailsCode, { module: trackingEmailsModule, exports: trackingEmailsModule.exports, Date: TestDate, console });
+vm.runInNewContext(trackingEmailsCode, { module: trackingEmailsModule, exports: trackingEmailsModule.exports, Date: TestDate, console, require: name => {
+  if (name === './accountAliases.js') return accountAliases;
+  throw new Error(`Unexpected dependency: ${name}`);
+} });
 const trackingEmails = trackingEmailsModule.exports;
 const context = {
   Date: TestDate,
@@ -133,6 +137,7 @@ const context = {
       if (name === './lib/chOffers.js') return chOffers;
       if (name === './lib/chatLoads.js') return chatLoads;
       if (name === './lib/undo.js') return undoLib;
+      if (name === './lib/accountAliases.js') return accountAliases;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
     if (name.startsWith('./app/')) return loadAppModule(name, context);
@@ -207,7 +212,9 @@ test('CH HTML preserves blank BIN cells and pickup headings, and overrides the p
     // normalizeCustomerName now lives in lib/trackingEmails.js; the compiled App code reaches
     // it through the import object, so give the browser copy that object too.
     const helpers = ['decodeGmailBody', 'getGmailMessageText', 'isCh593772Customer', 'normalizeCustomerName']
-      .map(name => policy[name].toString()).join('\n') + '\nconst import_trackingEmails = { normalizeCustomerName };';
+      .map(name => policy[name].toString()).join('\n') + '\nconst import_trackingEmails = { normalizeCustomerName };'
+      // Customer checks moved to src/app/customers.js (splitting App.jsx): same idea.
+      + '\nconst import_customers = { isCh593772Customer };';
     const read = customer => page.evaluate(({ helpers, payload, customer }) =>
       new Function('payload', 'customer', `${helpers}; return getGmailMessageText(payload, customer);`)(payload, customer),
     { helpers, payload, customer });
@@ -679,6 +686,10 @@ test('Google Chat spreadsheets: the account is remembered by the list name above
   assert.equal(policy.isChatAutoExportAccount('R X O 2429200 - SNB'), false, "Ivan's loads post under his code, from his TMS");
   assert.equal(policy.isChatAutoExportAccount('Para 1522166 - ATZ'), false, 'Para lists are never auto-exported');
   assert.equal(policy.isChatAutoExportAccount('R X O 2429200 - ATZ'), false);
+  for (const name of ['R X O 2429200 - VAN', 'R X O 2429200 - REEFER', 'R X O 2429200 - Flat', 'R X O 2429200 - Panels']) {
+    assert.equal(policy.isChatAutoExportAccount(name), true, `renamed account ${name}`);
+  }
+  assert.equal(policy.isParaCustomer('Para 1522166 - N HAZ'), true);
 
   const customersOf = choices => [...choices].map(choice => choice.customer);
   const brokers = ['Para 1522166 - ATZ', 'R X O 2429200 - ATZ V', 'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P', 'Nolan 965974 - ATZ'];
@@ -1522,7 +1533,7 @@ test('pickup calendar has a large labeled trigger, keyboard focus and preserves 
   const trigger = harness.find(node => node.props['aria-label'] === 'Open pickup date calendar');
   assert.equal(trigger.type, 'button');
   assert.equal(trigger.props['aria-controls'], dateInput().props.id);
-  assert.match(trigger.props.className, /min-h-\[44px\]/);
+  assert.match(trigger.props.className, /tms-slim-btn/);
   assert.match(dateInput().props.className, /focus-visible:ring-2/);
   let focused = 0;
   let opened = 0;
@@ -1561,6 +1572,8 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       'Unrelated customer': [{ ...load, id: '777777', status: 'ENT', tag: 'ENT' }]
     })]
   ]);
+  // Saved settings the TMS starts with (e.g. My Settings with ⚙ customer rules).
+  for (const [key, value] of Object.entries(extraContext.initialStorage || {})) storage.set(key, value);
   const states = [];
   const effects = [];
   const alerts = [];
@@ -1612,6 +1625,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/chOffers.js') return chOffers;
       if (name === './lib/chatLoads.js') return chatLoads;
       if (name === './lib/undo.js') return undoLib;
+      if (name === './lib/accountAliases.js') return accountAliases;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === 'react') return react;
@@ -1832,6 +1846,7 @@ function createSyncContext(storage) {
       if (name === './lib/chOffers.js') return chOffers;
       if (name === './lib/chatLoads.js') return chatLoads;
       if (name === './lib/undo.js') return undoLib;
+      if (name === './lib/accountAliases.js') return accountAliases;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
       if (name.startsWith('./app/')) return loadAppModule(name, ctx);
@@ -2010,7 +2025,7 @@ test('the load list draws 100 cards at a time and shows more on request', () => 
 test('Copy Selected button counts checked loads', () => {
   const app = createAppHarness(customers[0], [{ ...load, id: '1' }, { ...load, id: '2' }]);
   const copyButton = () => app.find(node => node.type === 'button'
-    && String([node.props.children].flat(Infinity).join('')).startsWith('📋 Copy Selected'));
+    && String([node.props.children].flat(Infinity).join('')).startsWith('Copy Selected'));
   assert.equal(copyButton().props.disabled, true);
   app.find(node => node.type === 'input' && node.props.type === 'checkbox' && node.props.title === undefined
     && typeof node.props.onChange === 'function' && !node.props.disabled).props.onChange();
@@ -2293,6 +2308,39 @@ test('pop-up messages become notices: problems stay, news clears itself', () => 
   for (const message of ['📂 Excel Import Complete for Para 1522166 - ATZ:', '🔥 12 hot lanes saved from 189 loads booked by other agents.', '2 spreadsheets were created (up to 100 loads each).']) {
     assert.equal(policy.noticeLevel(message), 'info', message);
   }
+});
+
+test('⚙ customer rules: own Excel layout, flatbed only, the customer rate, a fixed lane, kept after a reload', async () => {
+  const customer = 'Acme Steel 4455';
+  const rules = {
+    excelColumns: { loadId: 'Ref', equipment: 'Trailer', origCity: 'From City', origSt: 'From ST', destCity: 'To City', destSt: 'To ST',
+      pickup: 'Ship Date', delivery: 'Deliver Date', weight: 'Lbs', miles: 'Dist', rate: 'Pay' },
+    importEquipment: ['flatbed'], rateSource: 'customer', equipment2: 'none',
+    laneRates: [{ origCity: 'WAYNE', origSt: 'NJ', destCity: '', destSt: 'TX', rate: 3300 }]
+  };
+  const profile = { phone: '4845756486', postingCode: 'ANQ', visibilityGroup: 'ANQ', customerRules: { [customer]: rules } };
+  const app = createAppHarness(customer, [], null, {}, { initialStorage: { landstar_profile: JSON.stringify(profile) } });
+  await app.importExcel([
+    ['Ref', 'Trailer', 'From City', 'From ST', 'To City', 'To ST', 'Ship Date', 'Deliver Date', 'Lbs', 'Dist', 'Pay'],
+    ['A-100', 'Flatbed', 'Dallas', 'TX', 'Tulsa', 'OK', '10/20/2026 0800', '10/21/2026 1400', '44000', '257', '1450'],
+    ['A-101', 'Van', 'Dallas', 'TX', 'Austin', 'TX', '10/20/2026 0800', '10/20/2026 1700', '30000', '195', '900'],
+    ['A-102', 'Flatbed', 'Wayne', 'NJ', 'Pasadena', 'TX', '10/22/2026 0600', '10/24/2026 0800', '34000', '1587', '2900']
+  ]);
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customer];
+  assert.deepEqual(saved.map(order => order.id).sort(), ['A-100', 'A-102'], 'the van is left out');
+  const byId = Object.fromEntries(saved.map(order => [order.id, order]));
+  assert.equal(byId['A-100'].origCity, 'DALLAS', 'read from "From City"');
+  assert.equal(byId['A-100'].destSt, 'OK');
+  assert.equal(byId['A-100'].weight, '44000 lbs');
+  assert.equal(byId['A-100'].rateInput, '1450', "the customer's rate from \"Pay\"");
+  assert.equal(byId['A-102'].rateInput, '3300', 'the fixed lane rate wins');
+  assert.match(byId['A-100'].pickupTime, /^10\/20\/2026/);
+  assert.ok(app.alerts.some(message => /⚙ Rules leave out\): 1/.test(message)));
+  assert.equal(policy.getLandstarExportEquipment2(customer, { eCode: 'F' }, 'ANQ', policy.getCustomerRules(profile.customerRules, customer)), '', 'no 2nd equipment');
+  // The rules survive a reload (My Settings keeps them).
+  const reloaded = createAppHarness(customer, [], null, {}, { initialStorage: { landstar_profile: JSON.stringify(profile) } });
+  const reloadedProfile = reloaded.states.find(state => state && typeof state === 'object' && 'postingCode' in state && 'customerRules' in state);
+  assert.deepEqual(Object.keys(reloadedProfile.customerRules), [customer]);
 });
 
 test("agent AAQ's Phalanx account: only F loads, posted as flatbed with no Step Deck", () => {
@@ -2625,7 +2673,7 @@ test('Nolan Excel imports check only imported loads while other customers keep m
       assert.equal(checkbox.props.checked, customer === customers[2], `${customer}: ${id}`);
     }
     const copyButton = app.find(node => node.type === 'button'
-      && String(node.props.children.flat(Infinity).join('')).startsWith('📋 Copy Selected'));
+      && String(node.props.children.flat(Infinity).join('')).startsWith('Copy Selected'));
     assert.equal(copyButton.props.disabled, customer !== customers[2]);
     if (customer === customers[2]) assert.match(copyButton.props.children.flat(Infinity).join(''), /\(2\)/);
     assert.equal(app.errors.length, 0);
@@ -2807,7 +2855,7 @@ test('global search applies the pickup calendar across all statuses and customer
   assert.equal(cleared.length, 5, 'clearing the date restores search results');
 });
 
-test('pickup and delivery state filters cannot hide global search across customers and statuses', () => {
+test('pickup and delivery state filters narrow a global search across customers and statuses', () => {
   const app = createAppHarness(customers[0], [
     { ...load, id: 'to-nc', origCity: 'FORT SMITH', origSt: 'AR', destSt: 'NC', status: 'OPEN' },
     { ...load, id: 'to-tx', origCity: 'FORT SMITH', origSt: 'AR', destSt: 'TX', status: 'OPEN' }
@@ -2832,15 +2880,15 @@ test('pickup and delivery state filters cannot hide global search across custome
   app.find(node => node.props?.['aria-label'] === 'Filter by delivery state')
     .props.onChange({ target: { value: 'NC' } });
   app.render();
-  assert.equal(ids().length, 4);
+  assert.deepEqual(ids(), ['load-card-foreign-nc', 'load-card-to-nc', 'load-card-wrong-origin'], 'delivery NC');
   app.find(node => node.props?.['aria-label'] === 'Filter by pickup state')
     .props.onChange({ target: { value: 'AR' } });
   app.render();
-  assert.equal(ids().length, 4);
+  assert.deepEqual(ids(), ['load-card-foreign-nc', 'load-card-to-nc'], 'AR to NC');
   app.find(node => node.props?.['aria-label'] === 'Filter by delivery state')
     .props.onChange({ target: { value: '' } });
   app.render();
-  assert.equal(ids().length, 4);
+  assert.deepEqual(ids(), ['load-card-foreign-nc', 'load-card-to-nc', 'load-card-to-tx'], 'pickup AR');
 });
 
 test('global search opens the owning customer and keeps bulk selection customer-scoped', () => {
@@ -2854,7 +2902,7 @@ test('global search opens the owning customer and keeps bulk selection customer-
   assert.ok(card);
   const checkbox = app.find(node => node.type === 'input' && node.props.title === 'Open this load to select its customer first');
   assert.equal(checkbox.props.disabled, true);
-  const selectAll = () => app.find(node => node.type === 'input' && node.props.className === 'cursor-pointer accent-blue-600');
+  const selectAll = () => app.find(node => node.type === 'input' && node.props.className === 'w-6 h-6 cursor-pointer accent-blue-600');
   selectAll().props.onChange();
   assert.equal(app.states[18].length, 0);
   card.props.onClick();
@@ -2888,7 +2936,7 @@ test('OFFER Select All selects every customer using distinct identities for repe
   assert.ok(app.find(node => node.type === 'button' && textOf(node) === 'All (2)'));
   assert.ok(app.find(node => node.type === 'button' && textOf(node) === 'With rate (1)'));
   assert.ok(app.find(node => node.type === 'button' && textOf(node) === 'No rate (1)'));
-  const selectAll = () => app.find(node => node.type === 'input' && node.props.className === 'cursor-pointer accent-blue-600');
+  const selectAll = () => app.find(node => node.type === 'input' && node.props.className === 'w-6 h-6 cursor-pointer accent-blue-600');
   selectAll().props.onChange();
   app.render();
   assert.deepEqual(Array.from(app.states[18]).sort(), [
@@ -2929,7 +2977,7 @@ test('OFFER bulk move updates selected loads across customers without touching u
   app.render();
   app.find(node => node.type === 'button' && textOf(node) === 'OFFER (2)').props.onClick();
   app.render();
-  app.find(node => node.type === 'input' && node.props.className === 'cursor-pointer accent-blue-600').props.onChange();
+  app.find(node => node.type === 'input' && node.props.className === 'w-6 h-6 cursor-pointer accent-blue-600').props.onChange();
   app.render();
   app.find(node => node.type === 'button' && node.props.title === 'Move 2 selected loads to ON HOLD').props.onClick();
   app.render();

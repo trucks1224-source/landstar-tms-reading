@@ -11,6 +11,10 @@ const traverse = require('@babel/traverse').default;
 
 const [moduleName, ...rest] = process.argv.slice(2);
 const dry = rest.includes('--dry');
+// --ui: screen parts (React components): they may use the browser (storage, window...) and go
+// into a .jsx file.
+const ui = rest.includes('--ui');
+const ext = ui ? 'jsx' : 'js';
 const seeds = rest.filter(arg => !arg.startsWith('--'));
 const appFile = path.join('src', 'App.jsx');
 const src = fs.readFileSync(appFile, 'utf8');
@@ -79,7 +83,7 @@ for (const decl of members) {
   const { importUses, globals } = usage(decl);
   importUses.forEach(name => neededImports.add(name));
   const impure = [...globals].filter(name => !PURE_GLOBALS.has(name));
-  if (impure.length) problems.push(`${decl.names.join(',')} uses ${impure.join(', ')}`);
+  if (impure.length && !ui) problems.push(`${decl.names.join(',')} uses ${impure.join(', ')}`);
   if (decl.exported) problems.push(`${decl.names.join(',')} is exported by App.jsx`);
 }
 // App.jsx may not reassign a moved variable (imports are read-only).
@@ -131,7 +135,7 @@ const exportNames = members.flatMap(decl => decl.names);
 const header = `// Moved out of App.jsx (Daniel 2026-11-27: splitting the TMS's main file). App.jsx imports${eol}// everything here, so it is used exactly as before.${eol}`;
 const moduleText = `${header}${importLines.join(eol)}${importLines.length ? eol + eol : ''}${body}${eol}${eol}export {${eol}  ${exportNames.join(`,${eol}  `)}${eol}};${eol}`;
 fs.mkdirSync(path.join('src', 'app'), { recursive: true });
-const moduleFile = path.join('src', 'app', `${moduleName}.js`);
+const moduleFile = path.join('src', 'app', `${moduleName}.${ext}`);
 if (fs.existsSync(moduleFile)) throw new Error(`${moduleFile} already exists`);
 fs.writeFileSync(moduleFile, moduleText);
 
@@ -146,6 +150,6 @@ next += src.slice(cursor);
 next = next.replace(/(\r?\n){3,}/g, `${eol}${eol}`);
 const lastImport = imports[imports.length - 1];
 const insertAt = next.indexOf(src.slice(lastImport.start, lastImport.end)) + (lastImport.end - lastImport.start);
-next = `${next.slice(0, insertAt)}${eol}import {${eol}  ${exportNames.join(`,${eol}  `)}${eol}} from './app/${moduleName}.js';${next.slice(insertAt)}`;
+next = `${next.slice(0, insertAt)}${eol}import {${eol}  ${exportNames.join(`,${eol}  `)}${eol}} from './app/${moduleName}.${ext}';${next.slice(insertAt)}`;
 fs.writeFileSync(appFile, next);
 console.log(`moved to ${moduleFile}; App.jsx now ${next.split('\n').length} lines`);

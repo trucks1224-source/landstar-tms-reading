@@ -2,8 +2,9 @@
 //
 // ProblemBanner: a strip across the top of the TMS for what needs Daniel now (uploads to
 // Landstar failing, a bot waiting for a sign-in or down, uploads Landstar never confirmed).
-// Red = act now, amber = look soon. A new problem plays an alarm and shows a Windows
-// notification (when allowed), so it is noticed even with the TMS behind other windows.
+// Red = act now, amber = look soon. A new problem plays an alarm. No Windows notifications
+// (Daniel: the banner on top is enough). A bot "Not running" shows only after 90 s, since the
+// watchdog restarts a stopped bot within about a minute. Clicking a problem opens its source.
 // "Hide 30 min" puts one away; it comes back if it is still there.
 //
 // TodayPanel: one window with today's work per account (exported, booked, files posted or
@@ -41,13 +42,9 @@ function playAlarm() {
   } catch { /* no sound */ }
 }
 
-function notifyWindows(problem) {
-  try {
-    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-    const note = new Notification(`🚨 TMS: ${problem.title}`, { body: problem.detail || '', tag: problem.key, requireInteraction: problem.level === 'bad' });
-    note.onclick = () => { window.focus(); note.close(); };
-  } catch { /* no notification */ }
-}
+// A bot that is "Not running" is usually just restarting (the watchdog brings it back within
+// about a minute): those show only once they have lasted this long (Daniel 2026-11-27).
+const NOT_RUNNING_GRACE_MS = 90 * 1000;
 
 // What clicking a problem opens (POST /api/go on the bot PC).
 const goLabels = {
@@ -73,28 +70,33 @@ export function ProblemBanner({ problems = [] }) {
   const [goResult, setGoResult] = useState({});
   const [clock, setClock] = useState(Date.now());
   const seen = useRef(null);
-  const [canNotify, setCanNotify] = useState(() => typeof Notification !== 'undefined' && Notification.permission === 'granted');
+  // When each problem was first reported (for the "Not running" grace time).
+  const firstSeen = useRef({});
 
   useEffect(() => {
-    const timer = setInterval(() => setClock(Date.now()), 60 * 1000);
+    const timer = setInterval(() => setClock(Date.now()), 15 * 1000);
     return () => clearInterval(timer);
   }, []);
 
-  const shown = visibleProblems(problems, hidden, clock);
+  const now = Date.now();
+  problems.forEach(problem => { firstSeen.current[problem.key] = firstSeen.current[problem.key] || now; });
+  Object.keys(firstSeen.current).forEach(key => { if (!problems.some(problem => problem.key === key)) delete firstSeen.current[key]; });
+  const settled = problems.filter(problem => !/Not running/i.test(problem.title) || now - firstSeen.current[problem.key] >= NOT_RUNNING_GRACE_MS);
+  const shown = visibleProblems(settled, hidden, clock);
 
-  // Alarm and Windows notification for problems not on screen before (not on the first load:
-  // problems already there when the TMS opens only show in the banner, without a sound).
+  // Alarm for problems not on screen before (not on the first load: problems already there when
+  // the TMS opens only show in the banner, without a sound). No Windows notifications: the
+  // banner is enough (Daniel 2026-11-27).
   useEffect(() => {
     if (seen.current === null) {
       seen.current = new Set(problems.map(problem => problem.key));
       return;
     }
     const fresh = newProblems(shown, seen.current);
-    problems.forEach(problem => seen.current.add(problem.key));
+    shown.forEach(problem => seen.current.add(problem.key));
     if (!fresh.length) return;
     playAlarm();
-    fresh.forEach(notifyWindows);
-  }, [problems.map(problem => problem.key).join('|')]);
+  }, [shown.map(problem => problem.key).join('|')]);
 
   const hide = key => {
     const next = { ...hidden, [key]: Date.now() };
@@ -102,10 +104,6 @@ export function ProblemBanner({ problems = [] }) {
     Object.keys(next).forEach(item => { if (Date.now() - next[item] > 24 * 60 * 60 * 1000) delete next[item]; });
     setHidden(next);
     try { localStorage.setItem(hiddenKey, JSON.stringify(next)); } catch { /* hidden for this visit */ }
-  };
-
-  const askNotify = async () => {
-    try { setCanNotify((await Notification.requestPermission()) === 'granted'); } catch { /* not allowed */ }
   };
 
   if (!shown.length) return null;
@@ -139,11 +137,6 @@ export function ProblemBanner({ problems = [] }) {
             <button type="button" onClick={() => hide(problem.key)} className="shrink-0 text-gray-300 hover:text-white underline cursor-pointer" title="Hide this for 30 minutes (it comes back if it is still a problem)">Hide 30 min</button>
           </div>
         ))}
-        {!canNotify && typeof Notification !== 'undefined' && Notification.permission !== 'denied' && (
-          <button type="button" onClick={askNotify} className="self-start text-[11px] text-sky-300 hover:text-white underline cursor-pointer">
-            Also show these as Windows notifications (so you see them with the TMS in the background)
-          </button>
-        )}
       </div>
     </div>
   );

@@ -63,7 +63,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
-  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, noticeLevel, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
+  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, noticeLevel, getLoadCardFacts, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
@@ -1891,23 +1891,33 @@ test('VM and VT vans display Team true while ordinary vans display false', () =>
   }
 });
 
-test('load cards show their rates and zero for loads without a rate', () => {
+test('load cards show their rates, and "no rate" for loads without one', () => {
   const cases = [
-    [undefined, '0'], [null, '0'], ['', '0'], [0, '0'], ['0', '0'],
-    ['1500', '1,500'], ['$2,200.50', '2,200.5']
+    [undefined, 'no rate'], [null, 'no rate'], ['', 'no rate'], [0, 'no rate'], ['0', 'no rate'],
+    ['1500', '$1,500'], ['$2,200.50', '$2,200.5']
   ];
   const app = createAppHarness(customers[0], cases.map(([rateInput], index) => ({
     ...load, id: String(index), rateInput
   })));
+  const text = node => [node.props.children].flat(Infinity).join('').trim();
   cases.forEach(([, expected], index) => {
     const rate = app.find(node => node.props?.['aria-label'] === `Rate for load ${index}`);
     assert.ok(rate);
-    assert.equal(rate.props.children.join('').trim(), `Rate: $${expected}`);
+    assert.equal(text(rate), expected);
   });
   app.enterRate('1800');
   app.render();
   const updated = app.find(node => node.props?.['aria-label'] === 'Rate for load 0');
-  assert.equal(updated.props.children.join('').trim(), 'Rate: $1,800');
+  assert.equal(text(updated), '$1,800');
+});
+
+test('load card numbers: miles, $/mile and when it went to Landstar', () => {
+  const now = new Date(2026, 10, 27, 15, 0);
+  const facts = policy.getLoadCardFacts({ rateInput: '9351', miles: '1802', landstarExportedAt: new Date(2026, 10, 27, 10, 42).toISOString() }, now);
+  assert.deepEqual({ ...facts }, { rateText: '$9,351', milesText: '1,802 mi', perMileText: '$5.19/mi', exported: '10:42 AM' });
+  const older = policy.getLoadCardFacts({ rateInput: '', miles: '396.3 miles', landstarExportedAt: new Date(2026, 10, 26, 9, 0).toISOString() }, now);
+  assert.deepEqual({ ...older }, { rateText: '', milesText: '396 mi', perMileText: '', exported: '11/26' });
+  assert.equal(policy.getLoadCardFacts({}, now).exported, '', 'never exported');
 });
 
 test('system check adds this tab\'s email checks and shows a dead TMS server', () => {

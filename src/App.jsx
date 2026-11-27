@@ -2690,6 +2690,28 @@ function hasLoadRate(load) {
   return Number(String(load?.rateInput || '').replace(/[$,]/g, '')) > 0;
 }
 
+// The numbers on a load card (Daniel 2026-11-27, clearer cards): the rate as "$9,351" (or no
+// rate), miles, $/mile, and when it went to Landstar ("↑ 10:42 AM" today, "↑ 11/26" before).
+function getLoadCardFacts(load, now = new Date()) {
+  const rate = Number(String(load?.rateInput || '').replace(/[$,]/g, '')) || 0;
+  const miles = Number(String(load?.miles || '').replace(/,/g, '').match(/\d+(?:\.\d+)?/)?.[0]) || 0;
+  const perMile = getRatePerMile(rate, miles);
+  const exportedAt = Date.parse(load?.landstarExportedAt || '');
+  let exported = '';
+  if (Number.isFinite(exportedAt)) {
+    const when = new Date(exportedAt);
+    exported = when.toDateString() === now.toDateString()
+      ? when.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+      : `${when.getMonth() + 1}/${when.getDate()}`;
+  }
+  return {
+    rateText: rate > 0 ? `$${rate.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : '',
+    milesText: miles > 0 ? `${Math.round(miles).toLocaleString('en-US')} mi` : '',
+    perMileText: perMile ? `$${perMile}/mi` : '',
+    exported
+  };
+}
+
 function getRatePerMile(rate, miles) {
   const rateValue = Number(String(rate || '').replace(/[$,]/g, ''));
   // Miles can arrive with a unit suffix from broker exports, e.g. '396.3 miles'.
@@ -11937,82 +11959,85 @@ export default function App({ sharing = null, userId = null } = {}) {
                 />
                 <div className="flex-1 min-w-0">
                   {isAllCustomersView && <div className="text-[10px] text-teal-200 mb-1">{customer}</div>}
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="font-bold text-sm text-blue-400">{ord.id}</span>
-                      {customer === selectedBroker && exportErrorIds.includes(String(ord.id)) && (
-                        <span className="bg-red-700 text-white text-[9px] px-1.5 py-0.5 rounded font-bold">EXPORT ERROR</span>
-                      )}
-                      {hasOpenLandstarError(ord) && (
-                        <span
-                          title={`Landstar rejected this posting and the bot deleted it from Bulk Postings: ${ord.landstarError.reasons.join('; ')}. Fix the load and export it again.`}
-                          className="bg-red-600 text-white text-[9px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap"
-                        >
-                          ⚠ LANDSTAR ERROR
-                        </span>
-                      )}
-                      {getRemovalBadge(ord) && (
-                        <span title={getRemovalBadge(ord).title} className={`${getRemovalBadge(ord).className} text-[9px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap`}>
-                          {getRemovalBadge(ord).text}
-                        </span>
-                      )}
-                      {(() => {
-                        // Your bot's raise, or the team's (the owner's bot raised it; src/lib/teamData.js).
-                        const raise = ord.rateRaise || getTeamRateRaise(ord.id);
-                        if (!raise) return null;
-                        return (
-                          <span
-                            title={`${ord.rateRaise ? 'The bot' : "The team's bot"} raised this load on Landstar from ${formatRaiseMoney(raise.from)} to ${formatRaiseMoney(raise.to)}${raise.competitor ? ` because ${raise.competitor} was paying ${formatRaiseMoney(raise.competitorRate)}` : ''}`}
-                            className="bg-amber-400 text-black text-[9px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap"
-                          >
-                            ⬆ RAISED {formatRaiseMoney(raise.to)}
-                          </span>
-                        );
-                      })()}
-                      <span className="bg-blue-900/60 text-blue-300 text-[10px] px-1.5 py-0.5 rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{getDisplayEquipmentCode(ord.eCode)}</span>
-                                            {isHazmatLoad(ord) && (
-                                              <span aria-label={`Hazmat load ${ord.id}`} title="Hazmat load" className="bg-orange-500 text-black text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">☢ HAZ</span>
-                                            )}
-                                            {isTankerLoad(ord) && (
-                                              <span aria-label={`Tanker endorsement load ${ord.id}`} title="Tanker (N) Endorsement required" className="bg-yellow-400 text-black text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">🛢 TANKER</span>
-                                            )}
-                                            {String(ord.needsCapacity || '').trim() && (
-                                              <span aria-label={`Load ${ord.id} needs capacity`} title="Important: protected from missing-list removal; refresh requested every 15 minutes" className="bg-amber-400 text-black text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">⭐ IMPORTANT / NEEDS CAPACITY</span>
-                                            )}
-                                            {(() => {
-                                              const hotLane = getHotLane(ord, hotLanes);
-                                              return hotLane && (
-                                                <span aria-label={`Load ${ord.id} is on a hot lane`} title={describeHotLane(hotLane)} className="bg-red-600 text-white text-[10px] px-1.5 py-0.5 rounded font-extrabold whitespace-nowrap">🔥 HOT LANE ×{hotLane.count}{hotLaneRate(hotLane) ? ` · booked ${hotLaneRate(hotLane)}` : ''}</span>
-                                              );
-                                            })()}
-                                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ord.status === 'ENT' ? 'tms-ent' : ord.status === 'ON HOLD' ? 'bg-red-900/60 text-red-300' : ord.status === 'OPEN' ? 'tms-open' : ord.status === 'BOOKED' ? 'bg-purple-900/60 text-purple-200' : 'bg-blue-900/60 text-blue-300'}`}>{ord.status}</span>
-                    </div>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'tms-ent' : ord.tag === 'HOLD' ? 'bg-red-600 text-white' : ord.tag === 'OPEN' ? 'tms-open' : ord.tag === 'BOOKED' ? 'bg-purple-600 text-white' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 mb-1 min-w-0">
-                    <div className="text-xs font-medium text-gray-200 truncate">{getLoadCardRoute(ord)}</div>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation();                       copyToClipboard(`${ord.id} ${getLoadCardRoute(ord)}`.trim(), 'Load number and route'); }}
-                                            title="Copy load number and pickup/delivery city/state"
-                      aria-label={`Copy route for load ${ord.id}`}
-                      className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-1.5 py-0.5 rounded text-[10px] cursor-pointer"
-                    >📋</button>
-                  </div>
-                  <div className="tms-card-meta">
-                  <div className="tms-card-dates text-[11px] text-gray-400">{getLoadCardDates(ord)}</div>
-                  <div aria-label={`Rate for load ${ord.id}`} className="tms-card-rate mt-1 text-xs text-emerald-400 font-bold">
-                    Rate: ${(Number(String(ord.rateInput || '').replace(/[$,]/g, '')) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                  </div>
                   {(() => {
+                    const facts = getLoadCardFacts(ord);
+                    const raise = ord.rateRaise || getTeamRateRaise(ord.id);
+                    const hotLane = getHotLane(ord, hotLanes);
                     const pay = getTruckPay(customer, ord);
-                    return pay && (
-                      <div aria-label={`Truck pay for load ${ord.id}`} title="Landstar driver (BCO) gets the full posted rate; an approved carrier gets 78%–85% of it" className="tms-card-pay text-[10px] text-sky-300 font-semibold">
-                        BCO {formatDollars(pay.posted)} · Carrier {formatDollars(pay.carrierLow)}–{formatDollars(pay.carrierHigh)}
-                      </div>
+                    const statusClass = status => (status === 'ENT' ? 'tms-ent' : status === 'ON HOLD' || status === 'HOLD' ? 'bg-red-900/60 text-red-300' : status === 'OPEN' ? 'tms-open' : status === 'BOOKED' ? 'bg-purple-900/60 text-purple-200' : 'bg-blue-900/60 text-blue-300');
+                    const badge = 'text-[9px] px-1 py-px rounded font-extrabold whitespace-nowrap';
+                    return (
+                      <>
+                        {/* Line 1: the lane, big, and the rate, big (Daniel 2026-11-27: clearer cards). */}
+                        <div className="tms-card-top flex items-center gap-1.5 min-w-0">
+                          <div className="flex-1 min-w-0 text-[13px] font-bold text-white truncate" title={getLoadCardRoute(ord)}>{getLoadCardRoute(ord) || <span className="text-gray-500 font-normal">No cities yet</span>}</div>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); copyToClipboard(`${ord.id} ${getLoadCardRoute(ord)}`.trim(), 'Load number and route'); }}
+                            title="Copy load number and pickup/delivery city/state"
+                            aria-label={`Copy route for load ${ord.id}`}
+                            className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-1 py-px rounded text-[10px] cursor-pointer"
+                          >📋</button>
+                          <div aria-label={`Rate for load ${ord.id}`} className={`tms-card-rate shrink-0 text-[13px] font-extrabold ${facts.rateText ? 'text-emerald-300' : 'text-amber-300 text-[11px] font-semibold'}`}>
+                            {facts.rateText || 'no rate'}
+                          </div>
+                        </div>
+                        {/* Line 2: dates, miles, $/mile, and the status. */}
+                        <div className="tms-card-sub flex items-center gap-1.5 min-w-0 text-[11px] text-gray-400">
+                          <span className="tms-card-dates flex-1 min-w-0 truncate">
+                            {[getLoadCardDates(ord), facts.milesText, facts.perMileText].filter(Boolean).join(' · ')}
+                          </span>
+                          <span className={`shrink-0 text-[10px] px-1.5 py-px rounded font-semibold ${statusClass(ord.status)}`}>{ord.status}</span>
+                          {ord.tag && ord.tag !== ord.status && (
+                            <span className={`shrink-0 text-[10px] px-1.5 py-px rounded font-bold ${ord.tag === 'HOLD' ? 'bg-red-600 text-white' : statusClass(ord.tag)}`}>{ord.tag}</span>
+                          )}
+                        </div>
+                        {/* Line 3: the order number and small badges. */}
+                        <div className="tms-card-badges flex items-center gap-1 flex-wrap mt-0.5 min-w-0">
+                          <span className="font-mono text-[10px] text-blue-300" title="Order number">#{ord.id}</span>
+                          <span className="bg-blue-900/60 text-blue-300 text-[9px] px-1 py-px rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{getDisplayEquipmentCode(ord.eCode)}</span>
+                          {customer === selectedBroker && exportErrorIds.includes(String(ord.id)) && (
+                            <span className={`bg-red-700 text-white ${badge}`}>EXPORT ERROR</span>
+                          )}
+                          {hasOpenLandstarError(ord) && (
+                            <span
+                              title={`Landstar rejected this posting and the bot deleted it from Bulk Postings: ${ord.landstarError.reasons.join('; ')}. Fix the load and export it again.`}
+                              className={`bg-red-600 text-white ${badge}`}
+                            >⚠ LANDSTAR ERROR</span>
+                          )}
+                          {getRemovalBadge(ord) && (
+                            <span title={getRemovalBadge(ord).title} className={`${getRemovalBadge(ord).className} ${badge}`}>{getRemovalBadge(ord).text}</span>
+                          )}
+                          {isHazmatLoad(ord) && (
+                            <span aria-label={`Hazmat load ${ord.id}`} title="Hazmat load" className={`bg-orange-500 text-black ${badge}`}>☢ HAZ</span>
+                          )}
+                          {isTankerLoad(ord) && (
+                            <span aria-label={`Tanker endorsement load ${ord.id}`} title="Tanker (N) Endorsement required" className={`bg-yellow-400 text-black ${badge}`}>🛢 TANKER</span>
+                          )}
+                          {String(ord.needsCapacity || '').trim() && (
+                            <span aria-label={`Load ${ord.id} needs capacity`} title="Important: protected from missing-list removal; refresh requested every 15 minutes" className={`bg-amber-400 text-black ${badge}`}>⭐ IMPORTANT</span>
+                          )}
+                          {hotLane && (
+                            <span aria-label={`Load ${ord.id} is on a hot lane`} title={describeHotLane(hotLane)} className={`bg-red-600 text-white ${badge}`}>🔥 HOT ×{hotLane.count}{hotLaneRate(hotLane) ? ` · ${hotLaneRate(hotLane)}` : ''}</span>
+                          )}
+                          {raise && (
+                            <span
+                              title={`${ord.rateRaise ? 'The bot' : "The team's bot"} raised this load on Landstar from ${formatRaiseMoney(raise.from)} to ${formatRaiseMoney(raise.to)}${raise.competitor ? ` because ${raise.competitor} was paying ${formatRaiseMoney(raise.competitorRate)}` : ''}`}
+                              className={`bg-amber-400 text-black ${badge}`}
+                            >⬆ RAISED {formatRaiseMoney(raise.to)}</span>
+                          )}
+                          {facts.exported && (
+                            <span title={`Exported to Landstar ${new Date(ord.landstarExportedAt).toLocaleString()}`} className="text-[9px] text-emerald-300/80 whitespace-nowrap">↑ {facts.exported}</span>
+                          )}
+                          {pay && (
+                            <span aria-label={`Truck pay for load ${ord.id}`} title="Landstar driver (BCO) gets the full posted rate; an approved carrier gets 78%–85% of it" className="tms-card-pay text-[9px] text-sky-300 font-semibold whitespace-nowrap">
+                              BCO {formatDollars(pay.posted)} · Carrier {formatDollars(pay.carrierLow)}–{formatDollars(pay.carrierHigh)}
+                            </span>
+                          )}
+                        </div>
+                      </>
                     );
                   })()}
-                  </div>
                   {ord.planningComment && <div className="tms-card-comment mt-1 text-[11px] text-amber-300 font-semibold truncate">{ord.planningComment}</div>}
                 </div>
               </div>

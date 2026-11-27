@@ -20,7 +20,7 @@ if (require.main === module) require('./file-log')('chatbot');
 //   node chat-bot.js        (or "Start Chat Bot.bat"; the watchdog keeps it running once enabled)
 const path = require('path');
 const {
-  readChatConfig, writeChatStatus, readSeen, writeSeen, addToInbox, spreadsheetExtension
+  readChatConfig, writeChatStatus, readSeen, writeSeen, addToInbox, spreadsheetExtension, INBOX_DIR
 } = require('./chat-inbox');
 
 const PROFILE_DIR = path.join(__dirname, 'browser-profile-chat');
@@ -68,8 +68,10 @@ function pickSpreadsheets(candidates) {
   for (const item of candidates || []) {
     const fileName = String(item?.fileName || '').trim();
     const href = String(item?.href || '');
-    if (!spreadsheetExtension(fileName) || !/^https:\/\//.test(href)) continue;
-    const key = `file|${fileName}|${attachmentId(href)}`;
+    // Gmail's Chat shows a file as a button with no link (opened by clicking): usable too.
+    const clickable = Number.isInteger(item?.chipIndex);
+    if (!spreadsheetExtension(fileName) || (!/^https:\/\//.test(href) && !clickable)) continue;
+    const key = href ? `file|${fileName}|${attachmentId(href)}` : `file|${fileName}|${item.postedAt || ''}`;
     if (!picked.has(key)) picked.set(key, { ...item, fileName, href, key });
   }
   return [...picked.values()];
@@ -99,9 +101,11 @@ function spreadsheetDownloadUrl(href) {
 // is what tells the lists apart (Daniel 2026-11-27). texts = the chat's text pieces from the
 // top down to the file. Skips times, file names and Chat's own words.
 function pickListLabel(texts) {
-  const skip = /^(\d{1,2}:\d{2}\s*(am|pm)?|now|yesterday|today|edited|\d+\s*(min|mins|hr|hrs)|reply|thread|view|download|open|history is on)$/i;
+  const skip = /^(\d{1,2}:\d{2}\s*(am|pm)?|now|yesterday|today|edited|\d+\s*(min|mins|hr|hrs)|reply|thread|view|download|open|history is on|only visible to you|you|sent|sending|failed to send)$/i;
   for (let index = (texts || []).length - 1; index >= 0; index -= 1) {
     const text = String(texts[index] || '').replace(/\s+/g, ' ').trim();
+    // Only punctuation (a lone "," between messages) is not a name; "$$" is.
+    if (!/[A-Za-z0-9$]/.test(text)) continue;
     if (!text || text.length > 60 || skip.test(text) || /\.(xlsx|xls|csv)\b|…$/i.test(text)) continue;
     return text;
   }
@@ -117,25 +121,38 @@ async function readPageFiles(page) {
       const nameOf = element => [element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('download'), element.innerText]
         .map(text => String(text || '').match(/[^\s"'\\/:*?<>|]+(?:[ ._-][^\s"'\\/:*?<>|]+)*\.(xlsx|xls|csv)\b/i)?.[0])
         .find(Boolean) || '';
-      // Walk the page top to bottom: text pieces since the last file, then each file link.
+      // Walk the page top to bottom: text pieces since the last file, then each file. A file is
+      // a link, or (Gmail's Chat, 2026-11-27) a button titled with the file name:
+      //   <div role="button" title="allLoadsSearch_Export - 2026-11-27T103054.245.xlsx">
       const results = [];
       let texts = [];
+      let chipIndex = 0;
+      const isFileButton = node => node.getAttribute('role') === 'button' && /\.(xlsx|xls|csv)$/i.test(node.getAttribute('title') || '');
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
         if (node.nodeType === Node.TEXT_NODE) {
           const parent = node.parentElement;
-          if (!parent || parent.closest('a[href], script, style, [aria-hidden="true"]')) continue;
+          // Skip links, file buttons and the sender's name (a person card), so "Tyler Cook" is
+          // never taken for a list name.
+          if (!parent || parent.closest('a[href], script, style, [aria-hidden="true"], [role="button"][title], [data-hovercard-id], [data-member-id], [data-name], [data-sender-id]')) continue;
           const text = node.textContent.replace(/\s+/g, ' ').trim();
           if (text) texts.push(text);
           continue;
         }
-        if (node.tagName !== 'A' || !node.href) continue;
+        const button = isFileButton(node);
+        if (!button && (node.tagName !== 'A' || !node.href)) continue;
         const chip = node.closest('[data-message-id], [role="listitem"], [jsmodel]') || node;
-        const fileName = nameOf(node) || nameOf(chip);
+        const fileName = button ? node.getAttribute('title').trim() : nameOf(node) || nameOf(chip);
         if (!fileName) continue;
         const message = node.closest('[data-message-id], [role="listitem"]');
+        let index = null;
+        if (button) {
+          index = chipIndex;
+          chipIndex += 1;
+          node.dataset.chatBotFile = String(index);
+        }
         results.push({
-          fileName, href: node.href, texts: texts.slice(-12),
+          fileName, href: button ? '' : node.href, chipIndex: index, texts: texts.slice(-12),
           sender: (message?.querySelector('[data-name]')?.getAttribute('data-name') || '').trim(),
           postedAt: message?.querySelector('[data-absolute-timestamp]')?.getAttribute('data-absolute-timestamp') || ''
         });
@@ -143,12 +160,102 @@ async function readPageFiles(page) {
       }
       return results;
     }).catch(() => []);
-    found.push(...files.map(({ texts, ...file }) => ({ ...file, label: pickListLabel(texts) })));
+    found.push(...files.map(({ texts, ...file }) => ({ ...file, frame, label: pickListLabel(texts) })));
   }
   return found;
 }
 
-async function downloadSpreadsheet(context, file) {
+// Single-load messages (Tyler's "Load Number: ... Pickup: ... Delivery: ... $1500" posts in
+// LANDJA18): the smallest element holding the whole message, one per load number. The TMS
+// reads the text (src/lib/chatLoads.js). [{ loadNumber, text, key }]
+async function readLoadMessages(page) {
+  const found = new Map();
+  for (const frame of page.frames()) {
+    const texts = await frame.evaluate(() => {
+      const isLoad = text => /Load Number\s*:\s*\d{5,12}[\s\S]*Delivery\s*:/i.test(text || '');
+      return Array.from(document.querySelectorAll('div, span, p'))
+        .filter(element => isLoad(element.innerText) && !Array.from(element.children).some(child => isLoad(child.innerText)))
+        .map(element => element.innerText);
+    }).catch(() => []);
+    for (const text of texts) {
+      const loadNumber = text.match(/Load Number\s*:\s*(\d{5,12})/i)?.[1];
+      if (loadNumber && !found.has(loadNumber)) found.set(loadNumber, { loadNumber, text, key: `load|${loadNumber}` });
+    }
+  }
+  return [...found.values()];
+}
+
+// When a chat shows files but none is read as a spreadsheet, saves what the page has around
+// "xlsx" (tags, roles, labels, links) to bot/chat-debug.json, to fix the reader (no message text
+// beyond 200 characters per element).
+async function writeFileDebug(page, chat) {
+  const fs = require('fs');
+  const found = [];
+  for (const frame of page.frames()) {
+    const items = await frame.evaluate(() => {
+      const out = [];
+      const all = Array.from(document.querySelectorAll('*'));
+      for (const element of all) {
+        const own = Array.from(element.childNodes).filter(node => node.nodeType === 3).map(node => node.textContent).join(' ');
+        const attrs = ['aria-label', 'title', 'data-tooltip', 'download', 'href', 'data-url', 'data-id'].map(name => element.getAttribute(name) || '').join(' ');
+        if (!/\.(xlsx|xls|csv)\b|allLoadsSearch/i.test(`${own} ${attrs}`)) continue;
+        const path = [];
+        for (let node = element; node && node !== document.body && path.length < 8; node = node.parentElement) {
+          path.push(`${node.tagName.toLowerCase()}${node.getAttribute('role') ? `[role=${node.getAttribute('role')}]` : ''}${node.getAttribute('jsname') ? `[jsname=${node.getAttribute('jsname')}]` : ''}${node.getAttribute('data-message-id') ? '[data-message-id]' : ''}${node.tagName === 'A' ? `[href=${String(node.href).slice(0, 80)}]` : ''}`);
+        }
+        out.push({
+          text: own.trim().slice(0, 200),
+          attrs: Object.fromEntries(Array.from(element.attributes).filter(a => !/^(class|style|jsaction|jscontroller|jslog)$/.test(a.name)).map(a => [a.name, String(a.value).slice(0, 200)])),
+          path
+        });
+        if (out.length >= 30) break;
+      }
+      return out;
+    }).catch(error => [{ error: error.message }]);
+    if (items.length) found.push({ frame: frame.url().slice(0, 120), items });
+  }
+  try {
+    fs.writeFileSync(path.join(__dirname, 'chat-debug.json'), JSON.stringify({ chat: chat.name, at: new Date().toISOString(), found }, null, 2));
+  } catch { /* debug only */ }
+}
+
+// A file button (no link): open its preview like Daniel would and click Download there.
+// Only opens and downloads; never sends or changes anything in the chat.
+async function downloadByClick(page, file) {
+  const chip = await file.frame.$(`[data-chat-bot-file="${file.chipIndex}"]`);
+  if (!chip) throw new Error('the file left the page before it could be saved');
+  await chip.scrollIntoViewIfNeeded().catch(() => {});
+  const downloaded = page.waitForEvent('download', { timeout: 30000 });
+  downloaded.catch(() => {});
+  await chip.click();
+  // The preview's Download button (in whichever frame Gmail draws it).
+  let clicked = false;
+  for (let tries = 0; tries < 20 && !clicked; tries += 1) {
+    await page.waitForTimeout(500);
+    for (const frame of page.frames()) {
+      const button = await frame.$('[role="button"][aria-label^="Download" i], button[aria-label^="Download" i], [data-tooltip^="Download" i]').catch(() => null);
+      if (button && await button.isVisible().catch(() => false)) {
+        await button.click().catch(() => {});
+        clicked = true;
+        break;
+      }
+    }
+  }
+  if (!clicked) {
+    await page.keyboard.press('Escape').catch(() => {});
+    throw new Error('the file preview showed no Download button');
+  }
+  const download = await downloaded;
+  const fs = require('fs');
+  const bytes = fs.readFileSync(await download.path());
+  // Close the preview so the chat shows again.
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(800);
+  return bytes;
+}
+
+async function downloadSpreadsheet(context, file, page) {
+  if (!file.href && Number.isInteger(file.chipIndex)) return downloadByClick(page, file);
   for (const url of [spreadsheetDownloadUrl(file.href), file.href]) {
     try {
       const response = await context.request.get(url, { timeout: 60000 });
@@ -157,6 +264,35 @@ async function downloadSpreadsheet(context, file) {
     } catch { /* try the next way */ }
   }
   throw new Error('Google did not hand over the file (open it once in the Chat bot window to check access)');
+}
+
+// New posts always appear at the bottom of a chat, while Gmail keeps loading older history
+// above (2026-11-27: Wednesday's pictures came in as "new"). So only items BELOW the last one
+// already seen are new; with nothing seen on the page, nothing is (better to miss than to
+// import an old list). items are in page order, top to bottom.
+function newAfterLastSeen(items, isSeen) {
+  let last = -1;
+  items.forEach((item, index) => { if (isSeen(item)) last = index; });
+  return last < 0 ? [] : items.slice(last + 1).filter(item => !isSeen(item));
+}
+
+const contentKeyByAddress = new Map();
+
+// A picture's identity by what it shows (its bytes), not its address.
+function pictureContentKey(bytes) {
+  return `picture|${require('crypto').createHash('sha1').update(bytes).digest('hex')}`;
+}
+
+// Pictures already saved for the TMS (waiting or done) count as seen, by content.
+function rememberSavedPictures(seen) {
+  const fs = require('fs');
+  for (const folder of [INBOX_DIR, path.join(INBOX_DIR, 'done')]) {
+    let names = [];
+    try { names = fs.readdirSync(folder); } catch { continue; }
+    for (const name of names.filter(item => /\.(png|jpg|webp|gif)$/i.test(item))) {
+      try { seen.keys.add(pictureContentKey(fs.readFileSync(path.join(folder, name)))); } catch { /* skip */ }
+    }
+  }
 }
 
 // Reads every big picture in the chat (Chat draws messages in frames).
@@ -191,36 +327,134 @@ async function downloadImage(context, image) {
   return { bytes: await element.screenshot({ type: 'png' }), type: 'image/png' };
 }
 
-async function waitForSignIn(page, chatUrl) {
-  let asked = false;
-  for (;;) {
-    if (/^https:\/\/(chat|mail)\.google\.com\//.test(page.url()) && !/accounts\.google\.com/.test(page.url())) return;
-    if (!asked) {
-      log('>>> ACTION NEEDED: sign in to Google in the Chat bot window. The bot continues by itself.');
-      asked = true;
-    }
-    writeChatStatus('signing-in', 'Waiting for Google sign-in in the Chat bot window');
-    await page.waitForTimeout(5000);
-    if (/myaccount\.google\.com|google\.com\/?$/.test(page.url())) await page.goto(chatUrl).catch(() => {});
+// Signed in = Google left the page on Gmail / Chat (not the sign-in or "about Gmail" pages).
+function isSignedInUrl(url) {
+  return /^https:\/\/(chat|mail)\.google\.com\/(mail|chat|u\/|room|app)/.test(String(url || '')) && !/accounts\.google\.com/.test(String(url || ''));
+}
+
+// Google refuses sign-in in a browser a program controls ("Couldn't sign you in: this browser
+// or app may not be secure", 2026-11-27), so Daniel signs in in a plain Chrome window on the
+// bot's own profile, with no program attached. The sign-in is saved in that profile; the bot
+// then opens it again and finds Google already signed in.
+function findChrome() {
+  const fs = require('fs');
+  return [
+    path.join(process.env['PROGRAMFILES'] || 'C:\\Program Files', 'Google\\Chrome\\Application\\chrome.exe'),
+    path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google\\Chrome\\Application\\chrome.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe')
+  ].find(file => fs.existsSync(file)) || '';
+}
+
+async function signInWithPlainChrome(chatUrl) {
+  const chrome = findChrome();
+  if (!chrome) throw new Error('Google Chrome is not installed: the Chat bot needs it for the Google sign-in');
+  const { spawn } = require('child_process');
+  log('>>> ACTION NEEDED: a normal Chrome window opened for the Google sign-in. Sign in with the account that is in LANDJA18,');
+  log('>>> wait until Gmail opens, then CLOSE that Chrome window. The bot continues by itself.');
+  const child = spawn(chrome, [
+    `--user-data-dir=${PROFILE_DIR}`, '--no-first-run', '--no-default-browser-check', '--new-window',
+    `https://accounts.google.com/ServiceLogin?continue=${encodeURIComponent(chatUrl)}`
+  ], { stdio: 'ignore' });
+  const exited = new Promise(resolve => child.on('exit', resolve));
+  const timer = setInterval(() => writeChatStatus('signing-in', 'Waiting for Google sign-in: sign in in the Chrome window, then close it'), 5000);
+  writeChatStatus('signing-in', 'Waiting for Google sign-in: sign in in the Chrome window, then close it');
+  await exited;
+  clearInterval(timer);
+  log('Sign-in window closed. Opening Google Chat...');
+}
+
+// Opens the bot's browser on the chat, signing in first when Google asks for it.
+async function openChatBrowser(chromium, chatUrl) {
+  for (let attempt = 1; ; attempt += 1) {
+    const context = await chromium.launchPersistentContext(PROFILE_DIR, {
+      headless: false, viewport: null, channel: 'chrome', ignoreDefaultArgs: ['--enable-automation']
+    });
+    const page = context.pages()[0] || await context.newPage();
+    await page.goto(chatUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await page.waitForTimeout(6000);
+    if (isSignedInUrl(page.url())) return { context, page };
+    await context.close().catch(() => {});
+    if (attempt > 3) throw new Error('Google still asks for a sign-in after 3 tries');
+    await signInWithPlainChrome(chatUrl);
   }
+}
+
+// Later on (a reload every 10 minutes): if Google signed the bot out, stop; the watchdog starts
+// the bot again and it asks for the sign-in at start-up.
+async function waitForSignIn(page) {
+  if (isSignedInUrl(page.url())) return;
+  await page.waitForTimeout(5000);
+  if (!isSignedInUrl(page.url())) throw new Error('Google signed the Chat bot out');
 }
 
 // One look at one chat: remembers its pictures and spreadsheets the first time, saves new
 // ones after that.
 async function checkChat(context, tab, seen) {
   const { chat, page } = tab;
-  const images = pickListImages(await readPageImages(page));
+  // RXO's chat sends spreadsheets: its pictures are only the files' previews, never lists.
+  const images = chat.kind === 'rxo' ? [] : pickListImages(await readPageImages(page));
   const sheets = pickSpreadsheets(await readPageFiles(page));
+  if (!sheets.length) await writeFileDebug(page, chat);
+  // Single loads posted as messages (RXO's chat only).
+  const loadMessages = chat.kind === 'rxo' ? await readLoadMessages(page) : [];
+  // Load messages already in the chat before this kind was read (2026-11-27) count as seen.
+  const loadsStartKey = `${chat.url}|loads`;
+  if (!seen.started.has(loadsStartKey)) {
+    loadMessages.forEach(item => seen.keys.add(item.key));
+    seen.started.add(loadsStartKey);
+    writeSeen(seen);
+    if (seen.started.has(chat.url)) log(`${chat.name}: first look at single-load messages, ${loadMessages.length} already there are skipped.`);
+  }
   if (!seen.started.has(chat.url)) {
     [...images, ...sheets].forEach(item => seen.keys.add(item.key));
+    // Remember the pictures already there by content too (their addresses change).
+    for (const image of images) {
+      try { seen.keys.add(pictureContentKey((await downloadImage(context, image)).bytes)); } catch { /* address key only */ }
+    }
     seen.started.add(chat.url);
     writeSeen(seen);
-    log(`${chat.name}: first look, ${images.length} picture(s) and ${sheets.length} spreadsheet(s) already there are skipped. New ones go to the TMS.`);
+    log(`${chat.name}: first look, ${images.length} picture(s), ${sheets.length} spreadsheet(s) and ${loadMessages.length} single-load message(s) already there are skipped. New ones go to the TMS.`);
     return;
   }
-  for (const sheet of sheets.filter(item => !seen.keys.has(item.key))) {
+  // Only items below the last one already seen are new; older history Gmail loads above them
+  // is marked seen and never sent.
+  const takeNew = (items, isSeen, keysOf) => {
+    const fresh = newAfterLastSeen(items, isSeen);
+    let changed = false;
+    for (const item of items) {
+      if (!fresh.includes(item) && !isSeen(item)) { keysOf(item).forEach(key => seen.keys.add(key)); changed = true; }
+    }
+    if (changed) writeSeen(seen);
+    return fresh;
+  };
+  const newLoads = takeNew(loadMessages, item => seen.keys.has(item.key), item => [item.key]);
+  const newSheets = takeNew(sheets, item => seen.keys.has(item.key), item => [item.key]);
+  // Pictures by content (their addresses change on every page load); each address is
+  // downloaded once per run.
+  for (const image of images) {
+    if (!contentKeyByAddress.has(image.key)) {
+      try { contentKeyByAddress.set(image.key, pictureContentKey((await downloadImage(context, image)).bytes)); } catch { /* try again next check */ }
+    }
+    image.contentKey = contentKeyByAddress.get(image.key) || '';
+  }
+  const newImages = takeNew(images.filter(image => image.contentKey),
+    image => seen.keys.has(image.contentKey) || seen.keys.has(image.key), image => [image.key, image.contentKey]);
+
+  for (const message of newLoads) {
     try {
-      const bytes = await downloadSpreadsheet(context, sheet);
+      const name = addToInbox(Buffer.from(message.text, 'utf8'), 'text/plain', {
+        type: 'load', chat: chat.name, kind: chat.kind, label: `Load ${message.loadNumber}`, key: message.key
+      });
+      log(`${chat.name}: new single load ${message.loadNumber}, saved for the TMS (${name}).`);
+    } catch (error) {
+      log(`${chat.name}: could not save load message ${message.loadNumber}: ${error.message}. It is skipped.`);
+    }
+    seen.keys.add(message.key);
+    writeSeen(seen);
+  }
+  for (const sheet of newSheets) {
+    try {
+      const bytes = await downloadSpreadsheet(context, sheet, page);
       const name = addToInbox(bytes, '', { ...sheet, chat: chat.name, kind: chat.kind });
       log(`${chat.name}: new spreadsheet ${sheet.label ? `"${sheet.label}" ` : ''}(${sheet.fileName})${sheet.sender ? ` from ${sheet.sender}` : ''}, saved for the TMS (${name}).`);
     } catch (error) {
@@ -229,9 +463,10 @@ async function checkChat(context, tab, seen) {
     seen.keys.add(sheet.key);
     writeSeen(seen);
   }
-  for (const image of images.filter(item => !seen.keys.has(item.key))) {
+  for (const image of newImages) {
     try {
       const { bytes, type } = await downloadImage(context, image);
+      seen.keys.add(image.contentKey);
       const name = addToInbox(bytes, type, { ...image, chat: chat.name, kind: chat.kind });
       log(`${chat.name}: new picture${image.sender ? ` from ${image.sender}` : ''}, saved for the TMS (${name}).`);
     } catch (error) {
@@ -252,18 +487,45 @@ async function main() {
   if (config.missing.length) log(`No address yet for: ${config.missing.join(', ')} (not watched until it is added).`);
   const { chromium } = require('playwright');
   writeChatStatus('starting', 'Opening Google Chat');
-  const context = await chromium.launchPersistentContext(PROFILE_DIR, { headless: false, viewport: null });
+  const { context, page: firstPage } = await openChatBrowser(chromium, config.chats[0].url);
+  // Test:  node chat-bot.js --test-download <folder>   lists the first chat's spreadsheets with
+  // their list names and saves only the newest one into <folder>. Nothing goes to the TMS.
+  const testAt = process.argv.indexOf('--test-download');
+  if (testAt >= 0) {
+    const fs = require('fs');
+    const folder = process.argv[testAt + 1];
+    // The RXO chat when there is one (it has the spreadsheets and single loads).
+    const testChat = config.chats.find(chat => chat.kind === 'rxo') || config.chats[0];
+    if (firstPage.url() !== testChat.url) await firstPage.goto(testChat.url, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await firstPage.waitForTimeout(8000);
+    const sheets = pickSpreadsheets(await readPageFiles(firstPage));
+    log(`Test: ${sheets.length} spreadsheet(s) in ${testChat.name}:`);
+    sheets.forEach(sheet => log(`  "${sheet.label || '(no name above)'}"  ${sheet.fileName}`));
+    const loadMessages = await readLoadMessages(firstPage);
+    log(`Test: ${loadMessages.length} single-load message(s): ${loadMessages.map(item => item.loadNumber).join(', ')}`);
+    if (loadMessages[0]) log(`Test: first one reads as:\n${loadMessages[0].text}`);
+    if (sheets.length && folder) {
+      const newest = sheets[sheets.length - 1];
+      const bytes = await downloadSpreadsheet(context, newest, firstPage);
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, newest.fileName), bytes);
+      log(`Test: saved ${newest.fileName} (${bytes.length} bytes) to ${folder}`);
+    }
+    await context.close();
+    return;
+  }
   context.on('close', () => { log('The Chat bot window was closed.'); process.exit(0); });
   const tabs = [];
   for (const chat of config.chats) {
-    const page = (tabs.length === 0 && context.pages()[0]) || await context.newPage();
-    await page.goto(chat.url, { waitUntil: 'domcontentloaded' }).catch(() => {});
-    await waitForSignIn(page, chat.url);
+    const page = tabs.length === 0 ? firstPage : await context.newPage();
+    if (page.url() !== chat.url) await page.goto(chat.url, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await page.waitForTimeout(8000);
     tabs.push({ chat, page });
-    log(`Watching ${chat.name} (${chat.kind === 'rxo' ? 'RXO' : 'Para'}): ${chat.url}`);
+    log(`Watching ${chat.name}: ${chat.url}`);
   }
 
   const seen = readSeen();
+  rememberSavedPictures(seen);
   let lastReload = Date.now();
   for (;;) {
     try {
@@ -277,7 +539,7 @@ async function main() {
       for (const tab of tabs) {
         if (reload) {
           await tab.page.goto(tab.chat.url, { waitUntil: 'domcontentloaded' }).catch(() => {});
-          await waitForSignIn(tab.page, tab.chat.url);
+          await waitForSignIn(tab.page);
         }
         await tab.page.waitForTimeout(3000);
         try {
@@ -289,6 +551,8 @@ async function main() {
       if (reload) lastReload = Date.now();
       writeChatStatus('running', `Watching ${tabs.map(tab => tab.chat.name).join(' and ')} · last check ${new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`);
     } catch (error) {
+      // Signed out: close; the watchdog starts the bot again and it asks for the sign-in.
+      if (/signed the Chat bot out/.test(error.message)) throw error;
       log(`Check failed: ${error.message}`);
       writeChatStatus('running', `Last check failed: ${error.message}`);
     }
@@ -304,4 +568,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { pickListImages, imageKey, fullSizeUrl, pickSpreadsheets, attachmentId, spreadsheetDownloadUrl, pickListLabel };
+module.exports = { pickListImages, imageKey, fullSizeUrl, pickSpreadsheets, attachmentId, spreadsheetDownloadUrl, pickListLabel, isSignedInUrl, newAfterLastSeen };

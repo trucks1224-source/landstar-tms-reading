@@ -30,7 +30,7 @@ const SHEET_TYPES = {
   '.csv': 'text/csv'
 };
 // Inbox file names are made here; anything else is refused (no paths from requests).
-const INBOX_NAME = /^chat-\d{13}-[a-f0-9]{12}\.(png|jpg|webp|gif|xlsx|xls|csv)$/;
+const INBOX_NAME = /^chat-\d{13}-[a-f0-9]{12}\.(png|jpg|webp|gif|xlsx|xls|csv|txt)$/;
 
 // A chat attachment's file name -> its spreadsheet extension, or '' when it is not one.
 function spreadsheetExtension(fileName) {
@@ -39,7 +39,8 @@ function spreadsheetExtension(fileName) {
 }
 
 function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
+  // A file saved by Notepad or PowerShell may start with a byte-order mark: ignore it.
+  try { return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch { return fallback; }
 }
 
 function writeJson(file, value) {
@@ -96,7 +97,9 @@ function writeSeen(seen) {
 // fileName (a spreadsheet's name in the chat), label (the message above it, e.g. "big list") }.
 // Returns the inbox file name.
 function addToInbox(bytes, contentType, meta = {}, now = Date.now()) {
-  const ext = IMAGE_TYPES[String(contentType || '').split(';')[0].trim().toLowerCase()] || spreadsheetExtension(meta.fileName);
+  // A single-load message (Tyler's "Load Number: ..." posts) is saved as its text.
+  const isLoadText = meta.type === 'load';
+  const ext = isLoadText ? '.txt' : IMAGE_TYPES[String(contentType || '').split(';')[0].trim().toLowerCase()] || spreadsheetExtension(meta.fileName);
   if (!ext) throw new Error(`Not a picture or spreadsheet (${meta.fileName || contentType || 'no type'})`);
   fs.mkdirSync(INBOX_DIR, { recursive: true });
   const hash = crypto.createHash('sha1').update(bytes).digest('hex').slice(0, 12);
@@ -104,7 +107,7 @@ function addToInbox(bytes, contentType, meta = {}, now = Date.now()) {
   fs.writeFileSync(path.join(INBOX_DIR, name), bytes);
   writeJson(path.join(INBOX_DIR, `${name}.json`), {
     chat: String(meta.chat || ''), kind: CHAT_KINDS.has(meta.kind) ? meta.kind : 'para',
-    type: SHEET_TYPES[ext] ? 'spreadsheet' : 'picture', fileName: String(meta.fileName || ''), label: String(meta.label || ''),
+    type: isLoadText ? 'load' : SHEET_TYPES[ext] ? 'spreadsheet' : 'picture', fileName: String(meta.fileName || ''), label: String(meta.label || ''),
     sender: String(meta.sender || ''), postedAt: String(meta.postedAt || ''), key: String(meta.key || ''), savedAt: now
   });
   return name;
@@ -125,6 +128,7 @@ function inboxFilePath(name) {
 
 function contentTypeOf(name) {
   const ext = path.extname(name).toLowerCase();
+  if (ext === '.txt') return 'text/plain; charset=utf-8';
   return SHEET_TYPES[ext] || Object.keys(IMAGE_TYPES).find(type => IMAGE_TYPES[type] === ext) || 'application/octet-stream';
 }
 

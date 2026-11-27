@@ -1,7 +1,7 @@
 {
-  "enabled": false,
+  "enabled": true,
   "chats": [
-    { "name": "Para lists (Heather, Olga, Ashley, Edgar)", "kind": "para", "url": "" },
-    { "name": "LANDJA.18 (RXO)", "kind": "rxo", "url": "" }
+    { "name": "Para lists", "kind": "para", "url": "https://mail.google.com/mail/u/0/#chat/space/AAQA9hB2WIM" },
+    { "name": "LANDJA18 (RXO)", "kind": "rxo", "url": "https://mail.google.com/mail/u/0/#chat/space/AAAAA4kpZmM" }
   ]
 }

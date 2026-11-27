@@ -11,7 +11,23 @@ process.env.CHAT_BOT_STATUS_FILE = path.join(dir, 'status.json');
 process.env.CHAT_BOT_SEEN_FILE = path.join(dir, 'seen.json');
 
 const inbox = require('./chat-inbox');
-const { pickListImages, imageKey, fullSizeUrl, pickSpreadsheets, attachmentId, spreadsheetDownloadUrl, pickListLabel } = require('./chat-bot');
+const { pickListImages, imageKey, fullSizeUrl, pickSpreadsheets, attachmentId, spreadsheetDownloadUrl, pickListLabel, isSignedInUrl, newAfterLastSeen } = require('./chat-bot');
+
+test('only items below the last one seen are new (older history loading above is not)', () => {
+  const seenKeys = new Set(['b', 'c']);
+  const isSeen = item => seenKeys.has(item);
+  assert.deepEqual(newAfterLastSeen(['old1', 'b', 'old2', 'c', 'new1', 'new2'], isSeen), ['new1', 'new2']);
+  assert.deepEqual(newAfterLastSeen(['history', 'b', 'c'], isSeen), [], 'history above is never new');
+  assert.deepEqual(newAfterLastSeen(['x', 'y'], isSeen), [], 'nothing seen on the page: nothing is new');
+});
+
+test('signed in only when Google leaves the bot on Gmail or Chat', () => {
+  assert.equal(isSignedInUrl('https://mail.google.com/mail/u/0/#chat/space/AAAAA4kpZmM'), true);
+  assert.equal(isSignedInUrl('https://chat.google.com/room/AAAA'), true);
+  assert.equal(isSignedInUrl('https://accounts.google.com/v3/signin/rejected?continue=https%3A%2F%2Fmail.google.com'), false);
+  assert.equal(isSignedInUrl('https://workspace.google.com/gmail/'), false, 'the "about Gmail" page');
+  assert.equal(isSignedInUrl('https://mail.google.com/'), false, 'not into the inbox yet');
+});
 
 test('RXO list label: the message just above the file ("big list", "fbs", "reefer")', () => {
   // As LANDJA18 shows it: a message, then the file chip; the previous file's chip text in between.
@@ -19,6 +35,9 @@ test('RXO list label: the message just above the file ("big list", "fbs", "reefe
   assert.equal(pickListLabel(['allLoadsSearch_Export - 2026-11-27T08…', 'fbs']), 'fbs');
   assert.equal(pickListLabel(['reefer', '8:12 AM', 'allLoadsSearch_Export - 2026-11-27T08.xlsx']), 'reefer', 'times and file names are skipped');
   assert.equal(pickListLabel([]), '');
+  assert.equal(pickListLabel(['solar', 'Only visible to you']), 'solar', "Gmail's own notices are skipped");
+  assert.equal(pickListLabel(['solar', ',']), 'solar', 'a lone comma is not a name');
+  assert.equal(pickListLabel(['$$']), '$$');
 });
 
 const writeConfig = value => fs.writeFileSync(process.env.CHAT_BOT_CONFIG_FILE, JSON.stringify(value));
@@ -26,8 +45,6 @@ const writeConfig = value => fs.writeFileSync(process.env.CHAT_BOT_CONFIG_FILE, 
 test('the Google Chat bot is off until enabled with at least one chat address', () => {
   fs.rmSync(process.env.CHAT_BOT_CONFIG_FILE, { force: true });
   assert.equal(inbox.readChatConfig().enabled, false, 'no config file = off');
-  const shipped = inbox.readChatConfig(path.join(__dirname, 'chat-bot-config.json'));
-  assert.equal(shipped.enabled, false, 'the config in the project starts off');
   writeConfig({ enabled: true, chats: [{ name: 'LANDJA.18', kind: 'rxo', url: '' }] });
   assert.equal(inbox.readChatConfig().enabled, false, 'no address yet = off');
   writeConfig({ enabled: true, chats: [

@@ -18,6 +18,7 @@ import {
 import Prospects from './Prospects.jsx';
 import ChOffers from './ChOffers.jsx';
 import { chOfferToTmsLoad, getTodaysExportedLanes, CH_TMS_ACCOUNT } from './lib/chOffers.js';
+import { parseChatLoadMessage, chatLoadAccount, chatLoadToTmsLoad } from './lib/chatLoads.js';
 import automationPolicy from '../bot/automation-policy.json';
 
 const exportedLoadRetentionMs = 30 * 24 * 60 * 60 * 1000;
@@ -5734,16 +5735,29 @@ const defaultChatSheetAccounts = {
   fbs: 'R X O 2429200 - ATZ F', fb: 'R X O 2429200 - ATZ F', flatbed: 'R X O 2429200 - ATZ F', flatbeds: 'R X O 2429200 - ATZ F',
   reefer: 'R X O 2429200 - ATZ R', reefers: 'R X O 2429200 - ATZ R',
   haz: 'R X O 2429200 - ATZ H', hazmat: 'R X O 2429200 - ATZ H',
-  panels: 'R X O 2429200 - ATZ P', panel: 'R X O 2429200 - ATZ P'
+  // Solar panels: Tyler labels this list "panels" or "solar".
+  panels: 'R X O 2429200 - ATZ P', panel: 'R X O 2429200 - ATZ P',
+  solar: 'R X O 2429200 - ATZ P', 'solar panels': 'R X O 2429200 - ATZ P', 'solar panel': 'R X O 2429200 - ATZ P'
 };
 
-// Lists in LANDJA18 that are not Daniel's: "LOWES" and the one marked "$$" belong to agent
-// SNB (Ivan) and are never imported (Daniel 2026-11-27). Returns why, or '' to import.
-function getChatSheetSkipReason(label) {
+// Accounts whose Google Chat lists export to Landstar by themselves right after the import
+// (Daniel 2026-11-27: "only RXO"). Never R X O 2429200 - SNB: those are Ivan's loads and must
+// post under his own code, from his TMS.
+const chatAutoExportAccounts = new Set([
+  'R X O 2429200 - ATZ V', 'R X O 2429200 - ATZ F', 'R X O 2429200 - ATZ R',
+  'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P'
+].map(name => name.toUpperCase().replace(/[^A-Z0-9]/g, '')));
+function isChatAutoExportAccount(customer) {
+  return chatAutoExportAccounts.has(normalizeCustomerName(customer).toUpperCase().replace(/[^A-Z0-9]/g, ''));
+}
+
+// Lists in LANDJA18 for agent SNB (Ivan): "LOWES" and the one marked "$$" import into
+// R X O 2429200 - SNB, an account Daniel shares with Ivan, so they show up in Ivan's TMS and
+// post under Ivan's own code (Daniel 2026-11-27). "$$" has no letters, so it is matched here.
+const SNB_CHAT_ACCOUNT = 'R X O 2429200 - SNB';
+function getSnbChatSheetAccount(label) {
   const text = String(label || '');
-  if (/lowe'?s/i.test(text)) return 'the LOWES list is agent SNB\'s (Ivan)';
-  if (/\$\s*\$/.test(text)) return 'the $$ list is agent SNB\'s (Ivan)';
-  return '';
+  return /lowe'?s/i.test(text) || /\$\s*\$/.test(text) ? SNB_CHAT_ACCOUNT : '';
 }
 
 // A list label without what changes from day to day: case, numbers/dates, punctuation.
@@ -5756,6 +5770,8 @@ function getChatSheetKey(label) {
 }
 
 function getChatSheetAccount(rules, label) {
+  const snb = getSnbChatSheetAccount(label);
+  if (snb) return snb;
   const key = getChatSheetKey(label);
   if (!key) return '';
   const saved = rules && typeof rules === 'object' ? rules[key] : '';
@@ -6643,7 +6659,10 @@ export default function App({ sharing = null, userId = null } = {}) {
     const columns = rows[0] || {};
     return ['Origin - City', 'Destination - City', 'Carrier Line Haul Pay Current'].every(name => name in columns) ? rows : null;
   };
-  const importHotLanes = (rows, file) => {
+  // options.quiet: a Google Chat copy (LANDJA18 "this is whats been booked this week",
+  // 2026-11-27) reports as a TMS notice instead of a pop-up.
+  const importHotLanes = (rows, file, options = {}) => {
+    const alert = message => (options.quiet ? pushNotice(String(message).replace(/\s*\n+\s*/g, ' '), 'info') : window.alert(message));
     try {
       const built = buildHotLanes(rows);
       const laneCount = Object.keys(built.lanes).length;
@@ -7873,7 +7892,9 @@ export default function App({ sharing = null, userId = null } = {}) {
   // the whole list and removes the other files' postings. RXO is the exception: its van,
   // flatbed and reefer lists can be uploaded one at a time — an import only replaces the
   // equipment categories in the file (see replaceImportedCustomerLoads).
-  const handleExcelImport = (e) => {
+  // options.quiet: the "Import Complete" summary shows as a TMS notice, not a pop-up (Google
+  // Chat imports). Resolves true once the loads are imported and selected.
+  const handleExcelImport = (e, options = {}) => {
     let files = Array.from(e.target.files || []);
     e.target.value = '';
     if (!files.length) return;
@@ -8142,7 +8163,7 @@ export default function App({ sharing = null, userId = null } = {}) {
 
         const duplicatesRemoved = replacement ? 0 : duplicateImportCount + duplicateExistingCount;
 
-        alert(
+        (options.quiet ? message => pushNotice(message.replace(/\s*\n+\s*/g, ' '), 'info') : alert)(
           `📂 Excel Import Complete for ${selectedBroker}:\n` +
           (files.length > 1 || sheetCount > 1
             ? `• Combined into one list: ${files.length} file(s), ${sheetCount} tab(s)\n`
@@ -8163,10 +8184,12 @@ export default function App({ sharing = null, userId = null } = {}) {
         );
 
         if (!saved) alert('Saving failed; keep this page open and check browser storage.');
+        return saved;
       } catch (err) {
         console.error(err);
         alert(`Excel import failed: ${err.message || "Please make sure it's a valid .xlsx, .xls or OpenOffice .ods file."}`);
       }
+      return false;
     };
     return runImport();
   };
@@ -9089,12 +9112,67 @@ export default function App({ sharing = null, userId = null } = {}) {
     if (customer !== selectedBroker) handleSelectBroker(customer);
     setPendingChatSheet({ file: sheet.file, customer });
   };
+  // After a chat list for an auto-export account is imported (and its loads selected), the
+  // next render exports them; set to the account name until then.
+  const [autoExportFor, setAutoExportFor] = useState('');
+  // A single load Tyler posted as a message in LANDJA18 (src/lib/chatLoads.js): into the RXO
+  // account for its equipment, at the higher of his price and the DAT rate, then exported to
+  // Landstar by itself. A load already in that account is left as it is (one copy).
+  const addChatSingleLoad = async (text, item) => {
+    const load = parseChatLoadMessage(text);
+    if (!load) {
+      pushNotice(`💬 A load message from Google Chat${item.chat ? ` (${item.chat})` : ''} could not be read; add it by hand.`, 'info');
+      return;
+    }
+    const account = brokers.find(name => normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '')
+      === chatLoadAccount(load).toUpperCase().replace(/[^A-Z0-9]/g, ''));
+    if (!account) {
+      pushNotice(`💬 Load ${load.loadNumber} from Google Chat goes to ${chatLoadAccount(load)}, which is not in your customer list. Add that customer, then add the load by hand.`, 'info');
+      return;
+    }
+    const existing = (customerOrdersMap[account] || []).find(order => normalizeLoadId(order.id) === normalizeLoadId(load.loadNumber));
+    if (existing) {
+      pushNotice(`💬 Load ${load.loadNumber} from Google Chat is already in ${account}; left as it is.`, 'info');
+      return;
+    }
+    let datRate = 0;
+    try {
+      const response = await fetch('/api/dat-rate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          origin: { city: load.origin.city, state: load.origin.state, zip: load.origin.zip },
+          destination: { city: load.destination.city, state: load.destination.state, zip: load.destination.zip },
+          equipment: load.equipmentCode
+        })
+      });
+      datRate = Number((await response.json().catch(() => ({})))?.rate) || 0;
+    } catch { /* his price alone */ }
+    const order = createManualLoad(load.loadNumber, chatLoadToTmsLoad(load, datRate));
+    setCustomerOrdersMap(prev => ({ ...prev, [account]: [order, ...(prev[account] || [])] }));
+    handleSelectBroker(account);
+    setSelectedOrder(order);
+    pushNotice(`💬 Load ${load.loadNumber} (${load.origin.city}, ${load.origin.state} → ${load.destination.city}, ${load.destination.state}) from Google Chat added to ${account} at $${order.rateInput || '?'} (RXO $${load.price || 'n/a'}, DAT $${Math.round(datRate) || 'n/a'}).`, 'info');
+    if (!(Number(order.rateInput) > 0)) return;
+    setSelectedIds([selectionKey(account, order.id)]);
+    setAutoExportFor(account);
+  };
   useEffect(() => {
     if (!pendingChatSheet || pendingChatSheet.customer !== selectedBroker) return;
-    const { file } = pendingChatSheet;
+    const { file, customer } = pendingChatSheet;
+    const autoExport = isChatAutoExportAccount(customer);
     setPendingChatSheet(null);
-    handleExcelImport({ target: { files: [file], value: '' } });
+    Promise.resolve(handleExcelImport({ target: { files: [file], value: '' } }, { quiet: autoExport }))
+      .then(imported => { if (autoExport && imported) setAutoExportFor(customer); })
+      .catch(error => console.error('Chat list import failed:', error));
   }, [pendingChatSheet, selectedBroker]);
+  useEffect(() => {
+    if (!autoExportFor) return;
+    if (autoExportFor !== selectedBroker || !selectedIds.length) return;
+    setAutoExportFor('');
+    pushNotice(`🚀 Exporting the new ${autoExportFor} list to Landstar automatically (${selectedIds.length} loads)...`, 'info');
+    void handleAutoExport();
+  }, [autoExportFor, selectedBroker, selectedIds]);
   // Checks the Google Chat inbox every 30 seconds while nothing else is on screen.
   useEffect(() => {
     if (pastedImage || chatItem || chatSheet || pendingChatSheet || isImportingScreenshot) return undefined;
@@ -9111,10 +9189,13 @@ export default function App({ sharing = null, userId = null } = {}) {
         const blob = await fileResponse.blob();
         const file = new File([blob], item.fileName || item.name, { type: blob.type });
         const from = [item.chat, item.sender].filter(Boolean).join(' · ');
-        const skipReason = item.type === 'spreadsheet' && item.kind === 'rxo' ? getChatSheetSkipReason(item.label) : '';
-        if (skipReason) {
+        if (item.type === 'load') {
           finishChatItem(item.name);
-          pushNotice(`💬 Skipped "${item.label}" from Google Chat: ${skipReason}.`, 'info');
+          await addChatSingleLoad(await blob.text(), item);
+        } else if (item.type === 'spreadsheet' && await readOrderExportRows(file).catch(() => null)) {
+          // Other agents' bookings (an order export): hot lanes, never loads, no account to pick.
+          finishChatItem(item.name);
+          importHotLanes(await readOrderExportRows(file), file, { quiet: true });
         } else if (item.type === 'spreadsheet') {
           const known =getChatSheetAccount(paramountLatest.profile?.chatSheetAccounts, item.label);
           if (known && brokers.includes(known)) {
@@ -10202,12 +10283,30 @@ export default function App({ sharing = null, userId = null } = {}) {
     }
   };
 
-  const runExportToLandstar = async () => {
+  // A Google Chat list for an auto-export account was just imported: export its loads (the
+  // import selected them). No "export again?" question and no pop-ups; the upload bot then
+  // posts them with its usual checks (ATZ already posted, rates on the board).
+  const handleAutoExport = async () => {
+    if (exportGuard.running) return false;
+    exportGuard.running = true;
+    try {
+      await runExportToLandstar({ quiet: true });
+      return true;
+    } finally {
+      exportGuard.running = false;
+      exportGuard.finishedAt = Date.now();
+    }
+  };
+
+  // options.quiet (automatic exports of Google Chat lists, Daniel 2026-11-27): messages show as
+  // TMS notices instead of pop-ups, so the export never waits for a click.
+  const runExportToLandstar = async (options = {}) => {
+    const say = message => (options.quiet ? pushNotice(`🚀 Auto-export: ${String(message).replace(/\s*\n+\s*/g, ' ')}`, 'info') : alert(message));
     setExportErrorIds([]);
     const exportPhone = profile.phone.replace(/\D/g, '');
     const exportVisibilityGroup = profile.visibilityGroup.trim().toUpperCase();
     if (exportPhone.length !== 10 || !profile.postingCode.trim() || !exportVisibilityGroup) {
-      alert('Open ⚙ My Settings and enter your 10-digit phone number, posting code and visibility group before exporting.');
+      say('Open ⚙ My Settings and enter your 10-digit phone number, posting code and visibility group before exporting.');
       openProfileSettings();
       return;
     }
@@ -10235,7 +10334,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     const skippedEquipmentExportCount = notMexico.length - loadsToExport.length;
 
     if (loadsToExport.length === 0) {
-      alert(skippedBookedCount || skippedRxoVanCount || skippedSameCityCount || skippedMexicoCount || skippedEquipmentExportCount
+      say(skippedBookedCount || skippedRxoVanCount || skippedSameCityCount || skippedMexicoCount || skippedEquipmentExportCount
         ? `Nothing to export: ${[
           skippedBookedCount && `${skippedBookedCount} booked load(s)`,
           skippedRxoVanCount && `${skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID`,
@@ -10275,7 +10374,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       zipModule = await import('zipcodes');
     } catch (error) {
       console.error('Could not load offline ZIP location data for the Landstar export:', error);
-      alert('Could not load the offline ZIP location data needed for the Landstar export.');
+      say('Could not load the offline ZIP location data needed for the Landstar export.');
       return;
     }
     const zipData = zipModule.default || zipModule;
@@ -10556,7 +10655,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       if (missingZipEntries.length) {
         problems.push(`No ZIP code could be found for ${missingZipEntries.length} load${missingZipEntries.length === 1 ? '' : 's'}, and Landstar needs a ZIP to fill in the state. Enter the ZIP in the load's Origin or Destination ZIP field, then export again:\n\n${missingZipEntries.slice(0, 10).map(({ record }) => `${record['Origin City'] || ''} → ${record['Destination City'] || ''}`).join('\n')}`);
       }
-      alert(`No loads could be exported.\n\n${problems.join('\n\n')}`);
+      say(`No loads could be exported.\n\n${problems.join('\n\n')}`);
       return;
     }
 
@@ -10782,7 +10881,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       }
     } catch (error) {
       console.error('Could not prepare the official Landstar bulk template:', error);
-      alert(`Could not create a spreadsheet from the official Landstar template: ${error.message || 'Please try again.'}`);
+      say(`Could not create a spreadsheet from the official Landstar template: ${error.message || 'Please try again.'}`);
       return;
     }
 
@@ -10804,15 +10903,15 @@ export default function App({ sharing = null, userId = null } = {}) {
       }
       playExportSound();
       if (exportBlobs.length > 1) {
-        alert(`${exportBlobs.length} spreadsheets were created (up to ${landstarExportChunkSize} loads each). If your browser asks, allow multiple downloads for this site.`);
+        say(`${exportBlobs.length} spreadsheets were created (up to ${landstarExportChunkSize} loads each). If your browser asks, allow multiple downloads for this site.`);
       }
       if (skippedBookedCount) {
-        alert(`${skippedBookedCount} booked load${skippedBookedCount === 1 ? ' was' : 's were'} left out of the Landstar export.`);
+        say(`${skippedBookedCount} booked load${skippedBookedCount === 1 ? ' was' : 's were'} left out of the Landstar export.`);
       }
       if (inquiryLinkError) console.error(`Driver links were not created: ${inquiryLinkError}`);
     } catch (error) {
       console.error('Could not create the Landstar bulk spreadsheet:', error);
-      alert('The Landstar bulk spreadsheet could not be created. Please try again.');
+      say('The Landstar bulk spreadsheet could not be created. Please try again.');
       return;
     }
 
@@ -10895,7 +10994,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       saved ? '' : 'Browser storage could not be updated, so the archive may not persist after refresh.',
       exportedRegistrySaved ? '' : 'Warning: exported-load history could not be saved, so duplicate imports may occur after refresh.'
     ].filter(Boolean).join('\n\n');
-    if (exportWarnings) alert(exportWarnings);
+    if (exportWarnings) say(exportWarnings);
   };
 
   const isGlobalSearch = Boolean(searchQuery.trim());
@@ -11857,6 +11956,9 @@ export default function App({ sharing = null, userId = null } = {}) {
                   <p className="text-sm text-white font-bold mb-1">{chatSheet.item.label ? `"${chatSheet.item.label}"` : 'No list name above the file'}</p>
                   <p className="text-[11px] text-gray-400 font-mono break-all mb-1">{chatSheet.item.fileName || chatSheet.item.name}</p>
                   {chatSheet.item.from && <p className="text-xs text-emerald-200 mb-1">From {chatSheet.item.from}</p>}
+                  {getSnbChatSheetAccount(chatSheet.item.label) && (
+                    <p className="text-xs text-amber-300 mb-1">This is Ivan's list: it goes to {SNB_CHAT_ACCOUNT}, which is not in your customer list yet. Add that customer and share it with Ivan; after that these lists import there by themselves.</p>
+                  )}
                   <p className="text-xs text-gray-300 mb-3">{chatSheet.item.label
                     ? `Which account does the "${chatSheet.item.label}" list go to? The TMS remembers: next time a "${chatSheet.item.label}" list comes in, it goes there by itself.`
                     : 'Which account does it go to? (With no list name above it, the TMS asks every time.)'}</p>

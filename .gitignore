@@ -76,3 +76,4 @@ bot/chat-bot-status.json
 bot/chat-bot-status.json.*.tmp
 bot/chat-bot-seen.json
 bot/chat-bot-seen.json.*.tmp
+bot/chat-debug.json

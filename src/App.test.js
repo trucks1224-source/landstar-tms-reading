@@ -16,6 +16,7 @@ import * as backgroundBrightness from './lib/backgroundBrightness.js';
 import * as teamLogos from './lib/teamLogos.js';
 import * as teamData from './lib/teamData.js';
 import * as chOffers from './lib/chOffers.js';
+import * as chatLoads from './lib/chatLoads.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
 
@@ -59,7 +60,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
-  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, getChatSheetSkipReason, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
+  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
@@ -102,6 +103,7 @@ const context = {
     if (name === './lib/teamLogos.js') return teamLogos;
     if (name === './lib/teamData.js') return teamData;
       if (name === './lib/chOffers.js') return chOffers;
+      if (name === './lib/chatLoads.js') return chatLoads;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx'].includes(name)) return {};
     throw new Error(`Unexpected dependency: ${name}`);
@@ -620,13 +622,18 @@ test('Google Chat spreadsheets: the account is remembered by the list name above
   assert.equal(policy.getChatSheetAccount({}, 'reefer'), 'R X O 2429200 - ATZ R');
   assert.equal(policy.getChatSheetAccount({}, 'Haz'), 'R X O 2429200 - ATZ H');
   assert.equal(policy.getChatSheetAccount({}, 'panels'), 'R X O 2429200 - ATZ P');
+  assert.equal(policy.getChatSheetAccount({}, 'Solar'), 'R X O 2429200 - ATZ P', 'solar is the panels list too');
+  assert.equal(policy.getChatSheetAccount({}, 'solar panels'), 'R X O 2429200 - ATZ P');
   assert.equal(policy.getChatSheetAccount({}, 'dry van extras'), '', 'not taught yet: the TMS asks');
-  assert.match(policy.getChatSheetSkipReason('LOWES'), /SNB/);
-  assert.match(policy.getChatSheetSkipReason('lowes 11/27'), /SNB/);
-  assert.match(policy.getChatSheetSkipReason('$$'), /SNB/);
-  assert.match(policy.getChatSheetSkipReason('$ $ loads'), /SNB/);
-  assert.equal(policy.getChatSheetSkipReason('big list'), '');
-  assert.equal(policy.getChatSheetSkipReason('$2500 load'), '', 'one dollar sign is not the SNB list');
+  // LOWES and $$ are agent SNB's (Ivan): they go to the account Daniel shares with him.
+  const snb = 'R X O 2429200 - SNB';
+  assert.equal(policy.getChatSheetAccount({}, 'LOWES'), snb);
+  assert.equal(policy.getChatSheetAccount({}, 'lowes 11/27'), snb);
+  assert.equal(policy.getChatSheetAccount({}, "Lowe's"), snb);
+  assert.equal(policy.getChatSheetAccount({}, '$$'), snb);
+  assert.equal(policy.getChatSheetAccount({}, '$ $ loads'), snb);
+  assert.equal(policy.getChatSheetAccount({ lowes: 'R X O 2429200 - ATZ V' }, 'LOWES'), snb, 'never moved into your accounts');
+  assert.equal(policy.getChatSheetAccount({}, '$2500 load'), '', 'one dollar sign is not the SNB list');
   assert.equal(policy.getChatSheetAccount({}, ''), '', 'no name above the file: always asks');
   let rules = policy.rememberChatSheetAccount({}, 'fbs', 'R X O 2429200 - ATZ F');
   rules = policy.rememberChatSheetAccount(rules, 'Reefer', 'R X O 2429200 - ATZ R');
@@ -634,6 +641,14 @@ test('Google Chat spreadsheets: the account is remembered by the list name above
   assert.equal(policy.getChatSheetAccount(rules, 'reefer'), 'R X O 2429200 - ATZ R');
   assert.equal(policy.getChatSheetAccount({ 'big list': 'R X O 2429200 - ATZ' }, 'big list'), 'R X O 2429200 - ATZ', 'a picked answer wins');
   assert.equal(Object.keys(policy.rememberChatSheetAccount({}, '', 'X')).length, 0, 'nothing remembered without a name');
+
+  // Auto-export to Landstar: Daniel's RXO accounts only, never Ivan's SNB account.
+  for (const name of ['R X O 2429200 - ATZ V', 'R X O 2429200 - ATZ F', 'R X O 2429200 - ATZ R', 'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P']) {
+    assert.equal(policy.isChatAutoExportAccount(name), true, name);
+  }
+  assert.equal(policy.isChatAutoExportAccount('R X O 2429200 - SNB'), false, "Ivan's loads post under his code, from his TMS");
+  assert.equal(policy.isChatAutoExportAccount('Para 1522166 - ATZ'), false, 'Para lists are never auto-exported');
+  assert.equal(policy.isChatAutoExportAccount('R X O 2429200 - ATZ'), false);
 
   const customersOf = choices => [...choices].map(choice => choice.customer);
   const brokers = ['Para 1522166 - ATZ', 'R X O 2429200 - ATZ V', 'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P', 'Nolan 965974 - ATZ'];
@@ -1560,6 +1575,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/teamLogos.js') return teamLogos;
       if (name === './lib/teamData.js') return teamData;
       if (name === './lib/chOffers.js') return chOffers;
+      if (name === './lib/chatLoads.js') return chatLoads;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === 'react') return react;
@@ -1776,6 +1792,7 @@ function createSyncContext(storage) {
       if (name === './lib/teamLogos.js') return teamLogos;
       if (name === './lib/teamData.js') return teamData;
       if (name === './lib/chOffers.js') return chOffers;
+      if (name === './lib/chatLoads.js') return chatLoads;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx'].includes(name)) return {};
       throw new Error(`Unexpected dependency: ${name}`);

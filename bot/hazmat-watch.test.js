@@ -1,5 +1,11 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+// The tests' own posting codes, so this PC's bot/agent-config.json never changes the result.
+process.env.AGENT_CONFIG_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hazmat-watch-')), 'agent-config.json');
+fs.writeFileSync(process.env.AGENT_CONFIG_FILE, JSON.stringify({ postingCodes: ['ANQ', 'QNX'] }));
 const { findCompetitors, planRaise, isHazmatPosting, raisePostingRate, selectRateWatchPostings, eligibleExport } = require('./hazmat-watch');
 const { postingSignature } = require('./bot-postings');
 
@@ -14,7 +20,8 @@ const posting = (id, extra = {}) => ({
 test('only your own bulk-posted hazmat loads are watched, for every customer', () => {
   assert.equal(isHazmatPosting(posting(1)), true);
   assert.equal(isHazmatPosting(posting(2, { CommodityCode: 'CGAPP' })), false);
-  assert.equal(isHazmatPosting(posting(3, { Agency: 'SNB' })), true, 'SNB is yours again (2026-11-23)');
+  assert.equal(isHazmatPosting(posting(3, { Agency: 'QNX' })), true, 'every one of your codes');
+  assert.equal(isHazmatPosting(posting(6, { Agency: 'SNB' })), false, "SNB is Ivan's (2026-11-27), not yours");
   assert.equal(isHazmatPosting(posting(5, { Agency: 'XYZ' })), false, 'another agency is not yours');
   assert.equal(isHazmatPosting(posting(4, { SourceSystemID: 'AW' })), false, 'hand-posted loads are left alone');
 });

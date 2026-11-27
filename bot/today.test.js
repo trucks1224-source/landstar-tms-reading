@@ -42,6 +42,7 @@ test('uploads failing for 3+ minutes is a red problem; a later success clears it
   assert.equal(problems.length, 1);
   assert.equal(problems[0].level, 'bad');
   assert.match(problems[0].title, /failing \(2 in a row since 10:35 AM\)/);
+  assert.equal(problems[0].go, 'upload', 'clicking it brings up the upload bot');
   const recovered = parseUploadLog(`${uploadLog}\n[10:57:54]   Done: Landstar_Bulk_CH_593772__ATZ_H____2.xlsx`, day);
   assert.equal(findProblems({ uploads: recovered, now: at(11, 0) }).length, 0);
 });
@@ -63,6 +64,7 @@ test('reviews, bots that are down and the Chat bot sign-in are problems', () => 
     chatBot: { state: 'signing-in', pid: 1, message: 'Waiting for Google sign-in' }
   });
   assert.deepEqual(problems.map(problem => problem.level), ['warn', 'bad', 'warn']);
+  assert.deepEqual(problems.map(problem => problem.go), ['review-folder', 'helper', 'chatbot'], 'each one opens where the problem is');
   assert.match(problems[0].title, /1 upload to check on Landstar/);
   assert.match(problems[0].detail, /R X O 2429200 - ATZ P/);
   assert.match(problems[1].title, /Helper bot: Not running/);

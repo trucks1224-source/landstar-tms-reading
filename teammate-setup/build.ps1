@@ -25,10 +25,17 @@ foreach ($name in ($files | Sort-Object -Unique)) {
 
 Copy-Item (Join-Path $setupDir 'Setup.bat'), (Join-Path $setupDir 'setup.ps1'), (Join-Path $setupDir 'How to install.txt') $stage
 
-# The posting codes of this computer (the owner's) are refused during a teammate's setup.
+# The posting codes of this computer (the owner's) are refused during a teammate's setup,
+# except codes a teammate really uses (teammate-setup\shared-codes.txt; SNB is Ivan's,
+# Daniel 2026-11-27).
 $ownerConfig = Join-Path $botDir 'agent-config.json'
+$sharedFile = Join-Path $setupDir 'shared-codes.txt'
+$shared = @()
+if (Test-Path $sharedFile) { $shared = @(Get-Content $sharedFile | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ -and -not $_.StartsWith('#') }) }
 if (Test-Path $ownerConfig) {
-  (Get-Content $ownerConfig -Raw | ConvertFrom-Json).postingCodes | Set-Content -Path (Join-Path $stage 'blocked-codes.txt') -Encoding ascii
+  (Get-Content $ownerConfig -Raw | ConvertFrom-Json).postingCodes |
+    Where-Object { $shared -notcontains $_.Trim().ToUpper() } |
+    Set-Content -Path (Join-Path $stage 'blocked-codes.txt') -Encoding ascii
 }
 
 # Never ship secrets or sign-ins, even by mistake.

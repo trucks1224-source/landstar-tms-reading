@@ -20,7 +20,13 @@ const { buildHealthReport, readWatchdogStatus, readEmailBotStatus, postingBotFro
 const { sendOnce, SEND_ACTIONS, markEmailSkipped, settleUnknownEmail, listUnknownEmails } = createRequire(import.meta.url)('./bot/email-record.js')
 const { readBotControl, writeBotControl } = createRequire(import.meta.url)('./bot/local-bot-control.js')
 const chatInbox = createRequire(import.meta.url)('./bot/chat-inbox.js')
-const { readToday } = createRequire(import.meta.url)('./bot/today.js')
+// bot/today.js is read fresh on every request (its changes apply without restarting the TMS).
+const requireLocal = createRequire(import.meta.url)
+const readToday = options => {
+  const file = requireLocal.resolve('./bot/today.js')
+  delete requireLocal.cache[file]
+  return requireLocal(file).readToday(options)
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -177,6 +183,62 @@ export default defineConfig(({ mode }) => {
               res.statusCode = 500
               res.end(JSON.stringify({ error: error.message }))
             }
+          })
+          // Problem banner click (Daniel 2026-11-27: "take me to exactly where the error is"):
+          // POST /api/go { target } brings that bot's window to the front, opens the
+          // upload-review folder, or starts the watchdog. Only these fixed targets.
+          const goTargets = {
+            upload: { profile: 'browser-profile', title: 'Landstar Bot' },
+            helper: { profile: 'browser-profile-helper', title: 'Landstar Helper Bot' },
+            removal: { profile: 'browser-profile-removal', title: 'Landstar Removal Bot' },
+            rates: { profile: 'browser-profile-rates', title: 'Landstar Rate Worker' },
+            refresh: { profile: 'browser-profile-refresh', title: 'Landstar Refresh Bot' },
+            emailbot: { title: 'Landstar Email Bot' },
+            chatbot: { profile: 'browser-profile-chat', title: 'Landstar Google Chat Bot' }
+          }
+          server.middlewares.use('/api/go', (req, res) => {
+            res.setHeader('Content-Type', 'application/json')
+            res.setHeader('Cache-Control', 'no-store')
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              res.statusCode = 403
+              return res.end(JSON.stringify({ error: 'Only the local TMS can open bot windows.' }))
+            }
+            if (req.method !== 'POST') {
+              res.statusCode = 405
+              return res.end(JSON.stringify({ error: 'Use POST.' }))
+            }
+            let body = ''
+            req.on('data', chunk => {
+              body += chunk
+              if (body.length > 512) req.destroy()
+            })
+            req.on('end', () => {
+              let target = ''
+              try { target = String(JSON.parse(body).target || '') } catch { /* bad request below */ }
+              const done = (status, payload) => { res.statusCode = status; res.end(JSON.stringify(payload)) }
+              const run = (command, args, onExit) => {
+                const child = spawn(command, args, { windowsHide: true })
+                let out = ''
+                child.stdout?.on('data', chunk => { out += chunk })
+                child.on('error', error => done(500, { error: error.message }))
+                child.on('exit', () => onExit(out.trim()))
+              }
+              if (target === 'review-folder') {
+                const folder = path.join(os.homedir(), 'Downloads', 'landstar-upload-review')
+                spawn('explorer.exe', [folder], { detached: true, stdio: 'ignore' }).unref()
+                return done(200, { opened: 'folder' })
+              }
+              if (target === 'watchdog') {
+                return run('schtasks.exe', ['/Run', '/TN', 'Landstar Watchdog Keeper'], () => done(200, { opened: 'watchdog' }))
+              }
+              const window = goTargets[target]
+              if (!window) return done(400, { error: 'Unknown target' })
+              run('powershell.exe', [
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(process.cwd(), 'bot', 'focus-window.ps1'),
+                '-Profile', window.profile || '', '-Title', window.title || ''
+              ], out => done(200, { opened: out === 'found' ? 'window' : '', found: out === 'found' }))
+            })
           })
           // Morning system check (header "System check"): every local piece in one answer.
           const signingInSince = {}

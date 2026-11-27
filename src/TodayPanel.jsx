@@ -49,8 +49,28 @@ function notifyWindows(problem) {
   } catch { /* no notification */ }
 }
 
+// What clicking a problem opens (POST /api/go on the bot PC).
+const goLabels = {
+  upload: 'Open the upload bot window', helper: 'Open the helper bot window', removal: 'Open the removal bot window',
+  rates: 'Open the rate worker window', refresh: 'Open the refresh bot window', emailbot: 'Open the email bot window',
+  chatbot: 'Open the Google Chat bot window', 'review-folder': 'Open the upload-review folder', watchdog: 'Start the watchdog'
+};
+
+async function goTo(target) {
+  try {
+    const response = await fetch('/api/go', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target }) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return data.error || 'Could not open it';
+    if (data.opened) return '';
+    return 'Its window is not open: the watchdog starts it again within about a minute.';
+  } catch {
+    return 'Could not reach the TMS server on this PC.';
+  }
+}
+
 export function ProblemBanner({ problems = [] }) {
   const [hidden, setHidden] = useState(readHidden);
+  const [goResult, setGoResult] = useState({});
   const [clock, setClock] = useState(Date.now());
   const seen = useRef(null);
   const [canNotify, setCanNotify] = useState(() => typeof Notification !== 'undefined' && Notification.permission === 'granted');
@@ -97,8 +117,24 @@ export function ProblemBanner({ problems = [] }) {
           <div key={problem.key} className="flex items-start gap-2 text-xs">
             <span className={`shrink-0 font-bold px-1.5 py-0.5 rounded ${problem.level === 'bad' ? 'bg-red-600 text-white' : 'bg-amber-400 text-black'}`}>{problem.level === 'bad' ? '🚨 ACT NOW' : '⚠ CHECK'}</span>
             <div className="flex-1 min-w-0">
-              <div className="font-bold text-white">{problem.title}</div>
+              {problem.go && goLabels[problem.go] ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setGoResult(current => ({ ...current, [problem.key]: '…' }));
+                    const message = await goTo(problem.go);
+                    setGoResult(current => ({ ...current, [problem.key]: message }));
+                  }}
+                  title={goLabels[problem.go]}
+                  className="font-bold text-white underline decoration-dotted underline-offset-2 hover:decoration-solid cursor-pointer text-left"
+                >
+                  {problem.title} <span className="font-normal text-sky-200 no-underline">→ {goLabels[problem.go]}</span>
+                </button>
+              ) : (
+                <div className="font-bold text-white">{problem.title}</div>
+              )}
               {problem.detail && <div className="text-gray-200 break-words">{problem.detail}</div>}
+              {goResult[problem.key] && goResult[problem.key] !== '…' && <div className="text-amber-200">{goResult[problem.key]}</div>}
             </div>
             <button type="button" onClick={() => hide(problem.key)} className="shrink-0 text-gray-300 hover:text-white underline cursor-pointer" title="Hide this for 30 minutes (it comes back if it is still a problem)">Hide 30 min</button>
           </div>

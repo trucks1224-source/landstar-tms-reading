@@ -17,6 +17,7 @@ import * as teamLogos from './lib/teamLogos.js';
 import * as teamData from './lib/teamData.js';
 import * as chOffers from './lib/chOffers.js';
 import * as chatLoads from './lib/chatLoads.js';
+import * as undoLib from './lib/undo.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
 
@@ -106,6 +107,7 @@ const context = {
     if (name === './lib/teamData.js') return teamData;
       if (name === './lib/chOffers.js') return chOffers;
       if (name === './lib/chatLoads.js') return chatLoads;
+      if (name === './lib/undo.js') return undoLib;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx'].includes(name)) return {};
     throw new Error(`Unexpected dependency: ${name}`);
@@ -1562,6 +1564,9 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
     alert: message => alerts.push(message),
     notify: message => alerts.push(message),
     __tmsNoticeHook: message => alerts.push(message),
+    // Notices clear themselves with a timer; the harness keeps them on screen.
+    setTimeout: () => 0,
+    clearTimeout: () => {},
     fetch: async url => {
       if (url === '/api/road-miles') return { ok: true, json: async () => ({ miles: 500 }) };
       assert.equal(url, '/api/dat-rate');
@@ -1580,6 +1585,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/teamData.js') return teamData;
       if (name === './lib/chOffers.js') return chOffers;
       if (name === './lib/chatLoads.js') return chatLoads;
+      if (name === './lib/undo.js') return undoLib;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === 'react') return react;
@@ -1798,6 +1804,7 @@ function createSyncContext(storage) {
       if (name === './lib/teamData.js') return teamData;
       if (name === './lib/chOffers.js') return chOffers;
       if (name === './lib/chatLoads.js') return chatLoads;
+      if (name === './lib/undo.js') return undoLib;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx'].includes(name)) return {};
       throw new Error(`Unexpected dependency: ${name}`);
@@ -2196,6 +2203,9 @@ test('Excel import replaces spreadsheet miles with Google driving miles', async 
   assert.equal(app.errors.length, 0);
 });
 
+const phalanxHeader = ['Load ID', 'Brokerage status', 'Equip type', 'Stops', 'Order type', 'Origin city', 'Origin state', 'Early P/U dt',
+  'Late P/U dt', 'Dest city', 'Dest state', 'Early del dt', 'Late del dt', 'Commodity', 'Weight', 'Distance', 'Rate'];
+
 test('Phalanx list (Pha 882255 - ATZ) imports equipment, times, weight and rate from its own columns', async () => {
   const phalanx = 'Pha 882255 - ATZ';
   const app = createAppHarness(phalanx, []);
@@ -2266,6 +2276,26 @@ test('a Phalanx list with no header row and row numbers in front still imports i
   assert.equal(byId['170139'].weight, '32400 lbs');
   assert.equal(policy.getLandstarEquipmentCode(byId['170159'].eCode), 'FLAT');
   assert.equal(app.errors.length, 0);
+});
+
+test('Undo puts an account back after a big import', async () => {
+  const phalanx = 'Pha 882255 - ATZ';
+  const existing = [{ ...load, id: '900001' }, { ...load, id: '900002' }];
+  const app = createAppHarness(phalanx, existing);
+  const runEffects = pattern => app.effects.filter(effect => pattern.test(effect.toString())).forEach(effect => effect());
+  const settle = () => { app.render(); runEffects(/previousOrdersRef|persistAppData()/); app.render(); };
+  settle();
+  const row = (id, city) => [id, 'AVAIL', 'F', 0, 'FTL', city, 'TX', '11/30/2026 0730', '11/30/2026 1500', 'AUSTIN', 'TX', '12/01/2026 0900', '', 'STEEL', '40000 LB', 200, 1000];
+  await app.importExcel([phalanxHeader, row(170001, 'DALLAS'), row(170002, 'WACO'), row(170003, 'TYLER'), row(170004, 'BRYAN'), row(170005, 'KILLEEN')]);
+  settle();
+  const saved = () => JSON.parse(app.storage.get('landstar_customerOrdersMap'))[phalanx].map(order => order.id).sort();
+  assert.ok(saved().includes('170001'), 'the import went in');
+  const undo = app.find(node => node.type === 'button' && [node.props.children].flat(Infinity).includes('Undo'));
+  assert.ok(undo, 'a big import offers Undo');
+  undo.props.onClick();
+  settle();
+  assert.deepEqual(saved(), ['900001', '900002'], 'the account is back exactly as it was');
+  assert.equal(app.find(node => node.type === 'button' && [node.props.children].flat(Infinity).includes('Undo')), null, 'Undo is not offered for the Undo itself');
 });
 
 test('an OpenOffice .ods list imports like an Excel file', async () => {

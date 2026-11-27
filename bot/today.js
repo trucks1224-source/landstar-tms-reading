@@ -101,8 +101,12 @@ function parseRatesLog(text) {
   return byAccount;
 }
 
+// Where clicking a problem takes Daniel (POST /api/go, Daniel 2026-11-27: "take me to exactly
+// where the error is"): a bot's window, the review folder, or starting the watchdog.
+const GO_FOR_HEALTH_ROW = { upload: 'upload', helper: 'helper', removal: 'removal', rates: 'rates', emailbot: 'emailbot', watchdog: 'watchdog' };
+
 // What needs Daniel now, from the parsed day. health = the system check report (rows).
-// [{ key, level: 'bad'|'warn', title, detail }]
+// [{ key, level: 'bad'|'warn', title, detail, go }]
 function findProblems({ uploads = [], reviews = [], health = null, chatBot = null, now = Date.now() }) {
   const problems = [];
   // Uploads failing: the newest upload event is a failure and nothing got through since.
@@ -112,13 +116,14 @@ function findProblems({ uploads = [], reviews = [], health = null, chatBot = nul
     let firstFailure = last.at;
     for (let index = fileEvents.length - 1; index >= 0 && !fileEvents[index].ok; index -= 1) firstFailure = fileEvents[index].at;
     if (last.signIn) {
-      problems.push({ key: `upload-signin-${firstFailure}`, level: 'bad', title: 'Upload bot needs the Landstar sign-in', detail: 'Sign in to Landstar in the upload bot window (far-left screen). Nothing posts until then.' });
+      problems.push({ key: `upload-signin-${firstFailure}`, level: 'bad', title: 'Upload bot needs the Landstar sign-in', detail: 'Sign in to Landstar in the upload bot window (far-left screen). Nothing posts until then.', go: 'upload' });
     } else if (now - firstFailure >= UPLOAD_FAILING_AFTER_MS || last.unknown) {
       const failures = fileEvents.filter(event => !event.ok && event.at >= firstFailure).length;
       problems.push({
         key: `upload-failing-${firstFailure}`, level: 'bad',
         title: last.unknown ? `Upload of ${last.account.name || 'a file'} may not have posted` : `Uploads to Landstar are failing (${failures} in a row since ${new Date(firstFailure).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })})`,
-        detail: `${last.message}${last.file ? ` (${last.file})` : ''}`
+        detail: `${last.message}${last.file ? ` (${last.file})` : ''}`,
+        go: 'upload'
       });
     }
   }
@@ -126,17 +131,18 @@ function findProblems({ uploads = [], reviews = [], health = null, chatBot = nul
     problems.push({
       key: `reviews-${reviews.map(item => item.file).sort().join('|')}`, level: 'warn',
       title: `${reviews.length} upload${reviews.length === 1 ? '' : 's'} to check on Landstar`,
-      detail: `Landstar never confirmed these; check Bulk Postings, then delete them from Downloads\\landstar-upload-review: ${reviews.map(item => item.account.name || item.file).join(', ')}`
+      detail: `Landstar never confirmed these; check Bulk Postings, then delete them from Downloads\\landstar-upload-review: ${reviews.map(item => item.account.name || item.file).join(', ')}`,
+      go: 'review-folder'
     });
   }
   for (const row of health?.rows || []) {
     if (!['bad', 'warn'].includes(row.level) || row.id === 'restart') continue;
-    problems.push({ key: `health-${row.id}-${row.detail}`, level: row.level, title: `${row.label}: ${row.detail}`, detail: row.fix || '' });
+    problems.push({ key: `health-${row.id}-${row.detail}`, level: row.level, title: `${row.label}: ${row.detail}`, detail: row.fix || '', go: GO_FOR_HEALTH_ROW[row.id] || '' });
   }
   if (chatBot && chatBot.state === 'signing-in') {
-    problems.push({ key: `chat-signin-${chatBot.pid}`, level: 'warn', title: 'Google Chat bot needs the Google sign-in', detail: chatBot.message || 'Sign in in the Chrome window it opened, then close that window.' });
+    problems.push({ key: `chat-signin-${chatBot.pid}`, level: 'warn', title: 'Google Chat bot needs the Google sign-in', detail: chatBot.message || 'Sign in in the Chrome window it opened, then close that window.', go: 'chatbot' });
   } else if (chatBot && chatBot.state === 'blocked') {
-    problems.push({ key: `chat-blocked-${chatBot.message}`, level: 'bad', title: 'Google Chat bot stopped', detail: chatBot.message || '' });
+    problems.push({ key: `chat-blocked-${chatBot.message}`, level: 'bad', title: 'Google Chat bot stopped', detail: chatBot.message || '', go: 'chatbot' });
   }
   return problems;
 }

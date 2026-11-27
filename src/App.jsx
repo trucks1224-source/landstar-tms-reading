@@ -18,6 +18,7 @@ import {
 import Prospects from './Prospects.jsx';
 import ChOffers from './ChOffers.jsx';
 import { ProblemBanner, TodayPanel } from './TodayPanel.jsx';
+import { findBigListChanges, describeListChange, restoredPostedLoads } from './lib/undo.js';
 import { chOfferToTmsLoad, getTodaysExportedLanes, CH_TMS_ACCOUNT } from './lib/chOffers.js';
 import { parseChatLoadMessage, chatLoadAccount, chatLoadToTmsLoad } from './lib/chatLoads.js';
 import automationPolicy from '../bot/automation-policy.json';
@@ -5748,6 +5749,7 @@ const pasteImportChoices = [
 
 // ---------- Notices (instead of alert() pop-ups) ----------
 const NOTICE_INFO_MS = 45 * 1000;
+const UNDO_OFFER_MS = 10 * 60 * 1000;
 // A message about something that went wrong or needs input stays until closed (warn); news
 // and confirmations clear themselves (info).
 function noticeLevel(message) {
@@ -9067,14 +9069,16 @@ export default function App({ sharing = null, userId = null } = {}) {
   // Background warnings (bot results, fuel updates): banners instead of notify() pop-ups,
   // because an open alert freezes the whole tab and stops the email timers.
   const [notices, setNotices] = useState([]);
-  // Info notices clear themselves after 45 seconds; warnings stay until closed (✕).
-  const pushNotice = (text, level = 'warn') => {
+  // Info notices clear themselves after 45 seconds, Undo offers after 10 minutes; warnings stay
+  // until closed (✕). action = { label, run } draws a button (↩ Undo).
+  const pushNotice = (text, level = 'warn', action = null) => {
     const id = `${Date.now()}-${Math.random()}`;
     setNotices(current => [
       ...current.filter(item => item.text !== text),
-      { id, text, level, at: new Date().toISOString() }
+      { id, text, level, action, at: new Date().toISOString() }
     ].slice(-6));
-    if (level === 'info') setTimeout(() => setNotices(current => current.filter(item => item.id !== id)), NOTICE_INFO_MS);
+    const clearAfter = level === 'info' ? NOTICE_INFO_MS : level === 'undo' ? UNDO_OFFER_MS : 0;
+    if (clearAfter) setTimeout(() => setNotices(current => current.filter(item => item.id !== id)), clearAfter);
   };
   // Every message that used to be an notify() pop-up (Daniel 2026-11-27: "fewer pop-ups"): a
   // notice in the corner instead, so nothing waits for an OK click. "Are you sure?" questions
@@ -9085,6 +9089,42 @@ export default function App({ sharing = null, userId = null } = {}) {
     if (typeof __tmsNoticeHook === 'function') __tmsNoticeHook(text);
     pushNotice(text, level);
   }
+
+  // ↩ Undo (src/lib/undo.js): every change to the load lists is compared with the one before;
+  // an account that lost 3+ loads, gained 5+ or was deleted gets a notice with Undo, which puts
+  // that account back exactly as it was. Undo itself is not offered again.
+  const previousOrdersRef = useRef(null);
+  const skipUndoRef = useRef(false);
+  useEffect(() => {
+    const previous = previousOrdersRef.current;
+    previousOrdersRef.current = customerOrdersMap;
+    if (!previous || skipUndoRef.current) {
+      skipUndoRef.current = false;
+      return;
+    }
+    for (const change of findBigListChanges(previous, customerOrdersMap)) {
+      pushNotice(`↩ ${describeListChange(change)}`, 'undo', { label: 'Undo', run: () => undoListChange(change) });
+    }
+  }, [customerOrdersMap]);
+  const undoListChange = change => {
+    const current = customerOrdersMap[change.customer] || [];
+    const reposted = restoredPostedLoads(change, current);
+    // Removals this change queued for the Landstar removal bot and not yet sent: drop them.
+    const restoredIds = new Set((change.before || []).map(load => String(load.id)));
+    writeUnpostQueue(readUnpostQueue().filter(item => !(item.customer === change.customer && restoredIds.has(String(item.loadId)))));
+    skipUndoRef.current = true;
+    setCustomerOrdersMap(prev => {
+      const next = { ...prev };
+      if (change.created) delete next[change.customer];
+      else next[change.customer] = change.before;
+      return next;
+    });
+    if (change.deleted) setBrokers(prev => (prev.includes(change.customer) ? prev : [...prev, change.customer]));
+    if (change.customer === selectedBroker) setSelectedOrder((change.created ? [] : change.before)[0] || null);
+    notify(`↩ Undone: ${change.customer} is back as it was (${(change.before || []).length} loads).`
+      + (reposted.length ? ` ${reposted.length} of them had Landstar postings that this change may have sent for removal: check the board and re-export any that are gone.` : ''),
+      reposted.length ? 'warn' : 'info');
+  };
   // New emails from VIP customers (Heather), shown until dismissed.
   const [vipMessages, setVipMessages] = useState([]);
   const [pastedImage, setPastedImage] = useState(null);
@@ -12140,8 +12180,17 @@ export default function App({ sharing = null, userId = null } = {}) {
             {notices.length > 0 && (
               <div className="fixed right-2 bottom-12 z-50 w-[26rem] max-w-[calc(100vw-1rem)] space-y-2 normal-case tracking-normal text-left">
                 {notices.map(notice => (
-                  <div key={notice.id} role="alert" className={`rounded-lg shadow-2xl border p-2.5 text-xs flex items-start gap-2 ${notice.level === 'info' ? 'bg-sky-950 border-sky-500 text-sky-100' : 'bg-amber-950 border-amber-400 text-amber-100'}`}>
-                    <p className="flex-1 whitespace-pre-wrap">{notice.level === 'info' ? '' : '⚠ '}{notice.text}</p>
+                  <div key={notice.id} role="alert" className={`rounded-lg shadow-2xl border p-2.5 text-xs flex items-start gap-2 ${notice.level === 'info' ? 'bg-sky-950 border-sky-500 text-sky-100' : notice.level === 'undo' ? 'bg-slate-900 border-slate-400 text-slate-100' : 'bg-amber-950 border-amber-400 text-amber-100'}`}>
+                    <p className="flex-1 whitespace-pre-wrap">{['info', 'undo'].includes(notice.level) ? '' : '⚠ '}{notice.text}</p>
+                    {notice.action && (
+                      <button
+                        type="button"
+                        onClick={() => { setNotices(current => current.filter(item => item.id !== notice.id)); notice.action.run(); }}
+                        className="shrink-0 bg-white text-slate-900 hover:bg-slate-200 font-bold px-2 py-0.5 rounded cursor-pointer"
+                      >
+                        {notice.action.label}
+                      </button>
+                    )}
                     <button type="button" onClick={() => setNotices(current => current.filter(item => item.id !== notice.id))} className="text-white/70 hover:text-white font-bold px-1 cursor-pointer" aria-label="Dismiss notice">✕</button>
                   </div>
                 ))}

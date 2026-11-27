@@ -1,0 +1,4 @@
+# Posting codes on Daniel's PC that a teammate may also set up their bot with.
+# Every other code in bot\agent-config.json is refused by a teammate's Setup.
+# SNB: agent SNB is Ivan Lopez (Daniel, 2026-11-27).
+SNB

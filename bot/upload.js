@@ -636,27 +636,48 @@ async function runWatch() {
   console.log(dedicatedRates
     ? 'Posting only: waiting for the dedicated rate worker to prepare each export.'
     : 'Export from the TMS as usual; each new file is rate-checked and uploaded automatically.');
-  console.log('To turn the bot off, close its browser window (or press Ctrl+C here).\n');
+  console.log('To turn the bot off, close THIS window (or press Ctrl+C here). Closing its browser window only reopens it.\n');
 
-  const context = await launchBrowser();
-  let closed = false;
-  // Closing the bot's window turns the bot off. The status server would otherwise keep
-  // this program running and the TMS light would stay green; if the bot is in the middle
-  // of something it gets a few seconds to stop on its own.
-  context.on('close', () => {
-    closed = true;
-    setTimeout(() => {
-      console.log('Bot window closed. Landstar bot: OFF');
-      process.exit(0);
-    }, 5000);
-  });
+  // Closing the bot's Landstar window by mistake used to turn the bot off (agent AAQ,
+  // 2026-11-27): now the window opens again with the same saved sign-in and the bot keeps
+  // going. Only closing this console window (or Ctrl+C) stops it.
+  let stopping = false;
+  let current = null;
   const stop = async () => {
-    closed = true;
-    await context.close().catch(() => {});
+    stopping = true;
+    if (current) await current.close().catch(() => {});
     process.exit(0);
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+  for (let reopenCount = 0; !stopping; reopenCount += 1) {
+    if (reopenCount > 0) {
+      console.log(`[${timeNow()}] The bot's Landstar window was closed: opening it again (close this black window to stop the bot).`);
+      setStatus('signing-in', 'Reopening the bot window');
+      await sleep(3000);
+    }
+    current = await launchBrowser();
+    let windowClosed = false;
+    current.on('close', () => { windowClosed = true; });
+    try {
+      await watchSession(current, () => stopping);
+    } catch (error) {
+      // Closing the window during a sign-in or an upload ends up here: reopen. Anything else
+      // is logged, the window is closed and opened fresh after a short wait.
+      if (stopping) break;
+      if (!windowClosed) {
+        console.error(`[${timeNow()}] The bot stopped on a problem: ${error.message}. Opening a fresh window in 15 seconds.`);
+        await current.close().catch(() => {});
+        await sleep(15000);
+      }
+    }
+  }
+}
+
+// One browser window's worth of watching: returns when that window is closed.
+async function watchSession(context, isStopping) {
+  let closed = false;
+  context.on('close', () => { closed = true; });
 
   const page = await getWorkPage(context);
   // Sign in up front so the TMS light is green before the first export.
@@ -831,8 +852,10 @@ async function runWatch() {
     }
     await sleep(WATCH_INTERVAL_MS);
   }
-  console.log('Bot window closed. Landstar bot: OFF');
-  process.exit(0);
+  if (isStopping()) {
+    console.log('Landstar bot: OFF');
+    process.exit(0);
+  }
 }
 
 Promise.resolve().then(() => {

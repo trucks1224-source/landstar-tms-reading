@@ -2848,10 +2848,27 @@ function getLandstarEquipment2(ord) {
 // AMERI 18347- ATZ (exact account; Daniel 2026-11-27): one posting offers both trailers,
 // Equipment 1 VAN and Equipment 2 REFR, at the same contract rate. A REFR or other
 // alternate picked by hand on the load (equipment2) still wins.
-function getLandstarExportEquipment2(customer, ord) {
+function getLandstarExportEquipment2(customer, ord, postingCode = '') {
   if (isAmeriCustomer(customer) && ord?.equipment2 === undefined
     && getLandstarEquipmentCode(ord?.eCode) === 'VAN') return 'REFR';
+  // Agent AAQ's Phalanx loads post as flatbed only: no Step Deck alternate.
+  if (isFlatbedOnlyPhalanx(customer, postingCode) && ord?.equipment2 === undefined) return '';
   return getLandstarEquipment2(ord);
+}
+
+// Agent AAQ's Phalanx account (Daniel 2026-11-27): imports only the F (flatbed) loads of a list
+// and posts them as FLAT with no Step Deck alternate. Known by the TMS's own posting code (AAQ in
+// My Settings) and an account whose name starts with "Pha" (Pha / Phal / Phalanx), so no other
+// agent's Phalanx account changes (Daniel's Pha 882255 - ATZ is posted under ANQ).
+const FLATBED_ONLY_PHALANX_CODES = new Set(['AAQ']);
+function isFlatbedOnlyPhalanx(customer, postingCode) {
+  return FLATBED_ONLY_PHALANX_CODES.has(String(postingCode || '').trim().toUpperCase())
+    && /^\s*pha(?:l|lanx)?\b/i.test(normalizeCustomerName(customer));
+}
+
+// Is this load a flatbed (F, FLAT, 48/53 ft flatbed)? Step deck and conestoga are not.
+function isFlatbedLoad(load) {
+  return ['FLAT', '48FL', '53FL'].includes(getLandstarEquipmentCode(load?.eCode));
 }
 
 function getLandstarEquipmentCode(value) {
@@ -8205,6 +8222,13 @@ export default function App({ sharing = null, userId = null } = {}) {
           });
         }
 
+        // Agent AAQ's Phalanx account takes only the list's F (flatbed) loads.
+        let skippedNotFlatbed = 0;
+        if (isFlatbedOnlyPhalanx(selectedBroker, profile.postingCode)) {
+          const flatbeds = importedRows.filter(isFlatbedLoad);
+          skippedNotFlatbed = importedRows.length - flatbeds.length;
+          importedRows = flatbeds;
+        }
         // Run ZIP code auto-fill on Excel import rows
         importedRows = autoFillLoadZipCodes(importedRows);
         importedRows = applyRxoPayerBusinessHours(importedRows, selectedBroker);
@@ -8299,6 +8323,7 @@ export default function App({ sharing = null, userId = null } = {}) {
             : '') +
           (duplicatesRemoved > 0 ? `• Skipped duplicates: ${duplicatesRemoved}\n` : '') +
           (skippedEquipmentCount > 0 ? `• Skipped oversized/specialized equipment: ${skippedEquipmentCount}\n` : '') +
+          (skippedNotFlatbed > 0 ? `• Not imported (not F / flatbed; this Phalanx account takes flatbeds only): ${skippedNotFlatbed}\n` : '') +
           (datRateError ? `• DAT rates could not be fetched; enter rates manually. DAT reported: ${datRateError}\n` : '') +
           (excelMileageError ? `• Driving miles could not be calculated for some loads; enter them manually. Google Routes reported: ${excelMileageError}\n` : '') +
           (saved ? '• Status: Saved successfully in browser storage.' : '• Warning: Save failed, check browser storage.')
@@ -10766,7 +10791,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         rowErrors.push('delivery start must be later than pickup start');
       }
       if (!equipment) rowErrors.push('valid equipment');
-      const equipment2 = getLandstarExportEquipment2(selectedBroker, ord);
+      const equipment2 = getLandstarExportEquipment2(selectedBroker, ord, profile.postingCode);
       const equipmentChoices = [equipment, equipment2, ord.equipment3].filter(Boolean);
       if (new Set(equipmentChoices).size !== equipmentChoices.length) rowErrors.push('distinct equipment choices (remove duplicate alternates)');
       if (equipment === 'D-LG' && equipmentChoices.includes('D-ST')) rowErrors.push('liftgate-required loads cannot offer D-ST as an alternate');
@@ -12825,7 +12850,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                   </select>
                   {[2, 3].map(slot => {
                     const field = `equipment${slot}`;
-                    const value = slot === 2 ? getLandstarExportEquipment2(selectedBroker, selectedOrder) : selectedOrder.equipment3 || '';
+                    const value = slot === 2 ? getLandstarExportEquipment2(selectedBroker, selectedOrder, profile.postingCode) : selectedOrder.equipment3 || '';
                     const choices = [...new Map(equipmentOptions.map(([code, label]) => [getLandstarEquipmentCode(code), label])).entries()];
                     return (
                       <div key={field} className="mt-2">
@@ -12837,7 +12862,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                           {value && !choices.some(([code]) => code === value) && <option value={value}>{value}</option>}
                           {choices.filter(([code]) => code && code !== getLandstarEquipmentCode(selectedOrder.eCode)
                             && !(getLandstarEquipmentCode(selectedOrder.eCode) === 'D-LG' && code === 'D-ST')
-                            && (slot === 2 || code !== getLandstarExportEquipment2(selectedBroker, selectedOrder)))
+                            && (slot === 2 || code !== getLandstarExportEquipment2(selectedBroker, selectedOrder, profile.postingCode)))
                             .map(([code, label]) => <option key={code} value={code}>{code} - {label}</option>)}
                         </select>
                       </div>

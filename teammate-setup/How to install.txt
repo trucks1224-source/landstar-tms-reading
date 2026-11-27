@@ -27,7 +27,11 @@ Use it:
    two and moves each file to Downloads\landstar-uploaded.
 
 Leave the black bot window open while you work. To turn the bot off, close
-the bot's browser window.
+that black window. If you close the bot's Landstar browser window by mistake,
+it opens again by itself and the bot keeps posting.
+
+Exports saved to your Desktop instead of Downloads are picked up too (only
+ones saved in the last 12 hours).
 
 Updating: when you get a new zip, extract it and run Setup again. Your
 posting code and Landstar sign-in are kept.

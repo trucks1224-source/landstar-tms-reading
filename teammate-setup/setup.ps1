@@ -101,7 +101,7 @@ cd /d "%~dp0"
 echo Starting the Landstar bot...
 echo It watches your Downloads folder for TMS exports and posts them to Landstar.
 echo Sign in to Landstar in the bot's browser window the first time.
-echo Leave this window open while you work. Close the bot's browser window to turn it off.
+echo Leave this window open while you work. Close THIS window to turn the bot off (closing its browser window just reopens it).
 echo.
 node upload.js --watch --no-hazmat-watch
 echo.

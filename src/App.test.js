@@ -63,7 +63,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
-  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, noticeLevel, getLoadCardFacts, getLoadUrgency, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
+  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, noticeLevel, getLoadCardFacts, getLoadUrgency, isFlatbedOnlyPhalanx, isFlatbedLoad, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
@@ -2265,6 +2265,24 @@ test('pop-up messages become notices: problems stay, news clears itself', () => 
   for (const message of ['📂 Excel Import Complete for Para 1522166 - ATZ:', '🔥 12 hot lanes saved from 189 loads booked by other agents.', '2 spreadsheets were created (up to 100 loads each).']) {
     assert.equal(policy.noticeLevel(message), 'info', message);
   }
+});
+
+test("agent AAQ's Phalanx account: only F loads, posted as flatbed with no Step Deck", () => {
+  assert.equal(policy.isFlatbedOnlyPhalanx('Phal 123456 - AAQ', 'AAQ'), true);
+  assert.equal(policy.isFlatbedOnlyPhalanx('Phalanx Logistics', ' aaq '), true);
+  assert.equal(policy.isFlatbedOnlyPhalanx('Pha 882255 - ATZ', 'AAQ'), true, 'any Phalanx account in the AAQ TMS');
+  assert.equal(policy.isFlatbedOnlyPhalanx('Pha 882255 - ATZ', 'ANQ'), false, "Daniel's Phalanx account is unchanged");
+  assert.equal(policy.isFlatbedOnlyPhalanx('R X O 2429200 - ATZ F', 'AAQ'), false, 'only Phalanx accounts');
+  assert.equal(policy.isFlatbedOnlyPhalanx('Paramount', 'AAQ'), false);
+
+  assert.equal(policy.isFlatbedLoad({ eCode: 'F' }), true);
+  assert.equal(policy.isFlatbedLoad({ eCode: 'FLAT' }), true);
+  assert.equal(policy.isFlatbedLoad({ eCode: 'V' }), false);
+  assert.equal(policy.isFlatbedLoad({ eCode: 'SD' }), false, 'step deck is not a flatbed');
+
+  assert.equal(policy.getLandstarExportEquipment2('Phal 123456 - AAQ', { eCode: 'F' }, 'AAQ'), '', 'flatbed only');
+  assert.equal(policy.getLandstarExportEquipment2('Pha 882255 - ATZ', { eCode: 'F' }, 'ANQ'), 'STEP', 'others keep the Step Deck alternate');
+  assert.equal(policy.getLandstarExportEquipment2('Phal 123456 - AAQ', { eCode: 'F', equipment2: 'STEP' }, 'AAQ'), 'STEP', 'a Step Deck picked by hand stays');
 });
 
 test('a Phalanx list with no header row and row numbers in front still imports its rates', async () => {

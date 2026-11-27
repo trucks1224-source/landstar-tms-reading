@@ -17,6 +17,7 @@ import {
 } from './lib/trackingEmails.js';
 import Prospects from './Prospects.jsx';
 import ChOffers from './ChOffers.jsx';
+import { ProblemBanner, TodayPanel } from './TodayPanel.jsx';
 import { chOfferToTmsLoad, getTodaysExportedLanes, CH_TMS_ACCOUNT } from './lib/chOffers.js';
 import { parseChatLoadMessage, chatLoadAccount, chatLoadToTmsLoad } from './lib/chatLoads.js';
 import automationPolicy from '../bot/automation-policy.json';
@@ -9139,6 +9140,25 @@ export default function App({ sharing = null, userId = null } = {}) {
     if (customer !== selectedBroker) handleSelectBroker(customer);
     setPendingChatSheet({ file: sheet.file, customer });
   };
+  // 🚨 / 📅 What the bots did today and what needs Daniel (GET /api/today, bot/today.js),
+  // checked every 30 seconds on the bot PC only (the website has no bots to ask).
+  const [today, setToday] = useState(null);
+  useEffect(() => {
+    if (!canStartBotHere()) return undefined;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const response = await fetch('/api/today');
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!cancelled) setToday(data);
+      } catch { /* try again next time */ }
+    };
+    void load();
+    const timer = setInterval(load, 30 * 1000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
   // After a chat list for an auto-export account is imported (and its loads selected), the
   // next render exports them; set to the account name until then.
   const [autoExportFor, setAutoExportFor] = useState('');
@@ -11210,6 +11230,7 @@ export default function App({ sharing = null, userId = null } = {}) {
 
   return (
     <div className="tms-shell flex flex-col md:flex-row min-h-screen md:h-screen text-white overflow-x-hidden md:overflow-hidden font-sans">
+      <ProblemBanner problems={today?.problems || []} />
       <TruckLights />
       {/* Left Sidebar - Order List */}
       <div className="tms-sidebar w-full md:w-96 border-b md:border-b-0 md:border-r border-[#1c2541] flex flex-col">
@@ -12081,6 +12102,12 @@ export default function App({ sharing = null, userId = null } = {}) {
             {!sharing && <BotStatusLight />}
             <EmailWorkerStatus store={emailWorkerStatusStore} drafts={paramountDrafts} />
             {/* Signed in or not: only the TMS on this PC has bots to check. */}
+            <TodayPanel
+              today={today}
+              ordersMap={customerOrdersMap}
+              isHotLane={load => Boolean(getHotLane(load, hotLanes))}
+              onOpenAccount={name => { handleSelectBroker(name); setView('loads'); }}
+            />
             {canStartBotHere() && <SystemCheck emailStore={emailWorkerStatusStore} />}
             {!sharing && (
             <button

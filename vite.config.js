@@ -20,6 +20,7 @@ const { buildHealthReport, readWatchdogStatus, readEmailBotStatus, postingBotFro
 const { sendOnce, SEND_ACTIONS, markEmailSkipped, settleUnknownEmail, listUnknownEmails } = createRequire(import.meta.url)('./bot/email-record.js')
 const { readBotControl, writeBotControl } = createRequire(import.meta.url)('./bot/local-bot-control.js')
 const chatInbox = createRequire(import.meta.url)('./bot/chat-inbox.js')
+const { readToday } = createRequire(import.meta.url)('./bot/today.js')
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -149,6 +150,31 @@ export default defineConfig(({ mode }) => {
               res.end(JSON.stringify({ error: 'Use GET, or POST /done.' }))
             } catch (error) {
               res.statusCode = 404
+              res.end(JSON.stringify({ error: error.message }))
+            }
+          })
+          // Today panel and the red problem banner (bot/today.js): what the bots did today and
+          // what needs Daniel now, with the system check's rows folded in.
+          server.middlewares.use('/api/today', async (req, res) => {
+            res.setHeader('Content-Type', 'application/json')
+            res.setHeader('Cache-Control', 'no-store')
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              res.statusCode = 403
+              return res.end(JSON.stringify({ error: 'Only the local TMS can read today\'s activity.' }))
+            }
+            let health = null
+            try {
+              const port = server.config.server.port || 5173
+              const response = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(5000) })
+              if (response.ok) health = await response.json()
+            } catch { /* no system check this time */ }
+            let chatBot = null
+            try { if (chatInbox.readChatConfig().enabled) chatBot = chatInbox.readChatStatus() } catch { /* off */ }
+            try {
+              res.end(JSON.stringify(readToday({ health, chatBot })))
+            } catch (error) {
+              res.statusCode = 500
               res.end(JSON.stringify({ error: error.message }))
             }
           })

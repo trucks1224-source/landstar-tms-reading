@@ -126,6 +126,35 @@ function uploadSpreadsheetButton(page) {
   return page.locator(UPLOAD_BUTTON_SELECTOR).first();
 }
 
+// Is Landstar's page still loading? A spinner or progress bar on screen (Angular Material, or
+// any role="progressbar").
+const LOADING_SELECTOR = 'mat-spinner, mat-progress-spinner, mat-progress-bar, .mat-mdc-progress-spinner, .mat-progress-spinner, [role="progressbar"], .spinner, .loader, .loading-indicator';
+async function bulkPostingsLoading(page) {
+  return page.evaluate(selector => Array.from(document.querySelectorAll(selector)).some(element => {
+    const box = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return box.width > 0 && box.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) !== 0;
+  }), LOADING_SELECTOR).catch(() => false);
+}
+
+// Waits until Bulk Postings has finished loading: no spinner on screen and the network quiet,
+// checked twice a few seconds apart (Landstar shows the spinner again between requests).
+// Gives up after timeoutMs. Returns { ready, waitedMs }.
+async function waitForBulkPostingsReady(page, timeoutMs) {
+  const started = Date.now();
+  let calmChecks = 0;
+  while (Date.now() - started < timeoutMs) {
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+    const loading = await bulkPostingsLoading(page);
+    const button = await uploadSpreadsheetButton(page).isVisible().catch(() => false);
+    const input = Boolean(await page.$('input[type=file]').catch(() => null));
+    calmChecks = !loading && (button || input) ? calmChecks + 1 : 0;
+    if (calmChecks >= 2) return { ready: true, waitedMs: Date.now() - started };
+    await page.waitForTimeout(2500);
+  }
+  return { ready: false, waitedMs: Date.now() - started };
+}
+
 // What the bot sees on Bulk Postings when the upload window will not open (for the log).
 async function describeUploadButtons(page) {
   return page.evaluate(() => Array.from(document.querySelectorAll('button'))
@@ -244,29 +273,39 @@ async function uploadOne(page, filePath) {
   //  - Has postings: an "Upload Spreadsheet" button that opens a modal.
   // After each upload the page re-renders, so always re-query for a fresh,
   // attached file input; only click the button if none is present.
+  // Right after a Landstar sign-in, Bulk Postings loads every posting (about 1,000) behind a
+  // spinner, and Upload Spreadsheet does nothing until that is done. On a slow Landstar day
+  // that took 20+ minutes (2026-11-27, 8:41 and 10:34 AM): the bot clicked during the load,
+  // reloaded the page halfway (which started the load over) and failed every file. So: wait
+  // for the page to finish loading before each click, and reload only as a last resort.
   let fileInput = null;
-  for (let attempt = 0; attempt < 5 && !fileInput; attempt++) {
+  for (let attempt = 0; attempt < 4 && !fileInput; attempt++) {
     // A window left over from the previous file (e.g. "10 of 12 Loads were successfully
     // created", which that file was already flagged for) covers the page and blocks the
-    // Upload Spreadsheet button: close it first. Halfway through, reload Bulk Postings.
+    // Upload Spreadsheet button: close it first.
     await closeLeftoverDialogs(page);
-    if (attempt === 2) {
+    if (attempt === 3) {
+      console.log('    Bulk Postings still does not open the upload window: reloading it.');
       await page.goto(BULK_POSTINGS_URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
-      await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+    }
+    const ready = await waitForBulkPostingsReady(page, attempt === 3 ? 4 * 60 * 1000 : 2 * 60 * 1000);
+    if (ready.waitedMs > 15000) {
+      console.log(`    Waited ${Math.round(ready.waitedMs / 1000)}s for Bulk Postings to finish loading${ready.ready ? '' : ' (still loading)'}.`);
     }
     fileInput = await page.$('input[type=file]');
     if (fileInput) break;
     // No input yet: click the Upload Spreadsheet button to open the modal.
     await uploadSpreadsheetButton(page).click({ timeout: 10000 }).catch(() => {});
     try {
-      fileInput = await page.waitForSelector('input[type=file]', { state: 'attached', timeout: 8000 });
+      fileInput = await page.waitForSelector('input[type=file]', { state: 'attached', timeout: 15000 });
     } catch {
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(3000);
     }
   }
   if (!fileInput) {
     // Nothing was attached, so Landstar never received this file: it can safely be tried again.
     console.log(`    Upload buttons on Bulk Postings: ${await describeUploadButtons(page)}`);
+    console.log(`    Page still loading: ${await bulkPostingsLoading(page) ? 'yes (spinner on screen)' : 'no'}`);
     const error = new Error('Landstar\'s upload window did not open (no file input). The file was NOT sent.');
     error.notSubmitted = true;
     throw error;

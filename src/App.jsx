@@ -1922,6 +1922,7 @@ function moveCustomer(list, name, targetName) {
 }
 
 const customerDragType = 'text/x-tms-customer';
+const accountTabDragType = 'text/x-tms-account-tab';
 
 // Sort choices for the load list ('' = pickup date, earliest first).
 const LANE_SORT_CHOICES = [
@@ -4790,7 +4791,7 @@ export default function App({ sharing = null, userId = null } = {}) {
 
   const renderCopyableField = (label, field) => (
     <div className="min-w-0">
-      <label className="text-xs text-gray-400 block mb-1">{label}</label>
+      <button type="button" onClick={() => copyToClipboard(selectedOrder[field] || '', label)} aria-label={`Copy ${label}`} title={`Click to copy the ${label.toLowerCase()}`} className="tms-copy-label">{label}<span aria-hidden="true">⧉</span></button>
       <div className="flex gap-1">
         <input
           type="text"
@@ -4811,15 +4812,6 @@ export default function App({ sharing = null, userId = null } = {}) {
             ))}
           </datalist>
         )}
-        <button
-          type="button"
-          onClick={() => copyToClipboard(selectedOrder[field] || '', label)}
-          aria-label={`Copy ${label}`}
-          title={`Copy ${label}`}
-          className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2 rounded text-[11px] cursor-pointer"
-        >
-          📋
-        </button>
       </div>
     </div>
   );
@@ -8423,6 +8415,8 @@ export default function App({ sharing = null, userId = null } = {}) {
   const [showImportMenu, setShowImportMenu] = useState(false);
   const [showDataMenu, setShowDataMenu] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
+  const [showPostingDetails, setShowPostingDetails] = useState(false);
+  const [openSchedulePickers, setOpenSchedulePickers] = useState({});
   const shortcutActions = useRef({});
   shortcutActions.current = {
     move(step) {
@@ -8844,6 +8838,33 @@ export default function App({ sharing = null, userId = null } = {}) {
                               title={sharedCustomers[member.name] ? `${member.name} (shared with teammates)` : member.name}
                               className="tms-account-tab"
                               data-kind={accountTagKind(member.tag)}
+                              // Drag a tab onto another tab in the same row to change their order
+                              // (Daniel 2026-11-27: "make it organizable").
+                              draggable
+                              onDragStart={event => {
+                                event.stopPropagation();
+                                event.dataTransfer.setData(accountTabDragType, member.name);
+                                event.dataTransfer.effectAllowed = 'move';
+                                event.currentTarget.classList.add('is-dragging');
+                              }}
+                              onDragEnd={event => event.currentTarget.classList.remove('is-dragging')}
+                              onDragOver={event => {
+                                if (![...event.dataTransfer.types].includes(accountTabDragType)) return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                event.currentTarget.classList.add('is-drop-target');
+                              }}
+                              onDragLeave={event => event.currentTarget.classList.remove('is-drop-target')}
+                              onDrop={event => {
+                                if (![...event.dataTransfer.types].includes(accountTabDragType)) return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                event.currentTarget.classList.remove('is-drop-target');
+                                const dragged = event.dataTransfer.getData(accountTabDragType);
+                                if (dragged && dragged !== member.name && names.includes(dragged)) {
+                                  setBrokers(current => moveCustomer(current, dragged, member.name));
+                                }
+                              }}
                             >
                               {member.tag}{sharedCustomers[member.name] && <span className="tms-shared-dot" aria-label="shared" />}
                             </button>
@@ -8978,8 +8999,8 @@ export default function App({ sharing = null, userId = null } = {}) {
                     setView('loads');
                   }
                 }}
-                title={tab === 'BOOKED' ? 'Open the Booked Loads page: every load with a driver, all customers' : tab === 'OFFER' ? 'Show offers across all customers' : undefined}
-                aria-pressed={tab !== 'BOOKED' && filter === tab}
+                title={tab === 'BOOKED' ? 'Billing: booked loads (every load with a driver, all customers) and the bookings report' : tab === 'OFFER' ? 'Show offers across all customers' : undefined}
+                aria-pressed={tab === 'BOOKED' ? view === 'booked' || view === 'report' : view === 'loads' && filter === tab}
                 data-status={tab.replace(' ', '-')}
                 className="tms-status-tab"
               >
@@ -9137,15 +9158,6 @@ export default function App({ sharing = null, userId = null } = {}) {
               </select>
             </div>
             <div className="tms-filter-line tms-filter-actions">
-              <button
-                type="button"
-                onClick={() => setView('report')}
-                title="Weekly and monthly booking totals: loads booked, per customer, and total line haul"
-                className="tms-slim-btn"
-                data-tone="sky"
-              >
-                Bookings report
-              </button>
               <button
                 type="button"
                 onClick={handleClearAllFilters}
@@ -9908,6 +9920,19 @@ export default function App({ sharing = null, userId = null } = {}) {
             </div>
           );
         })()}
+        {/* Billing in one place (Daniel 2026-11-27: "integrate the booked button and the bookings
+            report"): BOOKED opens these two tabs. */}
+        {(view === 'booked' || view === 'report') && (
+          <div className="tms-billing-tabs" role="tablist" aria-label="Billing">
+            <span className="tms-filter-label">Billing</span>
+            <button type="button" role="tab" aria-selected={view === 'booked'} aria-pressed={view === 'booked'} onClick={() => setView('booked')} className="tms-slim-btn" data-tone="violet">
+              Booked loads ({allBookedCount})
+            </button>
+            <button type="button" role="tab" aria-selected={view === 'report'} aria-pressed={view === 'report'} onClick={() => setView('report')} className="tms-slim-btn" data-tone="sky">
+              Bookings report
+            </button>
+          </div>
+        )}
         {view === 'report' ? (
           <BookingsReportPage onBack={() => setView('loads')} fuelRates={profile.fuelSurcharge} />
         ) : view === 'booked' ? (
@@ -9960,9 +9985,9 @@ export default function App({ sharing = null, userId = null } = {}) {
                 <button
                   onClick={() => copyToClipboard(formatOrderCopy(selectedOrder), 'Order #')}
                   title={String(selectedOrder.emptyLocation || '').trim() ? 'Copy the order # and previous empty location' : 'Copy the order #'}
-                  className="bg-slate-700 hover:bg-slate-600 text-white text-xs px-2.5 py-1 rounded font-medium flex items-center space-x-1 cursor-pointer"
+                  className="tms-head-btn bg-slate-700 hover:bg-slate-600 text-white cursor-pointer"
                 >
-                  <span>📋 Copy Order #</span>
+                  <span>Copy Order #</span>
                 </button>
               </div>
               <div className="flex items-center gap-2">
@@ -9977,16 +10002,16 @@ export default function App({ sharing = null, userId = null } = {}) {
                   type="button"
                   onClick={handleCopyLoad}
                   title="Create a new load with this load's details (route, schedule, weight, miles, rate, comments). The copy starts OPEN with no driver."
-                  className="bg-slate-700 hover:bg-slate-600 text-white px-3 py-1 rounded text-xs font-semibold transition-colors cursor-pointer"
+                  className="tms-head-btn bg-slate-700 hover:bg-slate-600 text-white cursor-pointer"
                 >
-                  📄 Copy Load
+                  Copy Load
                 </button>
                 {selectedOrder.landstarPosting && (
                   <button
                     type="button"
                     onClick={handleCoveredRemove}
                     title="The customer covered this load. The local bot takes its posting off the Landstar board and the load is deleted from the TMS so it is not posted again."
-                    className="bg-orange-600 hover:bg-orange-500 text-white px-3 py-1 rounded text-xs font-semibold transition-colors cursor-pointer"
+                    className="tms-head-btn bg-orange-600 hover:bg-orange-500 text-white cursor-pointer"
                   >
                     🚫 Covered — Remove from Landstar
                   </button>
@@ -10000,7 +10025,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                       onClick={() => handleRemoveFromDat(selectedOrder)}
                       disabled={datBusy}
                       title={`On DAT since ${time(datPosting.firstPostedAt || datPosting.postedAt)}, last reposted ${time(datPosting.postedAt)}${datPosting.lastError ? `. Last repost failed: ${datPosting.lastError}` : ''}. Click to take it off DAT.`}
-                      className={`${datPosting.lastError ? 'bg-amber-600 hover:bg-amber-500' : 'bg-sky-700 hover:bg-sky-600'} disabled:opacity-50 text-white px-3 py-1 rounded text-xs font-semibold transition-colors cursor-pointer`}
+                      className={`${datPosting.lastError ? 'bg-amber-600 hover:bg-amber-500' : 'bg-sky-700 hover:bg-sky-600'} disabled:opacity-50 text-white cursor-pointer tms-head-btn`}
                     >
                       📡 On DAT · reposted {time(datPosting.postedAt)} — Remove
                     </button>
@@ -10010,62 +10035,113 @@ export default function App({ sharing = null, userId = null } = {}) {
                       onClick={() => postLoadsToDat([selectedOrder])}
                       disabled={datBusy}
                       title="Post this load to the DAT load board; the TMS server reposts it every 5 minutes."
-                      className="bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white px-3 py-1 rounded text-xs font-semibold transition-colors cursor-pointer"
+                      className="tms-head-btn bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white cursor-pointer"
                     >
-                      📡 Post to DAT
+                      Post to DAT
                     </button>
                   );
                 })()}
                 <button
                   type="button"
                   onClick={handleDelete}
-                  className="bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded text-xs font-semibold transition-colors cursor-pointer"
+                  className="tms-head-btn tms-head-delete bg-red-600 hover:bg-red-500 text-white cursor-pointer"
                 >
                   Delete Load
                 </button>
               </div>
             </div>
 
-            <div className="tms-load-details space-y-4 bg-[#161f36]/40 p-5 rounded-xl border border-[#1c2541]">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">ORDER #</label>
-                  <div className="flex gap-1">
-                    <input type="text" value={String(selectedOrder.id).startsWith('MANUAL-') ? '' : selectedOrder.id} placeholder="Optional order number" onChange={(e) => handleFieldChange('id', e.target.value || selectedOrder.id)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white outline-none" />
-                    <button
-                      type="button"
-                      onClick={() => copyToClipboard(selectedOrder.id, 'Order #')}
-                      title="Copy Order #"
-                      className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer"
-                    >
-                      📋
-                    </button>
+            <div className="tms-load-details space-y-3 bg-[#161f36]/40 p-4 rounded-xl border border-[#1c2541]">
+              {/* Load at a glance (Daniel 2026-11-27: "more efficient for my work"): the lane, day,
+                  equipment and the money on one line, so most loads need no scrolling. */}
+              {(() => {
+                const rate = Number(String(selectedOrder.rateInput || '').replace(/[$,]/g, '')) || 0;
+                const rpm = getRatePerMile(rate || '', selectedOrder.miles);
+                const fscRate = getFuelSurchargeRate(profile.fuelSurcharge, selectedOrder.origSt);
+                const miles = Number(String(selectedOrder.miles || '').replace(/,/g, '').match(/\d+(?:\.\d+)?/)?.[0]) || 0;
+                const fsc = fscRate && miles ? fscRate * miles : 0;
+                const place = (city, st) => [city, st].filter(Boolean).join(', ') || '—';
+                return (
+                  <div className="tms-load-summary" aria-label="Load summary">
+                    <div className="tms-summary-lane">
+                      <span>{place(selectedOrder.origCity, selectedOrder.origSt)}</span>
+                      <span className="tms-summary-arrow" aria-hidden="true">→</span>
+                      <span>{place(selectedOrder.destCity, selectedOrder.destSt)}</span>
+                    </div>
+                    <div className="tms-summary-facts">
+                      {selectedOrder.miles && <span>{selectedOrder.miles} mi</span>}
+                      {selectedOrder.pickupTime && <span>PU {selectedOrder.pickupTime}</span>}
+                      {selectedOrder.eCode && <span>{getEquipmentDescription(selectedOrder.eCode) || selectedOrder.eCode}</span>}
+                      {selectedOrder.weight && <span>{selectedOrder.weight}</span>}
+                    </div>
+                    <div className="tms-summary-money">
+                      <span className="tms-summary-rate">{rate ? formatDollars(rate) : 'No rate'}</span>
+                      {rpm && <span>${rpm}/mi</span>}
+                      {rate > 0 && fsc > 0 && <span>Linehaul {formatDollars(rate - fsc)}</span>}
+                      {fsc > 0 && <span>Fuel {formatDollars(fsc)}</span>}
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">VISIBILITY GROUP</label>
-                  <input type="text" value={profile.visibilityGroup} placeholder="Set in ⚙ My Settings" readOnly title="Change in ⚙ My Settings" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono placeholder-amber-400" />
-                </div>
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">EQUIPMENT</label>
-                  {String(selectedOrder.eCode || '').trim().toUpperCase() === 'VE' && (
-                    <>
-                      <input type="text" value="VAN" readOnly aria-label="Mapped equipment" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
-                      <label className="text-xs text-gray-400 block mt-2 mb-1">SOURCE EQUIPMENT CODE (VE = VAN / CHEM)</label>
-                    </>
-                  )}
-                  <label htmlFor="load-equipment-primary" className="text-xs text-gray-400 block mb-1">Primary equipment</label>
-                  <select id="load-equipment-primary" value={selectedOrder.eCode || ''}
-                    onChange={event => {
-                      saveLoad({ ...selectedOrder, eCode: event.target.value, equipment2: undefined, equipment3: '' });
-                    }}
-                    className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white">
-                    <option value="">Select equipment</option>
-                    {selectedOrder.eCode && !equipmentOptions.some(([code]) => code === selectedOrder.eCode) && (
-                      <option value={selectedOrder.eCode}>{selectedOrder.eCode} - {getEquipmentDescription(selectedOrder.eCode)}</option>
+                );
+              })()}
+
+              {/* Rarely changed posting settings, folded into one line (open it to edit). */}
+              <div className="tms-posting-row">
+                <button
+                  type="button"
+                  onClick={() => setShowPostingDetails(open => !open)}
+                  aria-expanded={showPostingDetails || String(selectedOrder.id).startsWith('MANUAL-')}
+                  className="tms-posting-toggle"
+                >
+                  <span className="tms-detail-label">Posting</span>
+                  <span className="tms-posting-facts">
+                    {String(selectedOrder.id).startsWith('MANUAL-') ? 'Order # not set' : `Order ${selectedOrder.id}`}
+                    {' · '}Code {selectedOrder.postingCode || profile.postingCode || '—'}
+                    {' · '}Group {profile.visibilityGroup || '—'}
+                    {' · '}{getLandstarBrokerable(selectedBroker, selectedOrder) === 'Y' ? 'Brokerable' : 'Not brokerable'}
+                    {' · '}Alt equipment {[getLandstarExportEquipment2(selectedBroker, selectedOrder, profile.postingCode, getCustomerRules(profile.customerRules, selectedBroker)), selectedOrder.equipment3].filter(Boolean).join(', ') || 'none'}
+                  </span>
+                  <span className="tms-caret" aria-hidden="true">▾</span>
+                </button>
+                <div className={showPostingDetails || String(selectedOrder.id).startsWith('MANUAL-') ? 'tms-posting-fields' : 'hidden'}>
+                  <div>
+                    <button type="button" onClick={() => copyToClipboard(selectedOrder.id, 'Order #')} title="Click to copy the order #" className="tms-copy-label">Order #<span aria-hidden="true">⧉</span></button>
+                    <input type="text" value={String(selectedOrder.id).startsWith('MANUAL-') ? '' : selectedOrder.id} placeholder="Optional order number" onChange={(e) => handleFieldChange('id', e.target.value || selectedOrder.id)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white outline-none" />
+                  </div>
+                  <div>
+                    <label className="tms-detail-label">Visibility group</label>
+                    <input type="text" value={profile.visibilityGroup} placeholder="Set in ⚙ My Settings" readOnly title="Change in ⚙ My Settings" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono placeholder-amber-400" />
+                  </div>
+                  <div>
+                    <label className="tms-detail-label">Posting code</label>
+                  <input
+                    type="text"
+                    value={selectedOrder.postingCode || profile.postingCode}
+                    placeholder="Set in ⚙ My Settings"
+                    onChange={(e) => handleFieldChange('postingCode', e.target.value)}
+                    className="w-full bg-[#0b132b] border border-emerald-500/60 rounded p-2 text-sm text-white font-mono"
+                  />
+                  </div>
+                  <div>
+                    <span className="tms-detail-label">Brokerable</span>
+                    {isAmeriCustomer(selectedBroker) ? (
+                      <span className="tms-switch" data-on={AMERI_BROKERABLE === 'Y'} title={`AMERI 18347- ATZ loads always export with Brokerable ${AMERI_BROKERABLE} and no Carrier Amt`}>
+                        {AMERI_BROKERABLE === 'Y' ? 'Yes (always for AMERI)' : 'No (always for AMERI)'}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={String(selectedOrder.brokerable || 'false').trim().toLowerCase() === 'true'}
+                        onClick={() => handleFieldChange('brokerable', String(selectedOrder.brokerable || 'false').trim().toLowerCase() === 'true' ? 'false' : 'true')}
+                        className="tms-switch"
+                        data-on={String(selectedOrder.brokerable || 'false').trim().toLowerCase() === 'true'}
+                      >
+                        <span className="tms-switch-knob" aria-hidden="true" />
+                        {String(selectedOrder.brokerable || 'false').trim().toLowerCase() === 'true' ? 'Yes' : 'No'}
+                      </button>
                     )}
-                    {equipmentOptions.map(([code, label]) => <option key={code} value={code}>{code} - {label}</option>)}
-                  </select>
+                  </div>
+                  <div className="tms-posting-alts">
                   {[2, 3].map(slot => {
                     const field = `equipment${slot}`;
                     const value = slot === 2 ? getLandstarExportEquipment2(selectedBroker, selectedOrder, profile.postingCode, getCustomerRules(profile.customerRules, selectedBroker)) : selectedOrder.equipment3 || '';
@@ -10086,112 +10162,120 @@ export default function App({ sharing = null, userId = null } = {}) {
                       </div>
                     );
                   })}
-                  <div className="text-[11px] text-emerald-400 mt-1 font-mono">{getEquipmentDescription(selectedOrder.eCode)}</div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Brokerable (true / false)</label>
-                  {isAmeriCustomer(selectedBroker) ? (
-                    <input type="text" value={AMERI_BROKERABLE === 'Y' ? 'true (always for AMERI)' : 'false (always for AMERI)'} readOnly title={`AMERI 18347- ATZ loads always export with Brokerable ${AMERI_BROKERABLE} and no Carrier Amt`} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-gray-400 font-mono" />
-                  ) : (
-                    <input type="text" value={selectedOrder.brokerable || 'false'} onChange={(e) => handleFieldChange('brokerable', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono" placeholder="false" />
-                  )}
-                </div>
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">POSTING CODE</label>
-                  <input
-                    type="text"
-                    value={selectedOrder.postingCode || profile.postingCode}
-                    placeholder="Set in ⚙ My Settings"
-                    onChange={(e) => handleFieldChange('postingCode', e.target.value)}
-                    className="w-full bg-[#0b132b] border border-emerald-500/60 rounded p-2 text-sm text-white font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="border border-[#1c2541] bg-[#121829]/60 p-4 rounded-lg">
-                <div className="mb-3">
-                  <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wide flex items-center">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 mr-2"></span> Pickup Details
-                  </h3>
-                </div>
-               
-                <div className="mb-3">
-                  <label className="text-xs text-gray-400 block mb-1">Pickup Time (Early - Late)</label>
-                  <input
-                    type="text"
-                    value={selectedOrder.pickupTime || ''}
-                    onChange={(e) => handleFieldChange('pickupTime', e.target.value)}
-                    className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
-                  />
-                  {renderSchedulePicker('pickupTime')}
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
-                  {renderCopyableField('Origin City', 'origCity')}
-                  {renderCopyableField('Origin State', 'origSt')}
-                  {renderCopyableField('Origin ZIP', 'origZip')}
-                </div>
-               
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-xs text-gray-400 block mb-1">Weight</label>
-                    <div className="flex space-x-2">
-                      <input type="text" value={selectedOrder.weight} onChange={(e) => handleFieldChange('weight', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-xs text-white" />
-                      <button onClick={() => copyToClipboard(selectedOrder.weight, 'Weight')} className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-xs cursor-pointer">📋 Copy</button>
-                    </div>
                   </div>
                 </div>
               </div>
 
-              <div className="border border-[#1c2541] bg-[#121829]/60 p-4 rounded-lg">
-                <div className="mb-3">
-                  <h3 className="text-xs font-bold text-blue-400 uppercase tracking-wide flex items-center">
-                    <span className="w-2 h-2 rounded-full bg-blue-400 mr-2"></span> Delivery Details
-                  </h3>
-                </div>
-
-                <div className="mb-3">
-                  <label className="text-xs text-gray-400 block mb-1">Delivery Time (Early - Late)</label>
-                  <input
-                    type="text"
-                    value={selectedOrder.deliveryTime || ''}
-                    placeholder={isNolanCustomer(selectedBroker) ? 'MM/DD/YY 08:00  MM/DD/YY 16:00' : ''}
-                    onChange={(e) => handleFieldChange('deliveryTime', e.target.value)}
-                    className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
-                  />
-                  {renderSchedulePicker('deliveryTime')}
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
-                  {renderCopyableField('Destination City', 'destCity')}
-                  {renderCopyableField('Destination State', 'destSt')}
-                  {renderCopyableField('Destination ZIP', 'destZip')}
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <div>
-                    <label className="text-xs text-gray-400 block mb-1">Miles</label>
-                    <div className="flex space-x-2">
-                      <input type="text" value={selectedOrder.miles} onChange={(e) => handleFieldChange('miles', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-xs text-white" />
-                      <button onClick={() => copyToClipboard(selectedOrder.miles, 'Miles')} className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-xs cursor-pointer">📋 Copy</button>
+              {/* Pickup, delivery, and rate and equipment side by side */}
+              <div className="tms-detail-columns">
+                <div className="tms-detail-card" data-kind="pickup">
+                  <h3 className="tms-detail-title"><span aria-hidden="true" />Pickup</h3>
+                  <div className="tms-stop-time">
+                    <label className="tms-detail-label">Pickup time (early - late)</label>
+                    <div className="flex gap-1">
+                      <input
+                        type="text"
+                        aria-label="Pickup time (early - late)"
+                        value={selectedOrder.pickupTime || ''}
+                        onChange={(e) => handleFieldChange('pickupTime', e.target.value)}
+                        className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setOpenSchedulePickers(current => ({ ...current, pickupTime: !current.pickupTime }))}
+                        aria-expanded={Boolean(openSchedulePickers.pickupTime)}
+                        title="Pick the dates and times on a calendar"
+                        className="tms-slim-btn shrink-0"
+                        data-tone="violet"
+                      >
+                        Calendar
+                      </button>
                     </div>
-                    <p className="text-[10px] text-gray-400 mt-1">Driving miles calculate automatically from pickup and delivery city/state. ZIP codes are not required. You can override miles.</p>
+                    <div className={openSchedulePickers.pickupTime ? '' : 'hidden'}>{renderSchedulePicker('pickupTime')}</div>
+                  </div>
+                  <div className="grid grid-cols-[1fr_4.5rem_6rem] gap-2">
+                    {renderCopyableField('Origin City', 'origCity')}
+                    {renderCopyableField('Origin State', 'origSt')}
+                    {renderCopyableField('Origin ZIP', 'origZip')}
                   </div>
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">Rate Type</label>
+                    <button type="button" onClick={() => copyToClipboard(selectedOrder.weight, 'Weight')} title="Click to copy the weight" className="tms-copy-label">Weight<span aria-hidden="true">⧉</span></button>
+                    <input type="text" value={selectedOrder.weight} onChange={(e) => handleFieldChange('weight', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-xs text-white" />
+                  </div>
+                </div>
+
+                <div className="tms-detail-card" data-kind="delivery">
+                  <h3 className="tms-detail-title"><span aria-hidden="true" />Delivery</h3>
+                  <div className="tms-stop-time">
+                    <label className="tms-detail-label">Delivery time (early - late)</label>
+                    <div className="flex gap-1">
+                      <input
+                        type="text"
+                        aria-label="Delivery time (early - late)"
+                        value={selectedOrder.deliveryTime || ''}
+                      placeholder={isNolanCustomer(selectedBroker) ? 'MM/DD/YY 08:00  MM/DD/YY 16:00' : ''}
+                        onChange={(e) => handleFieldChange('deliveryTime', e.target.value)}
+                        className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setOpenSchedulePickers(current => ({ ...current, deliveryTime: !current.deliveryTime }))}
+                        aria-expanded={Boolean(openSchedulePickers.deliveryTime)}
+                        title="Pick the dates and times on a calendar"
+                        className="tms-slim-btn shrink-0"
+                        data-tone="violet"
+                      >
+                        Calendar
+                      </button>
+                    </div>
+                    <div className={openSchedulePickers.deliveryTime ? '' : 'hidden'}>{renderSchedulePicker('deliveryTime')}</div>
+                  </div>
+                  <div className="grid grid-cols-[1fr_4.5rem_6rem] gap-2">
+                    {renderCopyableField('Destination City', 'destCity')}
+                    {renderCopyableField('Destination State', 'destSt')}
+                    {renderCopyableField('Destination ZIP', 'destZip')}
+                  </div>
+                  <div>
+                    <button type="button" onClick={() => copyToClipboard(selectedOrder.miles, 'Miles')} title="Click to copy the miles" className="tms-copy-label">Miles<span aria-hidden="true">⧉</span></button>
+                    <input type="text" value={selectedOrder.miles} onChange={(e) => handleFieldChange('miles', e.target.value)} className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-xs text-white" />
+                    <p className="text-[10px] text-gray-500 mt-1">Driving miles fill in from the cities; you can type over them.</p>
+                  </div>
+                  <div>
+                    <label htmlFor="landstar-comment" className="text-xs text-gray-400 block mb-1">
+                      Landstar Comment <span className="text-[10px] text-gray-500">(exports to column AA)</span>
+                    </label>
                     <input
+                      id="landstar-comment"
                       type="text"
-                      value="Flat Rate"
-                      readOnly
+                      list="landstar-comment-options"
+                      autoComplete="off"
+                      maxLength={250}
+                      value={selectedOrder.landstarComment || ''}
+                      onChange={(e) => handleFieldChange('landstarComment', e.target.value)}
+                      placeholder="Type a comment or pick a Landstar comment"
                       className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
                     />
+                    <datalist id="landstar-comment-options">
+                      {landstarCommentOptions.map(option => <option key={option} value={option} />)}
+                    </datalist>
+                    {String(selectedOrder.landstarComment || '').trim() && !getLandstarExportComment(selectedOrder) && (
+                      <p className="text-[11px] text-amber-300 mt-1" id="landstar-comment-warning">
+                        ⚠ Not a Landstar comment code, so it will not be exported (Landstar rejects the whole posting otherwise). Pick one from the list.
+                      </p>
+                    )}
+                    <p className="text-[11px] text-gray-300 mt-1 break-all" id="landstar-comment-link">
+                      {selectedOrder.inquiryToken
+                        ? <>🔗 Driver link (paste into BCO Posting Comments or text it): <a href={getInquiryUrl(selectedOrder.inquiryToken)} target="_blank" rel="noreferrer" className="text-purple-300 underline">{getInquiryUrl(selectedOrder.inquiryToken)}</a></>
+                        : '🔗 Driver link: created when you export, or use “Copy driver link” above.'}
+                    </p>
                   </div>
-                  <div className="row-span-2">
+                </div>
+
+                <div className="tms-detail-card" data-kind="rate">
+                  <h3 className="tms-detail-title"><span aria-hidden="true" />Rate and equipment <span className="tms-detail-note">Flat rate</span></h3>
+                  <div>
                     <div className="flex justify-between items-center mb-1">
-                      <label className="text-xs text-emerald-400 font-bold">{selectedOrder.rateSource === 'customer-bin' ? 'Rate ($) - BIN' : 'Rate ($) - DAT quote'}</label>
+                      <button type="button" onClick={() => copyToClipboard(selectedOrder.rateInput || '', 'Rate')} title="Click to copy the rate" className="tms-copy-label text-emerald-400">{selectedOrder.rateSource === 'customer-bin' ? 'Rate ($) - BIN' : 'Rate ($) - DAT quote'}<span aria-hidden="true">⧉</span></button>
                       <span className="text-[10px] bg-emerald-950 text-emerald-300 px-1 py-0.2 rounded font-mono border border-emerald-600/40">
                         {selectedOrder.rateSource === 'customer-bin' ? 'From BIN' : selectedOrder.rateSource === 'dat-screenshot' ? 'From screenshot' : selectedOrder.rateSource === 'dat-api' ? 'From DAT API' : 'Manual'}
                       </span>
@@ -10203,16 +10287,9 @@ export default function App({ sharing = null, userId = null } = {}) {
                         onChange={(e) => handleFieldChange('rateInput', e.target.value)}
                         onKeyDown={handleRateKeyDown}
                         placeholder="Enter DAT quote"
+                        title="Saved automatically for future loads with this customer, lane (city and state) and equipment; the latest rate is reused. After you stop editing for about 5 seconds (or press Enter) it moves to the next load."
                         className="flex-1 basis-0 min-w-0 h-12 bg-[#0b132b] border-2 border-emerald-500 rounded px-3 text-xl text-white font-mono font-extrabold"
                       />
-                      <button
-                        type="button"
-                        onClick={() => copyToClipboard(selectedOrder.rateInput || '', 'Rate')}
-                        title="Copy Rate"
-                        className="shrink-0 h-12 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer"
-                      >
-                        📋
-                      </button>
                       {(() => {
                         const shownRate = ['user-entered', 'dat-screenshot', 'dat-api'].includes(selectedOrder.rateSource) ? selectedOrder.rateInput : '';
                         const rpm = getRatePerMile(shownRate, selectedOrder.miles);
@@ -10235,7 +10312,6 @@ export default function App({ sharing = null, userId = null } = {}) {
                         </div>
                       );
                     })()}
-                    <p className="text-[10px] text-gray-500 mt-1">Saved automatically for future loads with this customer, origin/destination city and state, and equipment. ZIP differences do not affect matching. The latest entered rate is reused. After you type a rate or any other load detail, it moves to the next load about 5 seconds after you stop editing (or press Enter).</p>
                     {(() => {
                       const laneHistory = getLaneRateHistory(rateHistory, selectedBroker, selectedOrder);
                       if (!laneHistory.length) return null;
@@ -10337,36 +10413,27 @@ export default function App({ sharing = null, userId = null } = {}) {
                       );
                     })()}
                   </div>
-                  <div className="col-span-2 self-start">
-                    <label htmlFor="landstar-comment" className="text-xs text-gray-400 block mb-1">
-                      Landstar Comment <span className="text-[10px] text-gray-500">(exports to column AA)</span>
-                    </label>
-                    <input
-                      id="landstar-comment"
-                      type="text"
-                      list="landstar-comment-options"
-                      autoComplete="off"
-                      maxLength={250}
-                      value={selectedOrder.landstarComment || ''}
-                      onChange={(e) => handleFieldChange('landstarComment', e.target.value)}
-                      placeholder="Type a comment or pick a Landstar comment"
-                      className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white"
-                    />
-                    <datalist id="landstar-comment-options">
-                      {landstarCommentOptions.map(option => <option key={option} value={option} />)}
-                    </datalist>
-                    {String(selectedOrder.landstarComment || '').trim() && !getLandstarExportComment(selectedOrder) && (
-                      <p className="text-[11px] text-amber-300 mt-1" id="landstar-comment-warning">
-                        ⚠ Not a Landstar comment code, so it will not be exported (Landstar rejects the whole posting otherwise). Pick one from the list.
-                      </p>
+                  <div>
+                  {String(selectedOrder.eCode || '').trim().toUpperCase() === 'VE' && (
+                    <>
+                      <input type="text" value="VAN" readOnly aria-label="Mapped equipment" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                      <label className="text-xs text-gray-400 block mt-2 mb-1">SOURCE EQUIPMENT CODE (VE = VAN / CHEM)</label>
+                    </>
+                  )}
+                  <label htmlFor="load-equipment-primary" className="text-xs text-gray-400 block mb-1">Primary equipment</label>
+                  <select id="load-equipment-primary" value={selectedOrder.eCode || ''}
+                    onChange={event => {
+                      saveLoad({ ...selectedOrder, eCode: event.target.value, equipment2: undefined, equipment3: '' });
+                    }}
+                    className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white">
+                    <option value="">Select equipment</option>
+                    {selectedOrder.eCode && !equipmentOptions.some(([code]) => code === selectedOrder.eCode) && (
+                      <option value={selectedOrder.eCode}>{selectedOrder.eCode} - {getEquipmentDescription(selectedOrder.eCode)}</option>
                     )}
-                    <p className="text-[11px] text-gray-300 mt-1 break-all" id="landstar-comment-link">
-                      {selectedOrder.inquiryToken
-                        ? <>🔗 Driver link (paste into BCO Posting Comments or text it): <a href={getInquiryUrl(selectedOrder.inquiryToken)} target="_blank" rel="noreferrer" className="text-purple-300 underline">{getInquiryUrl(selectedOrder.inquiryToken)}</a></>
-                        : '🔗 Driver link: created when you export, or use “Copy driver link” above.'}
-                    </p>
+                    {equipmentOptions.map(([code, label]) => <option key={code} value={code}>{code} - {label}</option>)}
+                  </select>
+                  <div className="text-[11px] text-emerald-400 mt-1 font-mono">{getEquipmentDescription(selectedOrder.eCode)}</div>
                   </div>
-                </div>
                 <div className="mt-3 grid grid-cols-[1fr_8rem] gap-4">
                   <div>
                     <label htmlFor="load-commodity" className="text-xs text-gray-400 block mb-1">Commodity</label>
@@ -10402,6 +10469,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                       <option value="true">true</option>
                     </select>
                   </div>
+                </div>
                 </div>
               </div>
 

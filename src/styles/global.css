@@ -1778,3 +1778,189 @@ body.tms-drawer-open .tms-sidebar {
   backdrop-filter: blur(10px);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
+
+/* Account tabs can be dragged into a new order */
+.tms-shell .tms-account-tab[draggable='true'] { cursor: grab; }
+.tms-shell .tms-account-tab.is-dragging { opacity: 0.4; }
+.tms-shell .tms-account-tab.is-drop-target { box-shadow: -3px 0 0 #22d3ee, 0 0 12px rgba(34, 211, 238, 0.45); }
+
+/* ---- Load details, reorganized (Daniel 2026-11-27: "more efficient for my work and visual") ---- */
+/* 6. A solid panel: the background art only shows around it; values a bit larger */
+.tms-shell .tms-load-details {
+  background: linear-gradient(180deg, rgba(10, 17, 33, 0.94), rgba(7, 12, 25, 0.95));
+  border: 1px solid rgba(34, 211, 238, 0.28);
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.06), 0 18px 40px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+}
+.tms-shell .tms-load-details input:not([type='checkbox']):not([type='date']):not([type='time']),
+.tms-shell .tms-load-details select {
+  font-size: 14px;
+  min-height: 38px;
+}
+.tms-shell .tms-detail-label,
+.tms-shell .tms-load-details label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+/* 1. The load at a glance */
+.tms-load-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  padding: 12px 16px;
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.14), rgba(124, 58, 237, 0.1) 60%, rgba(10, 17, 33, 0.6));
+  border: 1px solid rgba(34, 211, 238, 0.4);
+  border-radius: 12px;
+  box-shadow: inset 3px 0 0 #22d3ee, 0 0 18px rgba(34, 211, 238, 0.12);
+}
+.tms-summary-lane { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 700; color: #f8fafc; letter-spacing: 0.02em; }
+.tms-summary-arrow { color: #22d3ee; }
+.tms-summary-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+.tms-summary-facts span,
+.tms-summary-money span:not(.tms-summary-rate) {
+  font-size: 12.5px;
+  color: #cbd5e1;
+  padding: 3px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 6px;
+  background: rgba(2, 6, 23, 0.4);
+}
+.tms-summary-money { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; }
+.tms-summary-rate {
+  font-family: var(--fx-font-mono);
+  font-size: 24px;
+  font-weight: 800;
+  color: #6ee7b7;
+  text-shadow: 0 0 14px rgba(52, 211, 153, 0.4);
+}
+
+/* 4. Posting settings folded into one line */
+.tms-posting-row { border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 10px; background: rgba(2, 6, 23, 0.35); }
+.tms-shell .tms-posting-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.tms-shell .tms-posting-toggle .tms-detail-label { margin: 0; color: #a5f3fc; }
+.tms-posting-facts { flex: 1; min-width: 0; font-size: 12.5px; color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tms-posting-toggle[aria-expanded='true'] .tms-caret { transform: rotate(180deg); }
+.tms-posting-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 10px 14px;
+  padding: 4px 12px 12px;
+}
+.tms-posting-alts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; grid-column: 1 / -1; }
+.tms-posting-alts > div { margin-top: 0 !important; }
+
+/* Brokerable switch */
+.tms-shell .tms-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 14px 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #e2e8f0;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 20px;
+  cursor: pointer;
+}
+.tms-shell .tms-switch-knob {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #64748b;
+  transition: background 0.15s, transform 0.15s;
+}
+.tms-shell .tms-switch[data-on='true'] { color: #fff; border-color: #34d399; background: rgba(16, 185, 129, 0.25); box-shadow: 0 0 12px rgba(52, 211, 153, 0.35); }
+.tms-shell .tms-switch[data-on='true'] .tms-switch-knob { background: #34d399; }
+
+/* 2. Pickup, delivery, rate side by side */
+.tms-detail-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 12px; align-items: start; }
+.tms-shell .tms-detail-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  background: linear-gradient(180deg, rgba(15, 24, 44, 0.85), rgba(8, 14, 28, 0.85));
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  --kind: 34, 211, 238;
+  box-shadow: inset 0 2px 0 rgba(var(--kind), 0.75);
+}
+.tms-detail-card[data-kind='pickup'] { --kind: 52, 211, 153; }
+.tms-detail-card[data-kind='delivery'] { --kind: 96, 165, 250; }
+.tms-detail-card[data-kind='rate'] { --kind: 251, 191, 36; }
+.tms-shell .tms-detail-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--fx-font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgb(var(--kind));
+}
+.tms-detail-title > span:first-child { width: 8px; height: 8px; border-radius: 50%; background: rgb(var(--kind)); box-shadow: 0 0 8px rgba(var(--kind), 0.8); }
+.tms-detail-note { margin-left: auto; font-family: var(--fx-font-body); font-size: 11px; letter-spacing: 0.06em; text-transform: none; color: #94a3b8; }
+
+/* 5. Click a field's name to copy it */
+.tms-shell .tms-copy-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  cursor: copy;
+}
+.tms-shell .tms-copy-label span { font-size: 12px; color: rgba(34, 211, 238, 0.6); letter-spacing: 0; }
+.tms-shell .tms-copy-label:hover,
+.tms-shell .tms-copy-label:hover span { color: #22d3ee; }
+
+/* 7. Buttons at the top of a load: one size; Delete set apart */
+.tms-shell button.tms-head-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.tms-shell button.tms-head-delete { margin-left: 18px; }
+
+/* Billing: Booked loads and the Bookings report as two tabs */
+.tms-billing-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, rgba(12, 20, 38, 0.92), rgba(8, 14, 28, 0.92));
+  border: 1px solid rgba(34, 211, 238, 0.28);
+  border-radius: 12px;
+}
+.tms-shell .tms-billing-back { margin-left: auto; }

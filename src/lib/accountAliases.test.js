@@ -5,6 +5,7 @@ import { accountKey, isSameAccount, findListedAccount } from './accountAliases.j
 test('new account names count as the old ones', () => {
   assert.equal(accountKey('R X O 2429200 - VAN'), 'RXO2429200ATZV');
   assert.equal(accountKey('R X O 2429200 - Flat'), 'RXO2429200ATZF');
+  assert.equal(accountKey('R X O 2429200 - Haz'), 'RXO2429200ATZH');
   assert.equal(accountKey('Para 1522166 - N HAZ'), 'PARA1522166ATZ');
   assert.equal(accountKey('Para 1522166 - HAZ'), 'PARA1522166ATZH');
   assert.ok(isSameAccount('R X O 2429200 - REEFER', 'R X O 2429200 - ATZ R'));

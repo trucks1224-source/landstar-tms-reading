@@ -4960,3 +4960,30 @@ test('AMERI city/state grid screenshots: garbled OCR rows become real lanes with
   assert.match(policy.parseCityGridScreenshotText([lines[1]], zipcodes, 'Some Other Customer').skippedRows[0], /origin city not readable/,
     'Colony, WY is only known from the AMERI rate sheet');
 });
+
+test('load details: summary on top, posting folded, brokerable switch, calendar on click', () => {
+  const app = createAppHarness(customers[0], [{ ...load, id: '2291338', origCity: 'SHELBYVILLE', origSt: 'KY', destCity: 'ERLANGER', destSt: 'KY', miles: '82', rateInput: '783', rateSource: 'user-entered', brokerable: 'false' }]);
+  app.render();
+  const summary = app.find(node => node.props?.['aria-label'] === 'Load summary');
+  assert.ok(summary, 'summary strip');
+  assert.match(textOf(summary), /SHELBYVILLE, KY.*ERLANGER, KY/);
+  assert.match(textOf(summary), /\$783/);
+  const postingFields = () => app.find(node => node.props?.placeholder === 'Optional order number');
+  const toggle = () => app.find(node => node.type === 'button' && node.props?.className === 'tms-posting-toggle');
+  assert.equal(toggle().props['aria-expanded'], false, 'posting settings start folded');
+  toggle().props.onClick();
+  app.render();
+  assert.equal(toggle().props['aria-expanded'], true);
+  assert.ok(postingFields());
+  const brokerSwitch = () => app.find(node => node.props?.role === 'switch');
+  assert.equal(brokerSwitch().props['aria-checked'], false);
+  brokerSwitch().props.onClick();
+  app.render();
+  assert.equal(brokerSwitch().props['aria-checked'], true, 'brokerable turned on');
+  const calendar = () => app.find(node => node.type === 'button' && node.props?.title === 'Pick the dates and times on a calendar');
+  assert.equal(calendar().props['aria-expanded'], false);
+  calendar().props.onClick();
+  app.render();
+  assert.equal(calendar().props['aria-expanded'], true);
+  assert.equal(app.errors.length, 0);
+});

@@ -25,6 +25,7 @@ import CustomerRulesPanel from './app/CustomerRulesPanel.jsx';
 import { groupCustomers, moveCustomers, splitCustomerName, shortAccountName, accountTagKind } from './app/customerGroups.js';
 import { accountKey, findListedAccount } from './lib/accountAliases.js';
 import { lookupTruck, rememberTruck, lookupCarrier, rememberCarrier, fillFromTruck, truckKey } from './lib/capacityBook.js';
+import { splitBigList, addToSnbList, BIG_LIST_MILES, isPriorityBigListLane } from './lib/bigListSplit.js';
 import { chOfferToTmsLoad, getTodaysExportedLanes, CH_TMS_ACCOUNT } from './lib/chOffers.js';
 import { parseChatLoadMessage, chatLoadAccount, chatLoadToTmsLoad } from './lib/chatLoads.js';
 import automationPolicy from '../bot/automation-policy.json';
@@ -286,7 +287,7 @@ function removeExpiredExportedLoads(customerOrders, now = Date.now()) {
     nextOrders[customer] = loads.filter(load => {
       if (load.manualEntry || String(load.needsCapacity || '').trim()) return true;
       if (load.status !== 'ENT' || !load.landstarExportedAt) return true;
-      const exportedAt = Date.parse(load.landstarExportedAt);
+      const exportedAt = Date.parse(load.coveredAt || load.landstarExportedAt);
       const keep = !Number.isFinite(exportedAt) || now - exportedAt < exportedLoadRetentionMs;
       if (!keep) changed = true;
       return keep;
@@ -432,9 +433,11 @@ function findKnownDriver(directory, name) {
   return key ? directory.drivers.find(entry => entry.driver.toUpperCase() === key) || null : null;
 }
 
+// Exported loads stay in their folder (OPEN stays OPEN, Daniel 2026-11-27) and remember when they
+// were posted; they move to ENT only when a new list no longer has them (covered).
 function markLoadsExported(loads, exportedIds, exportedAt) {
   return loads.map(load => exportedIds.has(String(load.id))
-    ? { ...load, status: load.status === 'OFFER' ? 'OFFER' : 'ENT', tag: load.status === 'OFFER' ? 'OFFER' : 'ENT', landstarExportedAt: exportedAt }
+    ? { ...load, landstarExportedAt: exportedAt }
     : load);
 }
 
@@ -1446,7 +1449,7 @@ function getImportReplacementMessage(replacement) {
       + (replacement.skippedRxoVanCount ? `• Skipped ${replacement.skippedRxoVanCount} RXO van load(s) picking up in WI, IN, OH, MI, MN, SD, ND, UT or ID.\n` : '')
       + (replacement.skippedMexicoCount ? `• Skipped ${replacement.skippedMexicoCount} load(s) to or from Mexico.\n` : '')
       + (replacement.skippedEquipmentCount ? `• Skipped ${replacement.skippedEquipmentCount} intermodal (INT) or oversized load(s).\n` : '')
-      + (replacement.droppedPostings?.length ? `• No longer on the list: ${replacement.droppedPostings.length} posted load(s); the upload bot will remove them from Landstar.\n` : '')
+      + (replacement.coveredCount ? `• Covered (posted, not on the new list): ${replacement.coveredCount} moved to ENT${replacement.droppedPostings?.length ? `; the upload bot removes ${replacement.droppedPostings.length} from Landstar` : ''}.\n` : '')
     : '';
 }
 
@@ -5320,6 +5323,27 @@ export default function App({ sharing = null, userId = null } = {}) {
           delete load.ruleFileRate;
         });
         const { mileageError: excelMileageError } = await applyGoogleRoadMiles(importedRows, null, 'Imported from Excel');
+        // RXO's big list is shared with Ivan (Daniel 2026-11-27): Texas pickups and loads over 500
+        // miles stay here; the rest goes to R X O 2429200 - SNB (Ivan's, never auto-exported).
+        const snbAccount = accountKey(selectedBroker) === 'RXO2429200ATZV' ? findListedAccount('R X O 2429200 - SNB', brokers) : '';
+        let sentToSnb = 0;
+        let snbOrders = null;
+        if (snbAccount) {
+          const split = splitBigList(importedRows);
+          if (split.snb.length) {
+            const { list, added } = addToSnbList(customerOrdersMap[snbAccount] || [], split.snb);
+            snbOrders = list;
+            sentToSnb = added;
+            importedRows = split.mine;
+          }
+        }
+        if (!importedRows.length && snbOrders) {
+          const nextOrders = { ...customerOrdersMap, [snbAccount]: snbOrders };
+          persistAppData(brokers, nextOrders);
+          setCustomerOrdersMap(nextOrders);
+          notify(`📂 Big list: every load was for ${snbAccount} (outside Texas, ${BIG_LIST_MILES} miles or less). Added there: ${sentToSnb}.`);
+          return true;
+        }
 
         const latestRegistry = getLatestExportedRegistry();
         const exportedRecords = getExportedRecordsForCustomer(latestRegistry, selectedBroker);
@@ -5381,7 +5405,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         const replacement = replaceImportedCustomerLoads(selectedBroker, importedRows, existingLoads);
         queueDroppedPostings(replacement, existingLoads);
         const finalLoads = replacement ? replacement.loads : mergedFinalLoads;
-        const nextOrders = { ...customerOrdersMap, [selectedBroker]: finalLoads };
+        const nextOrders = { ...customerOrdersMap, [selectedBroker]: finalLoads, ...(snbOrders ? { [snbAccount]: snbOrders } : {}) };
         const saved = persistAppData(brokers, nextOrders);
         setCustomerOrdersMap(nextOrders);
         setSelectedOrder(finalLoads.find(load => load.id === resolvedImportedLoads[0].id) || finalLoads[0]);
@@ -5408,6 +5432,7 @@ export default function App({ sharing = null, userId = null } = {}) {
           (skippedEquipmentCount > 0 ? `• Skipped oversized/specialized equipment: ${skippedEquipmentCount}\n` : '') +
           (skippedNotFlatbed > 0 ? `• Not imported (not F / flatbed; this Phalanx account takes flatbeds only): ${skippedNotFlatbed}\n` : '') +
           (skippedByRules > 0 ? `• Not imported (equipment this customer's ⚙ Rules leave out): ${skippedByRules}\n` : '') +
+          (snbOrders ? `• Sent to ${snbAccount} (outside Texas, ${BIG_LIST_MILES} miles or less): ${sentToSnb} new\n` : '') +
           (datRateError ? `• DAT rates could not be fetched; enter rates manually. DAT reported: ${datRateError}\n` : '') +
           (excelMileageError ? `• Driving miles could not be calculated for some loads; enter them manually. Google Routes reported: ${excelMileageError}\n` : '') +
           (saved ? '• Status: Saved successfully in browser storage.' : '• Warning: Save failed, check browser storage.')
@@ -7627,9 +7652,11 @@ export default function App({ sharing = null, userId = null } = {}) {
     // (ENT) — re-posting the same loads to Landstar is allowed. Loads not on
     // the list are untouched; exported loads are (re)marked ENT below.
     // Loads taken off Landstar (🚫 Covered) are never posted again.
+    // Posted loads now stay OPEN (Daniel 2026-11-27), so with nothing checked only loads not
+    // posted yet go out; checked loads export even when already posted (a deliberate repost).
     const candidateLoads = (selectedIds.length > 0
       ? orders.filter(o => selectedIds.includes(selectionKey(selectedBroker, o.id)))
-      : filteredOrders).filter(o => !o.landstarRemoval);
+      : filteredOrders.filter(o => !o.landstarExportedAt)).filter(o => !o.landstarRemoval);
     // Booked loads already have a truck; never post them to the Landstar board.
     const unbookedLoads = candidateLoads.filter(o => o.status !== 'BOOKED');
     const skippedBookedCount = candidateLoads.length - unbookedLoads.length;
@@ -7646,6 +7673,10 @@ export default function App({ sharing = null, userId = null } = {}) {
     const loadsToExport = notMexico.filter(o => !isSkippableEquipment(o.eCode));
     const skippedEquipmentExportCount = notMexico.length - loadsToExport.length;
 
+    if (loadsToExport.length === 0 && selectedIds.length === 0 && filteredOrders.some(o => o.landstarExportedAt)) {
+      pushNotice('Nothing new to export: every open load on this list is already posted on Landstar. Check loads to post them again.', 'auto');
+      return;
+    }
     if (loadsToExport.length === 0) {
       say(skippedBookedCount || skippedRxoVanCount || skippedSameCityCount || skippedMexicoCount || skippedEquipmentExportCount
         ? `Nothing to export: ${[
@@ -8342,13 +8373,17 @@ export default function App({ sharing = null, userId = null } = {}) {
       if (hasMaxMiles && !(miles <= maxMilesFilter)) return false;
     }
     return true;
-  }).sort(({ order: left }, { order: right }) => {
+  }).sort(({ order: left, customer: leftCustomer }, { order: right, customer: rightCustomer }) => {
     const priority = Number(Boolean(String(right.needsCapacity || '').trim()))
       - Number(Boolean(String(left.needsCapacity || '').trim()));
     if (priority) return priority;
     // 🔥 Hot lanes (other agents booking them) come next, so we stay on top of them.
     const hot = Number(Boolean(getHotLane(right, hotLanes))) - Number(Boolean(getHotLane(left, hotLanes)));
     if (hot) return hot;
+    // RXO VAN (the big list): into Texas, into Florida and out of Texas first (Daniel 2026-11-27).
+    const laneFirst = (customer, load) => Number(accountKey(customer) === 'RXO2429200ATZV' && isPriorityBigListLane(load));
+    const lane = laneFirst(rightCustomer, right) - laneFirst(leftCustomer, left);
+    if (lane) return lane;
     if (!laneSort || laneSort === 'pickup-asc' || laneSort === 'pickup-desc') {
       const difference = getPickupSortValue(left) - getPickupSortValue(right);
       return (laneSort === 'pickup-desc' ? -difference : difference)

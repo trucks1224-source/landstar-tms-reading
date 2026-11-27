@@ -21,6 +21,7 @@ import * as chatLoads from './lib/chatLoads.js';
 import * as undoLib from './lib/undo.js';
 import * as accountAliases from './lib/accountAliases.js';
 import * as capacityBook from './lib/capacityBook.js';
+import * as bigListSplit from './lib/bigListSplit.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
 
@@ -140,6 +141,7 @@ const context = {
       if (name === './lib/undo.js') return undoLib;
       if (name === './lib/accountAliases.js') return accountAliases;
       if (name === './lib/capacityBook.js') return capacityBook;
+      if (name === './lib/bigListSplit.js') return bigListSplit;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
     if (name.startsWith('./app/')) return loadAppModule(name, context);
@@ -1238,7 +1240,7 @@ test('Para red screenshot numbers import ON HOLD and reopen when no longer red',
     const held = policy.replaceImportedCustomerLoads(customers[0], [red], existing).loads[0];
     assert.equal(held.status, 'ON HOLD');
     assert.equal(held.tag, 'HOLD');
-    assert.equal('landstarExportedAt' in held, false);
+    assert.equal('landstarExportedAt' in held, false, 'a new pickup day is a new load: not posted yet');
     if (existing.length) assert.equal(held.driverPhone, '555-1234');
   }
   const plain = parseScreenshotTimes('2279568', times, customers[0], false);
@@ -1247,7 +1249,7 @@ test('Para red screenshot numbers import ON HOLD and reopen when no longer red',
   ]);
   assert.equal(second.loads[0].status, 'OPEN');
   assert.equal(second.loads[0].tag, 'OPEN');
-  assert.equal('landstarExportedAt' in second.loads[0], false);
+  assert.equal('landstarExportedAt' in second.loads[0], true, 'still on the list: it stays posted');
 });
 
 test('red screenshot holds are Para-only and do not persist into a later spreadsheet import', () => {
@@ -1629,6 +1631,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/undo.js') return undoLib;
       if (name === './lib/accountAliases.js') return accountAliases;
       if (name === './lib/capacityBook.js') return capacityBook;
+      if (name === './lib/bigListSplit.js') return bigListSplit;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === 'react') return react;
@@ -1851,6 +1854,7 @@ function createSyncContext(storage) {
       if (name === './lib/undo.js') return undoLib;
       if (name === './lib/accountAliases.js') return accountAliases;
       if (name === './lib/capacityBook.js') return capacityBook;
+      if (name === './lib/bigListSplit.js') return bigListSplit;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
       if (name.startsWith('./app/')) return loadAppModule(name, ctx);
@@ -2668,8 +2672,11 @@ test('Nolan Excel imports check only imported loads while other customers keep m
       ['222222', 'V', 'Chicago', 'IL', '60601', 'Austin', 'TX', '78701', '10/27/2099 0800', '10/28/2099 0800']
     ]);
     app.render();
-    // The exported ENT load 999999 is not on the list: deleted.
-    assert.equal(JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customer].length, 2);
+    // The exported load 999999 is not on the list: covered, kept on ENT (Daniel 2026-11-27).
+    const savedLoads = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customer];
+    assert.equal(savedLoads.length, 3);
+    assert.equal(savedLoads.find(order => order.id === '999999').status, 'ENT');
+    assert.ok(savedLoads.find(order => order.id === '999999').coveredAt);
     for (const id of [load.id, '222222']) {
       const card = app.find(node => node.props?.id === `load-card-${id}`);
       const checkbox = card.props.children.flat(Infinity).find(node => node?.type === 'input'
@@ -2722,12 +2729,12 @@ test('DAT re-import reopens unchanged and manually priced ENT lanes while retain
   assert.equal(reopened.tag, 'OPEN');
   assert.equal(reopened.rateInput, '2500');
   assert.equal(reopened.driverPhone, '555-1234');
-  assert.equal(Object.hasOwn(reopened, 'landstarExportedAt'), false);
+  assert.equal(Object.hasOwn(reopened, 'landstarExportedAt'), true, 'still on the list: it stays posted');
   assert.equal(result.loads.find(order => order.id === 'DAT-456-2').status, 'ENT');
   assert.equal(result.loads.find(order => order.id === 'archive').status, 'ENT');
 });
 
-test('full lists delete missing exported ENT loads; other customers keep them 30 days; re-imports reopen', () => {
+test('exported loads missing from a new list are covered: ENT for 30 days, every customer; re-imports reopen', () => {
   const now = Date.parse('2026-10-28T12:00:00Z');
   const day = 24 * 60 * 60 * 1000;
   for (const customer of [...customers, 'Other customer']) {
@@ -2738,13 +2745,18 @@ test('full lists delete missing exported ENT loads; other customers keep them 30
     const incoming = { ...load, id: 'new', destCity: 'Reno' };
     const existing = [recent, expired];
     const result = policy.replaceImportedCustomerLoads(customer, [incoming], existing, { now });
-    if (customer === 'Other customer') assert.equal(result.loads.find(order => order.id === 'recent').status, 'ENT', customer);
-    else assert.equal(result.loads.some(order => order.id === 'recent'), false, customer);
-    assert.equal(result.loads.some(order => order.id === 'expired'), false, customer);
+    for (const id of ['recent', 'expired']) {
+      const covered = result.loads.find(order => order.id === id);
+      assert.equal(covered?.status, 'ENT', `${customer}: ${id} covered`);
+      assert.equal(covered.coveredAt, new Date(now).toISOString());
+    }
+    assert.equal(result.coveredCount, 2);
+    // Covered 31 days ago: gone on the next import.
+    const later = policy.replaceImportedCustomerLoads(customer, [incoming], result.loads, { now: now + 31 * day });
+    assert.equal(later.loads.some(order => order.id === 'recent'), false, customer);
     const reopened = policy.replaceImportedCustomerLoads(customer, [load], [recent], { now }).loads[0];
     // The pickup is still ahead, so the import lands as OPEN for every customer.
     assert.equal(reopened.status, 'OPEN', customer);
-    assert.equal(Object.hasOwn(reopened, 'landstarExportedAt'), false);
     const cleaned = policy.removeExpiredExportedLoads({ [customer]: [recent, expired] }, now);
     assert.deepEqual(Array.from(cleaned[customer], order => order.id), ['recent']);
     assert.equal(policy.removeExpiredExportedLoads(cleaned, now + 1)[customer].length, 0);
@@ -2767,7 +2779,7 @@ test('same load number on different pickup days: a full list keeps only the days
   assert.equal(new Set(result.loads.map(policy.createLaneDayKey)).size, 2);
 });
 
-test('export marks only the exported pickup-day variant ENT, starts retention and persists through reload', () => {
+test('export keeps loads OPEN and marks only the exported pickup-day variant as posted, through reload', () => {
   const exportedAt = '2026-10-28T12:00:00Z';
   const orders = [
     { ...load },
@@ -2776,17 +2788,16 @@ test('export marks only the exported pickup-day variant ENT, starts retention an
   const exported = policy.markLoadsExported(orders, new Set([orders[1].id]), exportedAt);
   assert.equal(exported[0].status, 'OPEN');
   assert.equal(Object.hasOwn(exported[0], 'landstarExportedAt'), false);
-  assert.equal(exported[1].status, 'ENT');
-  assert.equal(exported[1].tag, 'ENT');
+  assert.equal(exported[1].status, 'OPEN', 'exported loads stay OPEN (Daniel 2026-11-27)');
   assert.equal(exported[1].landstarExportedAt, exportedAt);
   assert.equal(orders[1].status, 'OPEN');
   const reloaded = createAppHarness(customers[2], JSON.parse(JSON.stringify(exported)));
   const saved = JSON.parse(reloaded.storage.get('landstar_customerOrdersMap'))[customers[2]];
-  assert.equal(saved[1].status, 'ENT');
+  assert.equal(saved[1].status, 'OPEN');
   assert.equal(saved[1].landstarExportedAt, exportedAt);
   const reopened = policy.replaceImportedCustomerLoads(customers[2], [orders[1]], saved).processedLoads[0];
   assert.equal(reopened.status, 'OPEN');
-  assert.equal(Object.hasOwn(reopened, 'landstarExportedAt'), false);
+  assert.equal(reopened.landstarExportedAt, exportedAt, 'still on the list: it stays posted');
 });
 
 test('assignment fields save with the load and survive reload and re-import', () => {
@@ -3660,7 +3671,9 @@ test('posted loads missing from a list are handed to the bot once, Nolan include
   assert.deepEqual(Array.from(result.droppedPostings, item => item.loadId), ['222222']);
   assert.equal(result.droppedPostings[0].posting.originZip, '80202');
   assert.equal(result.droppedPostings[0].customer, customers[0]);
-  assert.equal(result.loads.some(item => item.id === '222222'), false, 'the dropped load is deleted from the TMS');
+  const covered = result.loads.find(item => item.id === '222222');
+  assert.equal(covered.status, 'ENT', 'the covered load moves to ENT');
+  assert.equal(covered.landstarPosting, undefined, 'its posting is handed to the bot once');
   assert.ok(result.loads.find(item => item.id === '111111').landstarPosting, 'loads still on the list keep their posting');
   for (const id of ['444444', '555555', '666666']) {
     assert.ok(result.loads.find(item => item.id === id)?.landstarPosting, `${id} stays protected`);
@@ -3726,13 +3739,14 @@ test('RXO van, flatbed and reefer lists upload separately: each import replaces 
   const vanResult = policy.replaceImportedCustomerLoads(rxo, [
     { ...load, id: '24500010', eCode: 'VAN:VAN' }
   ], existing);
-  assert.deepEqual(Array.from(vanResult.loads, l => l.id).sort(), ['24500002', '24500003', '24500010']);
+  assert.deepEqual(Array.from(vanResult.loads, l => l.id).sort(), ['24500001', '24500002', '24500003', '24500010']);
+  assert.equal(vanResult.loads.find(l => l.id === '24500001').status, 'ENT', 'the missing van load is covered');
   assert.deepEqual(Array.from(vanResult.droppedPostings, item => item.loadId), ['24500001'], 'only the missing van posting drops');
   // Uploading the flatbed list next replaces only flatbed loads; the vans stay.
   const flatResult = policy.replaceImportedCustomerLoads(rxo, [
     { ...load, id: '24500020', eCode: 'F,SD', origCity: 'Denver', origSt: 'CO' }
   ], vanResult.loads);
-  assert.deepEqual(Array.from(flatResult.loads, l => l.id).sort(), ['24500003', '24500010', '24500020']);
+  assert.deepEqual(Array.from(flatResult.loads, l => l.id).sort(), ['24500001', '24500002', '24500003', '24500010', '24500020']);
   assert.deepEqual(Array.from(flatResult.droppedPostings, item => item.loadId), ['24500002'], 'only the missing flatbed posting drops');
   // A combined file with all three equipment types still replaces everything, as before.
   const fullResult = policy.replaceImportedCustomerLoads(rxo, [
@@ -3740,7 +3754,7 @@ test('RXO van, flatbed and reefer lists upload separately: each import replaces 
     { ...load, id: '24500020', eCode: 'F,SD', origCity: 'Denver', origSt: 'CO' },
     { ...load, id: '24500030', eCode: 'R', origCity: 'Austin', origSt: 'TX' }
   ], existing);
-  assert.deepEqual(Array.from(fullResult.loads, l => l.id).sort(), ['24500010', '24500020', '24500030']);
+  assert.deepEqual(Array.from(fullResult.loads.filter(l => l.status !== 'ENT'), l => l.id).sort(), ['24500010', '24500020', '24500030']);
   assert.deepEqual(Array.from(fullResult.droppedPostings, item => item.loadId).sort(), ['24500001', '24500002', '24500003']);
 });
 
@@ -3756,13 +3770,13 @@ test('RXO hazmat lists upload separately: hazmat uploads never touch the van lis
   const hazmatResult = policy.replaceImportedCustomerLoads(rxo, [
     { ...load, id: '24510010', eCode: 'VZ' }
   ], existing);
-  assert.deepEqual(Array.from(hazmatResult.loads, l => l.id).sort(), ['24510001', '24510010']);
+  assert.deepEqual(Array.from(hazmatResult.loads.filter(l => l.status !== 'ENT' || !l.coveredAt), l => l.id).sort(), ['24510001', '24510010']);
   assert.deepEqual(Array.from(hazmatResult.droppedPostings, item => item.loadId).sort(), ['24510002', '24510003'], 'only the missing hazmat postings drop');
   // Uploading the van list replaces only van loads; the hazmat loads stay.
   const vanResult = policy.replaceImportedCustomerLoads(rxo, [
     { ...load, id: '24510020', eCode: 'VAN:VAN' }
   ], hazmatResult.loads);
-  assert.deepEqual(Array.from(vanResult.loads, l => l.id).sort(), ['24510010', '24510020']);
+  assert.deepEqual(Array.from(vanResult.loads.filter(l => !l.coveredAt), l => l.id).sort(), ['24510010', '24510020']);
   assert.deepEqual(Array.from(vanResult.droppedPostings, item => item.loadId), ['24510001'], 'only the missing van posting drops');
 });
 
@@ -5016,4 +5030,28 @@ test('truck # brings back its saved driver; carrier customers get carrier name a
   app.render();
   assert.equal(byId('assignment-carrier-mc'), null);
   assert.equal(app.errors.length, 0);
+});
+
+test('RXO big list: Texas pickups and 500+ miles stay in VAN, the rest goes to SNB; priority lanes first', async () => {
+  const van = 'R X O 2429200 - VAN';
+  const snb = 'R X O 2429200 - snb';
+  const profile = { phone: '4845756486', postingCode: 'ANQ', visibilityGroup: 'ANQ' };
+  // Driving miles unavailable: the list's own Loaded Miles are used.
+  const fetch = async url => (url === '/api/road-miles' ? { ok: false, status: 503, json: async () => ({}) } : { json: async () => ({ rate: 2000 }) });
+  const app = createAppHarness(van, [], null, {}, { fetch, initialStorage: {
+    landstar_profile: JSON.stringify(profile),
+    landstar_brokers: JSON.stringify([van, snb]),
+    landstar_customerOrdersMap: JSON.stringify({ [van]: [], [snb]: [{ ...load, id: 'OLD-1' }] })
+  } });
+  await app.importExcel([
+    ['Order Number', 'Equipment Type', 'Brokerage Status', 'Origin - City', 'Origin - State', 'Origin - Zip', 'Destination - City', 'Destination - State', 'Destination - Zip', 'Weight', 'Pickup Time', 'Delivery Time', 'Loaded Miles'],
+    ['900001', 'Van - 53 Feet', '02AVAIL', 'Dallas', 'TX', '75201', 'Tulsa', 'OK', '74103', '30000lbs', '12/01/2026 08:00', '12/01/2026 18:00', '257 miles'],
+    ['900002', 'Van - 53 Feet', '02AVAIL', 'Atlanta', 'GA', '30303', 'Macon', 'GA', '31201', '30000lbs', '12/01/2026 08:00', '12/01/2026 18:00', '85 miles'],
+    ['900003', 'Van - 53 Feet', '02AVAIL', 'Atlanta', 'GA', '30303', 'Denver', 'CO', '80202', '30000lbs', '12/01/2026 08:00', '12/03/2026 18:00', '1400 miles'],
+    ['900004', 'Van - 53 Feet', '02AVAIL', 'Reno', 'NV', '89501', 'Fresno', 'CA', '93701', '30000lbs', '12/01/2026 08:00', '12/01/2026 18:00', '320 miles']
+  ]);
+  const map = JSON.parse(app.storage.get('landstar_customerOrdersMap'));
+  assert.deepEqual(map[van].map(order => order.id).sort(), ['900001', '900003'], 'Texas pickup and 1,400 miles stay');
+  assert.deepEqual(map[snb].map(order => order.id).sort(), ['900002', '900004', 'OLD-1'], 'short non-Texas loads go to SNB; its own loads stay');
+  assert.ok(app.alerts.some(message => /Sent to R X O 2429200 - snb .*: 2 new/.test(message)));
 });

@@ -35,6 +35,18 @@ function findDroppedPostings(customer, importedLoads, existingLoads, equipmentSc
     && !importedIds.has(normalizeLoadId(getBaseLoadId(load))));
 }
 
+// Loads you posted (exported) that are missing from a customer's new list: covered. Same
+// exceptions as findDroppedPostings (hand-added, needs capacity, booked, being worked).
+function findCoveredLoads(customer, importedLoads, existingLoads, equipmentScope = null) {
+  const importedIds = new Set(importedLoads.map(load => normalizeLoadId(getBaseLoadId(load))).filter(Boolean));
+  if (!importedIds.size) return [];
+  return existingLoads.filter(load => (load.landstarPosting || load.landstarExportedAt) && !load.manualEntry
+    && !String(load.needsCapacity || '').trim() && load.status !== 'BOOKED' && !load.coveredAt
+    && !isLoadBeingWorked(load)
+    && (!equipmentScope || equipmentScope.has(getRxoEquipmentListCategory(load)))
+    && !importedIds.has(normalizeLoadId(getBaseLoadId(load))));
+}
+
 // Team vans (VM/VT) are shown as a plain V; the Team flag carries the team part.
 // Equipment we don't haul: oversized/specialized trailers, and intermodal ("INT" in the
 // equipment box). These loads are never imported or exported, for every customer.
@@ -254,7 +266,9 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
       merged.rateInput = load.rateInput;
       merged.rateSource = load.rateSource;
     }
-    delete merged.landstarExportedAt;
+    // Still on the list (same pickup day): it stays posted and OPEN (Daniel 2026-11-27); a new
+    // load or a new pickup day starts unposted.
+    if (!existing || isNewDayForExistingLoad(existing, load)) delete merged.landstarExportedAt;
     if (holdsRedScreenshotLoads(customer) && load.screenshotStatus === 'ON HOLD') {
       merged.status = 'ON HOLD';
       merged.tag = 'HOLD';
@@ -302,6 +316,9 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
     // A full customer list is the truth: anything not on it is deleted (exported ENT loads
     // too; their rates stay in the rate history). Booked and hand-added loads stay (above),
     // and screenshot imports keep loads you moved to ENT by hand (never exported).
+    // Covered loads (posted, then missing from a list) stay on ENT for 30 days, then go.
+    const coveredAt = Date.parse(load.coveredAt);
+    if (load.status === 'ENT' && Number.isFinite(coveredAt)) return now - coveredAt < exportedLoadRetentionMs;
     if (!additive) return load.status === 'ENT' && !Number.isFinite(exportedAt) && keepManualEnt;
     // Screenshot imports also keep loads moved to ENT by hand (no export date).
     const retainedArchive = load.status === 'ENT' && (Number.isFinite(exportedAt)
@@ -314,16 +331,25 @@ function replaceImportedCustomerLoads(customer, importedLoads, existingLoads, {
   });
   // Posted loads missing from this (full) list: the upload bot removes their Landstar
   // postings. Each is handed over once, so its saved posting details are cleared here.
-  const dropped = reportDroppedPostings ? findDroppedPostings(customer, importedLoads, existingLoads, equipmentScope) : [];
-  const droppedIds = new Set(dropped.map(load => String(load.id)));
+  // New rule (Daniel 2026-11-27): exported loads stay OPEN; a posted load that is missing from
+  // the new list is covered, so it moves to ENT (instead of being deleted) and comes off
+  // Landstar. R X O 2429200 - SNB gets two separate lists and Ivan's own postings: left alone.
+  const coversLoads = reportDroppedPostings && accountKey(customer) !== 'RXO2429200SNB';
+  const covered = coversLoads ? findCoveredLoads(customer, importedLoads, existingLoads, equipmentScope) : [];
+  const coveredIds = new Set(covered.map(load => String(load.id)));
+  const dropped = covered.filter(load => load.landstarPosting);
   const droppedPostings = dropped.map(load => ({ customer, loadId: String(load.id), posting: load.landstarPosting }));
-  const loads = [...mergedLoads, ...retained].map(load => {
-    if (!droppedIds.has(String(load.id))) return load;
-    const { landstarPosting, ...rest } = load;
-    return rest;
-  });
+  const coveredAt = new Date(now).toISOString();
+  const loads = [
+    ...mergedLoads,
+    ...retained.filter(load => !coveredIds.has(String(load.id))),
+    ...covered.map(load => {
+      const { landstarPosting, ...rest } = load;
+      return { ...rest, status: 'ENT', tag: 'ENT', coveredAt, landstarExportedAt: rest.landstarExportedAt || coveredAt };
+    })
+  ];
   return {
-    loads, additive, processedLoads: mergedLoads, droppedPostings, skippedRxoVanCount, skippedMexicoCount, skippedEquipmentCount,
+    loads, additive, processedLoads: mergedLoads, droppedPostings, coveredCount: covered.length, skippedRxoVanCount, skippedMexicoCount, skippedEquipmentCount,
     laneDayDuplicateCount, equipmentScope,
     usesScreenshotStatus: holdsRedScreenshotLoads(customer)
       && importedLoads.some(load => ['ON HOLD', 'OPEN'].includes(load.screenshotStatus)),

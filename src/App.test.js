@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
-import { transform } from 'esbuild';
+import { transform, transformSync } from 'esbuild';
+import { readFileSync } from 'node:fs';
 import * as XLSX from 'xlsx';
 import * as screenshotTable from './lib/screenshotTable.js';
 import * as ntgCards from './lib/ntgCards.js';
@@ -20,6 +21,30 @@ import * as chatLoads from './lib/chatLoads.js';
 import * as undoLib from './lib/undo.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
+
+// Files moved out of App.jsx (src/app/, Daniel 2026-11-27) load in the same sandbox as App.jsx,
+// on the same test clock; their own imports resolve like App.jsx's (../lib/x.js = ./lib/x.js,
+// ./y.js = ./app/y.js). One copy per sandbox.
+const appModuleCaches = new WeakMap();
+function loadAppModule(name, sandbox) {
+  let cache = appModuleCaches.get(sandbox);
+  if (!cache) appModuleCaches.set(sandbox, cache = new Map());
+  if (cache.has(name)) return cache.get(name).exports;
+  const file = new URL(name.replace(/^\.\//, './'), import.meta.url);
+  const { code: moduleCode } = transformSync(readFileSync(file, 'utf8'), { loader: 'jsx', format: 'cjs' });
+  const mod = { exports: {} };
+  cache.set(name, mod);
+  const moduleRequire = request => {
+    if (request.startsWith('../')) {
+      const fromSrc = request.slice(3);
+      return sandbox.require(fromSrc.startsWith('../') ? fromSrc : './' + fromSrc);
+    }
+    if (request.startsWith('./')) return loadAppModule('./app/' + request.slice(2), sandbox);
+    return sandbox.require(request);
+  };
+  vm.runInNewContext(moduleCode, { ...sandbox, module: mod, exports: mod.exports, require: moduleRequire });
+  return mod.exports;
+}
 
 const source = await readFile(new URL('./App.jsx', import.meta.url), 'utf8');
 test('editing an order number replaces the original load and keeps selection and booking details', () => {
@@ -110,6 +135,7 @@ const context = {
       if (name === './lib/undo.js') return undoLib;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
+    if (name.startsWith('./app/')) return loadAppModule(name, context);
     throw new Error(`Unexpected dependency: ${name}`);
   }
 };
@@ -1593,6 +1619,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/supabase') return { supabase };
       if (name === './Prospects.jsx' || name === './ChOffers.jsx' || name === './LoadTable.jsx') return { default: () => null };
       if (name === './TodayPanel.jsx') return { ProblemBanner: () => null, TodayPanel: () => null };
+      if (name.startsWith('./app/')) return loadAppModule(name, appContext);
       throw new Error(`Unexpected dependency: ${name}`);
     },
     ...extraContext
@@ -1807,6 +1834,7 @@ function createSyncContext(storage) {
       if (name === './lib/undo.js') return undoLib;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
+      if (name.startsWith('./app/')) return loadAppModule(name, ctx);
       throw new Error(`Unexpected dependency: ${name}`);
     }
   };
@@ -2272,6 +2300,9 @@ test("agent AAQ's Phalanx account: only F loads, posted as flatbed with no Step 
   assert.equal(policy.isFlatbedOnlyPhalanx('Phalanx Logistics', ' aaq '), true);
   assert.equal(policy.isFlatbedOnlyPhalanx('Pha 882255 - ATZ', 'AAQ'), true, 'any Phalanx account in the AAQ TMS');
   assert.equal(policy.isFlatbedOnlyPhalanx('Pha 882255 - ATZ', 'ANQ'), false, "Daniel's Phalanx account is unchanged");
+  assert.equal(policy.isFlatbedOnlyPhalanx('PHAL 123456', ''), true, 'a PHAL account, whatever the posting code');
+  assert.equal(policy.isFlatbedOnlyPhalanx('Phal 123456 - ATZ', 'ANQ'), true);
+  assert.equal(policy.isFlatbedOnlyPhalanx('Pharmacy Freight', 'AAQ'), false, 'not every name starting with Pha');
   assert.equal(policy.isFlatbedOnlyPhalanx('R X O 2429200 - ATZ F', 'AAQ'), false, 'only Phalanx accounts');
   assert.equal(policy.isFlatbedOnlyPhalanx('Paramount', 'AAQ'), false);
 

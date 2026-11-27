@@ -23,6 +23,39 @@ import LoadTable from './LoadTable.jsx';
 import { chOfferToTmsLoad, getTodaysExportedLanes, CH_TMS_ACCOUNT } from './lib/chOffers.js';
 import { parseChatLoadMessage, chatLoadAccount, chatLoadToTmsLoad } from './lib/chatLoads.js';
 import automationPolicy from '../bot/automation-policy.json';
+import {
+  getEquipmentDescription,
+  isTeamEquipment,
+  isTeamLoad,
+  normalizeEquipmentCode,
+  getLandstarEquipment2,
+  getLandstarEquipmentCode,
+  isFlatbedEquipment
+} from './app/equipment.js';
+import {
+  canadianPostalDatabase,
+  findCanadianPlace,
+  lookupCanadianPostalCode,
+  normalizeCanadianPostalCode
+} from './app/canada.js';
+import {
+  ameriCustomerKey,
+  isAmeriCustomer,
+  ameriColonyRates,
+  ameriYorkRates,
+  fixedLaneRates,
+  ameriMenardsStops,
+  ameriPickupHours,
+  AMERI_MENARDS_WEIGHT,
+  AMERI_WEIGHT,
+  ameriPlaceKey,
+  isAmeriMenardsLoad,
+  applyAmeriLoadDefaults,
+  normalizeFixedLaneCity,
+  getFixedLaneRate,
+  createLaneRateKey,
+  getSavedLaneRate
+} from './app/laneRates.js';
 
 const exportedLoadRetentionMs = 30 * 24 * 60 * 60 * 1000;
 // Landstar's bulk upload accepts at most 25 loads per spreadsheet.
@@ -38,123 +71,6 @@ const zipDatabase = {
   "EAST WINDSOR, NJ": "08520",
   // Add other recurring lanes or missing cities here as needed:
 };
-
-// CANADIAN POSTAL CODE AUTO-FILL (the zipcodes package is US-only)
-// Key: "CITY, PROVINCE" (uppercase). Value: a representative postal code.
-// Add recurring Canadian lanes here as they come up.
-const canadianPostalDatabase = {
-  // Quebec
-  "ST JN S RICHELIEU, QC": "J3B 1A1",
-  "SAINT JEAN SUR RICHELIEU, QC": "J3B 1A1",
-  "ST JEAN SUR RICHELIEU, QC": "J3B 1A1",
-  "MONTREAL, QC": "H1A 0A1",
-  "QUEBEC, QC": "G1A 0A1",
-  "QUEBEC CITY, QC": "G1A 0A1",
-  "LAVAL, QC": "H7A 0A1",
-  "GATINEAU, QC": "J8P 0A1",
-  "LONGUEUIL, QC": "J3Y 0A1",
-  "SHERBROOKE, QC": "J1H 0A1",
-  "TROIS RIVIERES, QC": "G8T 0A1",
-  "DRUMMONDVILLE, QC": "J2A 0A1",
-  "GRANBY, QC": "J2G 0A1",
-  "SAINT HYACINTHE, QC": "J2R 0A1",
-  "BROSSARD, QC": "J4W 0A1",
-  // Ontario
-  "TORONTO, ON": "M1A 0A1",
-  "MISSISSAUGA, ON": "L4T 0A1",
-  "BRAMPTON, ON": "L6P 0A1",
-  "VAUGHAN, ON": "L4H 0A1",
-  "ETOBICOKE, ON": "M8V 0A1",
-  "SCARBOROUGH, ON": "M1B 0A1",
-  "MARKHAM, ON": "L3P 0A1",
-  "HAMILTON, ON": "L8E 0A1",
-  "LONDON, ON": "N5V 0A1",
-  "KITCHENER, ON": "N2A 0A1",
-  "CAMBRIDGE, ON": "N1R 0A1",
-  "GUELPH, ON": "N1E 0A1",
-  "WINDSOR, ON": "N8N 0A1",
-  "OTTAWA, ON": "K1A 0A1",
-  "BARRIE, ON": "L4M 0A1",
-  "OSHAWA, ON": "L1G 0A1",
-  "BURLINGTON, ON": "L7L 0A1",
-  "OAKVILLE, ON": "L6H 0A1",
-  "MILTON, ON": "L9T 0A1",
-  "AJAX, ON": "L1S 0A1",
-  "PICKERING, ON": "L1V 0A1",
-  "WHITBY, ON": "L1M 0A1",
-  "KINGSTON, ON": "K7K 0A1",
-  "SUDBURY, ON": "P3A 0A1",
-  "THUNDER BAY, ON": "P7A 0A1",
-  "SARNIA, ON": "N7S 0A1",
-  "BELLEVILLE, ON": "K8N 0A1",
-  "CORNWALL, ON": "K6H 0A1",
-  "BROCKVILLE, ON": "K6V 0A1",
-  "NIAGARA FALLS, ON": "L2E 0A1",
-  "ST CATHARINES, ON": "L2M 0A1",
-  // Manitoba
-  "WINNIPEG, MB": "R2C 0A1",
-  "BRANDON, MB": "R7A 0A1",
-  // Saskatchewan
-  "REGINA, SK": "S4N 0A1",
-  "SASKATOON, SK": "S7H 0A1",
-  // Alberta
-  "CALGARY, AB": "T1X 0A1",
-  "EDMONTON, AB": "T5A 0A1",
-  "RED DEER, AB": "T4N 0A1",
-  "LETHBRIDGE, AB": "T1H 0A1",
-  "FORT MCMURRAY, AB": "T9H 0A1",
-  // British Columbia
-  "VANCOUVER, BC": "V5K 0A1",
-  "SURREY, BC": "V3R 0A1",
-  "BURNABY, BC": "V5A 0A1",
-  "RICHMOND, BC": "V6V 0A1",
-  "DELTA, BC": "V3M 0A1",
-  "LANGLEY, BC": "V2Y 0A1",
-  "ABBOTSFORD, BC": "V2S 0A1",
-  "KELOWNA, BC": "V1V 0A1",
-  "VICTORIA, BC": "V8T 0A1",
-  "KAMLOOPS, BC": "V1S 0A1",
-  "PRINCE GEORGE, BC": "V2L 0A1",
-  // New Brunswick
-  "MONCTON, NB": "E1A 0A1",
-  "SAINT JOHN, NB": "E2H 0A1",
-  "FREDERICTON, NB": "E3A 0A1",
-  // Nova Scotia
-  "HALIFAX, NS": "B3H 0A1",
-  "DARTMOUTH, NS": "B2V 0A1",
-  "SYDNEY, NS": "B1L 0A1",
-  // Prince Edward Island
-  "CHARLOTTETOWN, PE": "C1A 0A1",
-  // Newfoundland and Labrador
-  "ST JOHNS, NL": "A1A 0A1",
-  // Yukon / Northwest Territories / Nunavut
-  "WHITEHORSE, YT": "Y1A 0A1",
-  "YELLOWKNIFE, NT": "X1A 0A1",
-  "IQALUIT, NU": "X0A 0H0"
-};
-
-// A Canadian city and its postal code. Customer lists cut long names short ("BURLINGT, ON" in
-// Paramount's list, 2026-11-25), so with no exact match a unique city in that province that
-// starts with the given letters counts (5+ letters). Returns { city, postal } or null.
-function findCanadianPlace(city, province) {
-  const name = String(city || '').trim().toUpperCase().replace(/\.+$/, '').trim();
-  const region = String(province || '').trim().toUpperCase();
-  if (!name || !region) return null;
-  const exact = canadianPostalDatabase[`${name}, ${region}`];
-  if (exact) return { city: name, postal: exact };
-  const letters = value => value.replace(/[^A-Z]/g, '');
-  if (letters(name).length < 5) return null;
-  const matches = Object.keys(canadianPostalDatabase).filter(key => {
-    const [keyCity, keyRegion] = key.split(', ');
-    return keyRegion === region && letters(keyCity).startsWith(letters(name));
-  });
-  if (matches.length !== 1) return null;
-  return { city: matches[0].split(', ')[0], postal: canadianPostalDatabase[matches[0]] };
-}
-
-function lookupCanadianPostalCode(city, province) {
-  return findCanadianPlace(city, province)?.postal || '';
-}
 
 function autoFillLoadZipCodes(loads) {
   return loads.map(load => {
@@ -562,12 +478,6 @@ const canadianProvinceCodes = new Set('AB BC MB NB NL NS NT NU ON PE QC SK YT'.s
 const stateCodes = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
 canadianProvinceCodes.forEach(code => stateCodes.add(code));
 const sortedStateCodes = Array.from(stateCodes).sort();
-
-function normalizeCanadianPostalCode(value) {
-  const compact = String(value || '').toUpperCase().replace(/[\s-]/g, '');
-  if (!/^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\d[ABCEGHJ-NPRSTV-Z]\d$/.test(compact)) return '';
-  return `${compact.slice(0, 3)} ${compact.slice(3)}`;
-}
 
 function getCountryForRegion(region) {
   return canadianProvinceCodes.has(String(region || '').trim().toUpperCase()) ? 'CA' : 'US';
@@ -1879,33 +1789,6 @@ function parseDatScreenshotLines(lines, imageWidth, imageHeight, selectedBroker,
   return loads;
 }
 
-function getEquipmentDescription(eCode) {
-  const code = eCode?.trim().toUpperCase();
-  switch (code) {
-    case 'VE': return 'VAN:VAN';
-    case 'VZ': return 'VAN:VAN, VAN:53VN, REFR:REFR';
-    case 'VAN':
-    case 'V': return 'VAN:VAN, VAN:53VN';
-    case 'VM':
-    case 'VT': return 'VAN:VAN, VAN:53VN';
-    case 'VR': return 'VAN:VAN, REFR:REFR';
-    case 'V,R': return 'VAN:VAN, REFR:REFR';
-    case 'R': return 'REFR:REFR';
-    case 'RZ': return 'REFR:REFR';
-    case 'F': return '48FL, 53FL, FLAT';
-    case 'F,SD': return '48FL, 53FL, FLAT, STEP:SD';
-    case 'FH': return '48FL, 53FL, FLAT, STEP:SD';
-    case 'FV': return '48FL, 53FL, FLAT, STEP:SD';
-    case 'FLCS': return 'FLCS';
-    case 'SD': return 'STEP:SD';
-    case 'D-LG': return 'Straight truck - liftgate required';
-    case 'D-ST': return 'Straight truck';
-    case 'D-RF': return 'Straight truck - reefer';
-    case 'D-LG,D-ST': return 'D-LG, D-ST';
-    default: return eCode || 'VAN:VAN';
-  }
-}
-
 function formatExcelDateTime(val) {
   if (val == null || val === '') return '10/18/2026 0800 - 1200';
   if (typeof val === 'number' && Number.isFinite(val) && val >= 0) {
@@ -2683,10 +2566,6 @@ function normalizeMilesValue(value) {
   return digits.length >= 7 ? digits.slice(0, -6) : digits;
 }
 
-function isTeamEquipment(value) {
-  return ['VM', 'VT'].includes(String(value || '').trim().toUpperCase());
-}
-
 function hasLoadRate(load) {
   return Number(String(load?.rateInput || '').replace(/[$,]/g, '')) > 0;
 }
@@ -2795,14 +2674,6 @@ function parseFuelSurchargeEmail(text) {
   return { date, rates };
 }
 
-// Team comes from the Team switch when set; otherwise team equipment (VM/VT) means team.
-function isTeamLoad(load) {
-  const team = String(load?.team || '').trim().toLowerCase();
-  if (team === 'true') return true;
-  if (team === 'false') return false;
-  return isTeamEquipment(load?.eCode);
-}
-
 // Team vans (VM/VT) are shown as a plain V; the Team flag carries the team part.
 // Equipment we don't haul: oversized/specialized trailers, and intermodal ("INT" in the
 // equipment box). These loads are never imported or exported, for every customer.
@@ -2810,39 +2681,10 @@ function isSkippableEquipment(value) {
   return /OVER\s*DIMENSIONAL|OVER\s*SIZE|OVERSIZE|REMOVABLE\s*GOOSE\s*NECK|GOOSE\s*NECK|\bRGN\b|LOW\s*BOY|DOUBLE\s*DROP|\bINT\b|INTER\s*MODAL/i.test(String(value || ''));
 }
 
-function normalizeEquipmentCode(value) {
-  const code = String(value || '').trim().toUpperCase();
-  if (!code) return '';
-  if (/^D-(LG|ST|RF)/.test(code)) return code.replace(/\s/g, '');
-  if (/STRAIGHT\s*TRUCK|SPRINTER|BOX\s*TRUCK|HOT\s*SHOT/.test(code)) {
-    if (/REEFER|REFRIGERATED/.test(code)) return 'D-RF';
-    return /LIFT\s*GATE/.test(code) && !/NO\s*LIFT\s*GATE|WITHOUT\s*(?:A\s*)?LIFT\s*GATE/.test(code) ? 'D-LG' : 'D-ST';
-  }
-  if (/CONESTOGA/.test(code)) return 'FLCS';
-  // Step Deck before flatbed so "Flatbed or Step Deck" imports as SD.
-  if (/STEP\s*DECK|STEPDECK|\bSTEP\b/.test(code)) return 'SD';
-  if (/FLAT\s*BED|\bFLAT\b/.test(code)) return 'F';
-  if (/\bVAN\b\s+OR\s+(REEFER|REFR)\b/.test(code)) return 'V,R';
-  if (/REEFER|\bREFR/.test(code)) return 'R';
-  if (/\bVAN\b/.test(code)) return 'V';
-  return code;
-}
-
 function getDisplayEquipmentCode(value) {
   const code = String(value || '').trim().toUpperCase();
   if (code === 'VE') return 'VAN';
   return isTeamEquipment(code) ? 'V' : value;
-}
-
-// Liftgate-required freight cannot accept a straight truck without a liftgate.
-function getLandstarEquipment2(ord) {
-  if (ord?.equipment2 !== undefined) return ord.equipment2;
-  if (isTeamLoad(ord)) return '53VN';
-  if (isFlatbedEquipment(ord?.eCode)) return 'STEP';
-  const code = String(ord?.eCode || '').trim().toUpperCase();
-  if (['D-ST', 'D-ST,D-LG', 'D-LG,D-ST'].includes(code.replace(/\s/g, ''))) return 'D-LG';
-  if (code === 'V,R') return 'REFR';
-  return '';
 }
 
 // AMERI 18347- ATZ (exact account; Daniel 2026-11-27): one posting offers both trailers,
@@ -2856,50 +2698,20 @@ function getLandstarExportEquipment2(customer, ord, postingCode = '') {
   return getLandstarEquipment2(ord);
 }
 
-// Agent AAQ's Phalanx account (Daniel 2026-11-27): imports only the F (flatbed) loads of a list
-// and posts them as FLAT with no Step Deck alternate. Known by the TMS's own posting code (AAQ in
-// My Settings) and an account whose name starts with "Pha" (Pha / Phal / Phalanx), so no other
-// agent's Phalanx account changes (Daniel's Pha 882255 - ATZ is posted under ANQ).
+// Agent AAQ's PHAL account (Daniel 2026-11-27): imports only the F (flatbed) loads of a list and
+// posts them as FLAT with no Step Deck alternate. Known by its name starting with "Phal" (PHAL /
+// Phalanx), whatever posting code the TMS has, or by any "Pha" account in a TMS whose posting
+// code is AAQ. Daniel's "Pha 882255 - ATZ" (posted under ANQ) stays as it is.
 const FLATBED_ONLY_PHALANX_CODES = new Set(['AAQ']);
 function isFlatbedOnlyPhalanx(customer, postingCode) {
-  return FLATBED_ONLY_PHALANX_CODES.has(String(postingCode || '').trim().toUpperCase())
-    && /^\s*pha(?:l|lanx)?\b/i.test(normalizeCustomerName(customer));
+  const name = normalizeCustomerName(customer);
+  if (/^\s*phal/i.test(name)) return true;
+  return FLATBED_ONLY_PHALANX_CODES.has(String(postingCode || '').trim().toUpperCase()) && /^\s*pha\b/i.test(name);
 }
 
 // Is this load a flatbed (F, FLAT, 48/53 ft flatbed)? Step deck and conestoga are not.
 function isFlatbedLoad(load) {
   return ['FLAT', '48FL', '53FL'].includes(getLandstarEquipmentCode(load?.eCode));
-}
-
-function getLandstarEquipmentCode(value) {
-  const code = String(value || '').trim().toUpperCase();
-  const equipmentCodes = {
-    VZ: 'VAN',
-    VAN: 'VAN',
-    V: 'VAN',
-    VT: 'VAN',
-    VM: 'VAN',
-    VE: 'VAN',
-    VR: 'VAN',
-    'V,R': 'VAN',
-    R: 'REFR',
-    RZ: 'REFR',
-    F: 'FLAT',
-    'F,SD': 'FLAT',
-    FH: 'FH',
-    FV: 'FLAT',
-    FLCS: 'FLCS',
-    SD: 'STEP'
-  };
-  if (equipmentCodes[code]) return equipmentCodes[code];
-  if (['D-ST', 'D-ST,D-LG', 'D-LG,D-ST'].includes(code.replace(/\s/g, ''))) return 'D-ST';
-  if (code === 'D-LG' || code === 'D-RF') return code;
-  if (code.includes('53 FEET') || code.includes('53FT') || code.includes('53 FT')) return '53VN';
-  if (code.startsWith('VAN')) return 'VAN';
-  if (code.startsWith('REFR') || code.startsWith('REEFER')) return 'REFR';
-  if (code.startsWith('FLAT')) return 'FLAT';
-  if (code.startsWith('STEP')) return 'STEP';
-  return code.match(/\b(24VN|28VN|48VN|53VN|VAN|REFR|FLAT|48FL|53FL|STEP|53SD|SD)\b/)?.[0] || '';
 }
 
 const equipmentOptions = [
@@ -3043,10 +2855,6 @@ function getImportedHazmatTanker(equipment, commodities = []) {
   if (/(?<!NON[-\s]?)\bHAZ\s*MAT\b/i.test(text)) flags.hazmat = 'true';
   if (/\bTANK(ER)?\b/i.test(String(equipment || ''))) flags.tanker = 'true';
   return flags;
-}
-
-function isFlatbedEquipment(value) {
-  return ['F', 'F,SD', 'FH', 'FV'].includes(String(value || '').replace(/\s/g, '').toUpperCase());
 }
 
 function getLoadCommodity(load) {
@@ -3807,121 +3615,6 @@ function assignImportedLoadIdentity(importedLoad, existingLoads, stagedLoads) {
   return { ...normalizedLoad, id: variantId };
 }
 
-// AMERI 18347- ATZ (exact account; Daniel 2026-11-25): every load ships from Colony, WY.
-// Contractor rates from "americo rates.xlsx": the Rate column, never the Notes column. A lane's
-// "Got $X on 11/xx" note (an amount already approved) goes on imported loads as a Planning
-// Comment, not into the rate (Daniel, 2026-11-25). Flatbed-only rates
-// (Tacoma $2,800, Lovell $1,400) are left out: the list doesn't say the equipment.
-const ameriCustomerKey = 'AMERI18347ATZ';
-
-function isAmeriCustomer(name) {
-  return normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === ameriCustomerKey;
-}
-
-const ameriColonyRates = [
-  ['BENTONVILLE', 'AR', 3000], ['BUCKEYE', 'AZ', 4100], ['APPLE VALLEY', 'CA', 4000],
-  ['RED BLUFF', 'CA', 4500, 'Got $4,800 approved on 11/19'], ['PORTERVILLE', 'CA', 4000], ['LOVELAND', 'CO', 1800],
-  ['MOUNT PLEASANT', 'IA', 2600], ['SHELL ROCK', 'IA', 2000], ['PLANO', 'IL', 2200],
-  ['GRANITE CITY', 'IL', 2150], ['SPRING VALLEY', 'IL', 2800], ['TERRE HAUTE', 'IN', 2850],
-  ['SEYMOUR', 'IN', 3000, 'Got $3,800 approved on 11/18'], ['OTTAWA', 'KS', 2400], ['SAGINAW', 'MI', 3400],
-  ['SAINT JAMES', 'MO', 3000], ['SULLIVAN', 'MO', 2700], ['MCKENZIE', 'ND', 1000],
-  ['VALLEY', 'NE', 1600], ['WASHINGTON COURT HOUSE', 'OH', 3400], ['HOLIDAY CITY', 'OH', 3000],
-  ['HERMISTON', 'OR', 3500, 'Got $4,100 approved on 11/16'], ['SEALY', 'TX', 3700], ['PALESTINE', 'TX', 4000, 'Got $4,300 approved on 11/18'],
-  ['PLAINVIEW', 'TX', 2900], ['NEW BRAUNFELS', 'TX', 4000, 'Got $4,400 approved on 11/18'], ['SANGER', 'TX', 3500, 'Got $3,500 approved on 11/18'],
-  ['GRANTSVILLE', 'UT', 2700, 'Got $3,000 approved on 11/23'], ['EAU CLAIRE', 'WI', 1650], ['IRON RIDGE', 'WI', 2100],
-  ['MENOMONIE', 'WI', 1900], ['BEAVER DAM', 'WI', 2500], ['SEATTLE', 'WA', 2400],
-  ['FIFE', 'WA', 2500], ['LOVELL', 'WY', 1200]
-].map(([destCity, destSt, rate, approved]) => ({
-  customer: 'AMERI 18347- ATZ', origCity: 'COLONY', origSt: 'WY', destCity, destSt, rate: String(rate),
-  ...(approved ? { approved } : {})
-}));
-
-// AMERI 18347- ATZ loads picking up in York, PA (the sheet's "York PA" tab).
-const ameriYorkRates = [
-  ['RAYMOND', 'NH', 2200], ['SHELBY', 'NC', 1350], ['HOPE MILLS', 'NC', 1500],
-  ['FORT PIERCE', 'FL', 4100], ['ALACHUA', 'FL', 3400], ['LAGRANGE', 'GA', 2200],
-  ['DOUGLAS', 'GA', 2100], ['SUTHERLAND', 'VA', 1000], ['MIAMI', 'FL', 4100], ['SMYRNA', 'DE', 800]
-].map(([destCity, destSt, rate]) => ({
-  customer: 'AMERI 18347- ATZ', origCity: 'YORK', origSt: 'PA', destCity, destSt, rate: String(rate)
-}));
-
-// Fixed lane-rate overrides: these lanes always pay the listed amount.
-const fixedLaneRates = [
-  { origSt: 'ID', destSt: 'FL', rate: '11000' },
-  ...ameriColonyRates,
-  ...ameriYorkRates
-];
-
-// AMERI 18347- ATZ load details its list doesn't show (Daniel, 2026-11-25):
-// - Menards loads weigh 43,500 lbs and deliver 7 AM to 9 PM; every other load is 41,500 lbs.
-//   Menards stops are the rate sheet's "Menards 7am - 9pm FCFS" destinations.
-// - Pickups use the shipping location's hours ("americo rates - Colony WY" pickup list);
-//   Colony is the West Plant, 6 AM to 11 PM. Tilden, TX is by appointment only.
-const ameriMenardsStops = new Set([
-  'SHELL ROCK|IA', 'TERRE HAUTE|IN', 'SAGINAW|MI', 'SULLIVAN|MO', 'MCKENZIE|ND', 'VALLEY|NE',
-  'WASHINGTON COURT HOUSE|OH', 'HOLIDAY CITY|OH', 'EAU CLAIRE|WI', 'IRON RIDGE|WI'
-]);
-const ameriPickupHours = {
-  'LOVELL|WY': ['0700', '1400'], 'COLONY|WY': ['0600', '2300'], 'DILLON|MT': ['0800', '1800'],
-  'GREEN RIVER|WY': ['0700', '1700'], 'CHEYENNE|WY': ['0700', '1400'], 'TILDEN|TX': ['0700', '1400'],
-  'MILWAUKEE|WI': ['0700', '1430'], 'YORK|PA': ['0600', '2000'], 'CEDARBURG|WI': ['0700', '1400'],
-  'PHOENIX|AZ': ['0700', '1500'], 'ROCKFORD|IL': ['0730', '1500'], 'CARTERSVILLE|GA': ['0700', '1400'],
-  'EATON|CO': ['0700', '1500'], 'EVANSVILLE|IN': ['0700', '1500'], 'SCOTT CITY|MO': ['0800', '1600'],
-  'SEATTLE|WA': ['0700', '1500'], 'NEENAH|WI': ['0700', '1400'], 'WINCHESTER|KY': ['0730', '1430'],
-  'GREYBULL|WY': ['0800', '2100'], 'VALLEY|NE': ['0700', '2100'], 'SCRANTON|ND': ['0700', '1400'],
-  'GRANITE CITY|IL': ['0800', '1530']
-};
-const AMERI_MENARDS_WEIGHT = '43500 lbs';
-const AMERI_WEIGHT = '41500 lbs';
-
-function ameriPlaceKey(city, state) {
-  return `${String(city || '').trim().toUpperCase().replace(/\s+/g, ' ')}|${String(state || '').trim().toUpperCase()}`;
-}
-
-function isAmeriMenardsLoad(load) {
-  return ameriMenardsStops.has(ameriPlaceKey(load?.destCity, load?.destSt));
-}
-
-// Fills weight and pickup/delivery windows on an imported AMERI load (other customers unchanged).
-function applyAmeriLoadDefaults(customer, load) {
-  if (!isAmeriCustomer(customer)) return load;
-  const dateOf = value => String(value || '').match(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/)?.[0] || '';
-  const menards = isAmeriMenardsLoad(load);
-  const next = { ...load, weight: menards ? AMERI_MENARDS_WEIGHT : AMERI_WEIGHT };
-  // The amount already approved on this lane (rate sheet note), shown on the load.
-  const lane = fixedLaneRates.find(entry => entry.approved && entry.customer === 'AMERI 18347- ATZ'
-    && normalizeFixedLaneCity(entry.origCity) === normalizeFixedLaneCity(load.origCity) && entry.origSt === String(load.origSt || '').toUpperCase()
-    && normalizeFixedLaneCity(entry.destCity) === normalizeFixedLaneCity(load.destCity) && entry.destSt === String(load.destSt || '').toUpperCase());
-  if (lane && !String(load.planningComment || '').includes(lane.approved)) {
-    next.planningComment = load.planningComment ? `${lane.approved}; ${load.planningComment}` : lane.approved;
-  }
-  const hours = ameriPickupHours[ameriPlaceKey(load.origCity, load.origSt)];
-  const pickupDate = dateOf(load.pickupTime);
-  if (hours && pickupDate) next.pickupTime = `${pickupDate} ${hours[0]} - ${hours[1]}`;
-  const deliveryDate = dateOf(load.deliveryTime);
-  if (menards && deliveryDate) next.deliveryTime = `${deliveryDate} 0700 - 2100`;
-  return next;
-}
-
-// City names compare without spaces/punctuation, and "Mt"/"St"/"Ft" match "Mount"/"Saint"/"Fort".
-function normalizeFixedLaneCity(value) {
-  return String(value || '').trim().toUpperCase()
-    .replace(/^MT\.?\s+/, 'MOUNT ').replace(/^ST\.?\s+/, 'SAINT ').replace(/^FT\.?\s+/, 'FORT ')
-    .replace(/[^A-Z0-9]/g, '');
-}
-
-function getFixedLaneRate(customer, order) {
-  const text = value => String(value || '').trim().toUpperCase();
-  const match = fixedLaneRates.find(lane =>
-    (!lane.customer || normalizeCustomerName(lane.customer).toUpperCase().replace(/[^A-Z0-9]/g, '')
-      === normalizeCustomerName(customer).toUpperCase().replace(/[^A-Z0-9]/g, ''))
-    && (!lane.origSt || text(order.origSt) === lane.origSt)
-    && (!lane.destSt || text(order.destSt) === lane.destSt)
-    && (!lane.origCity || normalizeFixedLaneCity(order.origCity) === normalizeFixedLaneCity(lane.origCity))
-    && (!lane.destCity || normalizeFixedLaneCity(order.destCity) === normalizeFixedLaneCity(lane.destCity)));
-  return match ? match.rate : '';
-}
-
 // Landstar export columns that depend on the account. AMERI 18347- ATZ loads are brokerable
 // with no Carrier Amt (the Rate column keeps the rate). Landstar validated but refused to post
 // Brokerable Y + Carrier Amt 0 ("postingErrors":1, five uploads, 2026-11-25); Brokerable N + 0
@@ -4037,23 +3730,6 @@ function buildDatPosting(customer, ord) {
     rateUsd: isAmeriCustomer(customer) || !(rate > 0) ? 0 : Math.round(rate),
     comments: comments.length ? [comments.join(' - ')] : []
   } };
-}
-
-function createLaneRateKey(customer, order) {
-  const normalize = value => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const origin = normalize(order.origCity);
-  const destination = normalize(order.destCity);
-  if (!origin || !destination) return '';
-  return JSON.stringify([
-    normalizeCustomerName(customer),
-    origin,
-    normalize(order.origSt),
-    '',
-    destination,
-    normalize(order.destSt),
-    '',
-    normalize(order.eCode)
-  ]);
 }
 
 // ==========================================
@@ -4220,30 +3896,6 @@ function rememberLaneRate(laneRates, customer, order, rate, source = 'manual') {
     console.error('Could not save lane rate:', error);
   }
   return next;
-}
-
-function getSavedLaneRate(laneRates, customer, order) {
-  const fixedRate = getFixedLaneRate(customer, order);
-  if (fixedRate) return fixedRate;
-  const key = createLaneRateKey(customer, order);
-  if (!key) return '';
-  if (laneRates[key]) return laneRates[key];
-  // Older saved keys include ZIPs. Keep that history usable without rewriting it.
-  for (const [savedKey, rate] of Object.entries(laneRates).reverse()) {
-    let parts;
-    try {
-      parts = JSON.parse(savedKey);
-    } catch (error) {
-      console.error('Could not read a saved lane-rate key:', savedKey, error);
-      continue;
-    }
-    if (!Array.isArray(parts) || parts.length !== 8) continue;
-    const legacyOrder = {
-      origCity: parts[1], origSt: parts[2], destCity: parts[4], destSt: parts[5], eCode: parts[7]
-    };
-    if (createLaneRateKey(parts[0], legacyOrder) === key && rate) return rate;
-  }
-  return '';
 }
 
 // ==========================================

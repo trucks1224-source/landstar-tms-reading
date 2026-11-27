@@ -197,7 +197,17 @@ const FILE_PATTERN = /^Landstar_Bulk_.*\.(xlsx|xls)$/i;
 // Big exports are shared with the helper bot: it rate-checks files from the back of the list.
 const { isPrechecked, isLockedByHelper } = require('./prechecked');
 
+// Exports saved to the Desktop instead of Downloads (agent AAQ's Chrome, 2026-11-27) are moved
+// here first; see desktop-exports.js.
+const { collectDesktopExports } = require('./desktop-exports');
+
 function findPendingFiles() {
+  try {
+    const moved = collectDesktopExports(sourceFolder);
+    if (moved.length) console.log(`  Moved ${moved.length} export(s) from the Desktop to ${sourceFolder}: ${moved.join(', ')}`);
+  } catch (error) {
+    console.error(`Could not check the Desktop for exports: ${error.message}`);
+  }
   if (!fs.existsSync(sourceFolder)) return [];
   return fs.readdirSync(sourceFolder)
     .filter(name => FILE_PATTERN.test(name))

@@ -22,6 +22,8 @@ async function withExportOwnership(files, work) {
 }
 
 function pendingRateFiles(folder, now = Date.now()) {
+  // Exports saved to the Desktop are moved into this folder first (desktop-exports.js).
+  try { require('./desktop-exports').collectDesktopExports(folder, { now }); } catch { /* next check */ }
   return fs.readdirSync(folder)
     .filter(name => /^Landstar_Bulk_.*\.(xlsx|xls)$/i.test(name))
     .map(name => path.join(folder, name))

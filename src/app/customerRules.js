@@ -7,6 +7,7 @@
 //   rateSource        'default' | 'customer' (the file's rate) | 'dat' | 'higher' (of the two)
 //   laneRates         [{ origCity, origSt, destCity, destSt, rate }]: always wins (city optional)
 //   excelColumns      { field: 'Header name in the file' } for files in this customer's layout
+//   capacity          'bco' (Landstar BCO trucks only) | 'both' (BCO trucks and outside carriers)
 import { getLandstarEquipmentCode } from './equipment.js';
 
 export const EQUIPMENT_FAMILIES = [
@@ -20,6 +21,9 @@ export const RATE_SOURCES = [
   ['default', 'As usual (saved lane rate, then the file, then DAT)'], ['customer', "The customer's rate in the file"],
   ['dat', 'DAT rate (ignore the file)'], ['higher', "The higher of the customer's rate and DAT"]
 ];
+export const CAPACITY_CHOICES = [
+  ['bco', 'BCO trucks only'], ['both', 'BCO trucks and carriers (carrier name and MC #)']
+];
 // What the Excel import can read, in the order the column-matching screen asks for it.
 export const EXCEL_FIELDS = [
   ['loadId', 'Load / order #'], ['equipment', 'Equipment'], ['origCity', 'Origin city'], ['origSt', 'Origin state'],
@@ -28,7 +32,7 @@ export const EXCEL_FIELDS = [
   ['deliveryLate', 'Delivery late time'], ['weight', 'Weight'], ['miles', 'Miles'], ['rate', 'Rate']
 ];
 
-const EMPTY = { importEquipment: [], equipment2: 'auto', rateSource: 'default', laneRates: [], excelColumns: {} };
+const EMPTY = { importEquipment: [], equipment2: 'auto', rateSource: 'default', laneRates: [], excelColumns: {}, capacity: 'bco' };
 const key = name => String(name || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 // The rules for one customer (all rules default to "as usual").
@@ -55,7 +59,8 @@ export function normalizeCustomerRules(raw) {
       .filter(lane => lane.rate > 0 && (lane.origSt || lane.origCity) && (lane.destSt || lane.destCity)),
     excelColumns: Object.fromEntries(Object.entries(rules.excelColumns && typeof rules.excelColumns === 'object' ? rules.excelColumns : {})
       .filter(([field, header]) => EXCEL_FIELDS.some(([id]) => id === field) && String(header || '').trim())
-      .map(([field, header]) => [field, String(header).trim()]))
+      .map(([field, header]) => [field, String(header).trim()])),
+    capacity: CAPACITY_CHOICES.some(([id]) => id === rules.capacity) ? rules.capacity : 'bco'
   };
 }
 
@@ -63,7 +68,7 @@ export function normalizeCustomerRules(raw) {
 export function hasCustomerRules(rules) {
   const normal = normalizeCustomerRules(rules);
   return Boolean(normal.importEquipment.length || normal.equipment2 !== EMPTY.equipment2 || normal.rateSource !== EMPTY.rateSource
-    || normal.laneRates.length || Object.keys(normal.excelColumns).length);
+    || normal.laneRates.length || Object.keys(normal.excelColumns).length || normal.capacity !== EMPTY.capacity);
 }
 
 // van / reefer / flatbed / stepdeck / other, from a TMS equipment code.

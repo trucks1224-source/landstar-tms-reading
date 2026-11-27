@@ -17,7 +17,8 @@ require('./file-log')('watchdog'); // also writes this bot's output to bot/logs
 // browser window still turns that bot off - the watchdog brings it back on the
 // next check unless you close the watchdog window first.
 
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
+const net = require('net');
 const fs = require('fs');
 const path = require('path');
 
@@ -74,7 +75,47 @@ function helperRunning() {
 }
 
 // Launch a .bat in its own window so it keeps running on its own and can be closed.
+// Is something still listening on this port? A TMS that answers slowly (a busy computer) is
+// not down: starting another one only left a dead window behind (2026-11-27: 23 of them).
+function portOpen(port, host = '127.0.0.1') {
+  return new Promise(resolve => {
+    const socket = net.createConnection({ port, host });
+    const done = open => { socket.destroy(); resolve(open); };
+    socket.setTimeout(1500, () => done(false));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
+// The script each start file runs. A bot whose node process is still alive is only slow to
+// report: a second copy cannot open the same browser profile and its window just stays open
+// (2026-11-27: 15 upload bot and 16 chat bot windows piled up).
+const BOT_SCRIPTS = {
+  'Start Landstar Bot.bat': 'upload.js', 'Start Helper Bot.bat': 'helper.js', 'Start Removal Bot.bat': 'removal.js',
+  'Start Rate Worker.bat': 'rates.js', 'Start Refresh Bot.bat': 'refresh-bot.js', 'Start Email Bot.bat': 'email-bot.js',
+  'Start Chat Bot.bat': 'chat-bot.js'
+};
+function scriptRunning(script) {
+  try {
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-Command',
+      "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | ForEach-Object { $_.CommandLine }"],
+    { encoding: 'utf8', timeout: 15000, windowsHide: true });
+    return out.split(/\r?\n/).some(line => new RegExp(`(^|[\\\\/\\s"])${script.replace('.', '\\.')}(\\s|"|$)`).test(line));
+  } catch {
+    return false;
+  }
+}
+const stillRunningLogged = {};
+
 function launch(batFile, title) {
+  const script = BOT_SCRIPTS[batFile];
+  if (script && scriptRunning(script)) {
+    if (!stillRunningLogged[batFile] || Date.now() - stillRunningLogged[batFile] > 10 * 60 * 1000) {
+      log(`${title} is slow to answer but still running (${script}) - not starting a second copy.`);
+      stillRunningLogged[batFile] = Date.now();
+    }
+    return;
+  }
   const launcher = path.join(BOT_DIR, batFile);
   const child = spawn('cmd.exe', ['/c', `start "${title}" "${launcher}"`], {
     cwd: BOT_DIR, detached: true, stdio: 'ignore', windowsVerbatimArguments: true
@@ -83,7 +124,11 @@ function launch(batFile, title) {
   child.unref();
 }
 
-function launchTms() {
+async function launchTms() {
+  if (await portOpen(5173)) {
+    log('The TMS dev server is slow to answer but still running on port 5173 - not starting a second copy.');
+    return;
+  }
   const child = spawn('cmd.exe', ['/c', 'start "Landstar TMS" npx vite --port 5173 --strictPort'], {
     cwd: ROOT, detached: true, stdio: 'ignore', windowsVerbatimArguments: true
   });

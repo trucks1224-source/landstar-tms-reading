@@ -1964,3 +1964,18 @@ body.tms-drawer-open .tms-sidebar {
   border-radius: 12px;
 }
 .tms-shell .tms-billing-back { margin-left: auto; }
+
+/* Driver and equipment, planning comment, DAT (Daniel 2026-11-27) */
+.tms-detail-card[data-kind='driver'] { --kind: 192, 132, 252; }
+.tms-detail-card[data-kind='notes'] { --kind: 251, 191, 36; }
+.tms-detail-card[data-kind='dat'] { --kind: 52, 211, 153; }
+.tms-field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 10px 14px; }
+.tms-field-grid[data-kind='carrier'] {
+  padding: 10px;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 10px;
+  background: rgba(120, 53, 15, 0.12);
+}
+.tms-field-note { grid-column: 1 / -1; margin-top: 4px; font-size: 11px; color: #a5b4fc; }
+.tms-capacity-switch { display: inline-flex; gap: 6px; }
+.tms-detail-columns-2 { grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); }

@@ -7,7 +7,7 @@ import {
 
 test('no rules: everything as usual', () => {
   const rules = getCustomerRules({}, 'Anything');
-  assert.deepEqual(rules, { importEquipment: [], equipment2: 'auto', rateSource: 'default', laneRates: [], excelColumns: {} });
+  assert.deepEqual(rules, { importEquipment: [], equipment2: 'auto', rateSource: 'default', laneRates: [], excelColumns: {}, capacity: 'bco' });
   assert.equal(hasCustomerRules(rules), false);
   assert.equal(ruleEquipment2(rules), undefined);
   assert.deepEqual(filterByImportEquipment([{ eCode: 'R' }], rules), { kept: [{ eCode: 'R' }], skipped: 0 });
@@ -66,4 +66,11 @@ test('rate source: the rate a load starts with, and the higher of two', () => {
 test('Excel columns: only known fields with a header name are kept', () => {
   const rules = normalizeCustomerRules({ excelColumns: { loadId: 'Ref #', origCity: ' Ship From City ', bogus: 'x', rate: '' } });
   assert.deepEqual(rules.excelColumns, { loadId: 'Ref #', origCity: 'Ship From City' });
+});
+
+test('capacity: BCO trucks only, or BCO trucks and carriers', () => {
+  assert.equal(normalizeCustomerRules({}).capacity, 'bco');
+  assert.equal(normalizeCustomerRules({ capacity: 'both' }).capacity, 'both');
+  assert.equal(normalizeCustomerRules({ capacity: 'x' }).capacity, 'bco');
+  assert.equal(hasCustomerRules({ capacity: 'both' }), true);
 });

@@ -4,7 +4,7 @@
 import { useState } from 'react';
 import * as XLSX from 'xlsx';
 import {
-  normalizeCustomerRules, EQUIPMENT_FAMILIES, EQUIPMENT2_CHOICES, RATE_SOURCES, EXCEL_FIELDS
+  normalizeCustomerRules, EQUIPMENT_FAMILIES, EQUIPMENT2_CHOICES, RATE_SOURCES, EXCEL_FIELDS, CAPACITY_CHOICES
 } from './customerRules.js';
 
 const input = 'bg-[#0b132b] border border-[#1c2541] rounded px-2 py-1 text-xs text-white';
@@ -97,6 +97,16 @@ export default function CustomerRulesPanel({ customer, rules, onSave, onClose })
               {RATE_SOURCES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
             </select>
           </label>
+        </section>
+
+        <section className="mb-4">
+          <label className="text-xs block">
+            <span className="block font-bold text-gray-200 mb-1">Who hauls this customer's loads</span>
+            <select value={draft.capacity} onChange={event => set('capacity', event.target.value)} className={`${input} w-full`}>
+              {CAPACITY_CHOICES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </select>
+          </label>
+          <p className="text-[10px] text-gray-500 mt-1">With carriers, each load gets a BCO truck / Carrier choice and a spot for the carrier's name and MC #.</p>
         </section>
 
         <section className="mb-4">

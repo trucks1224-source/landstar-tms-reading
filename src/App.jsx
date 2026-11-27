@@ -24,6 +24,7 @@ import { getCustomerRules, hasCustomerRules, filterByImportEquipment, ruleEquipm
 import CustomerRulesPanel from './app/CustomerRulesPanel.jsx';
 import { groupCustomers, moveCustomers, splitCustomerName, shortAccountName, accountTagKind } from './app/customerGroups.js';
 import { accountKey, findListedAccount } from './lib/accountAliases.js';
+import { lookupTruck, rememberTruck, lookupCarrier, rememberCarrier, fillFromTruck, truckKey } from './lib/capacityBook.js';
 import { chOfferToTmsLoad, getTodaysExportedLanes, CH_TMS_ACCOUNT } from './lib/chOffers.js';
 import { parseChatLoadMessage, chatLoadAccount, chatLoadToTmsLoad } from './lib/chatLoads.js';
 import automationPolicy from '../bot/automation-policy.json';
@@ -2036,7 +2037,9 @@ function getUserProfile() {
       // ⚙ Customer rules and the Google Chat list-name answers are kept too (both were lost on
       // every reload before, 2026-11-27).
       customerRules: saved.customerRules && typeof saved.customerRules === 'object' && !Array.isArray(saved.customerRules) ? saved.customerRules : {},
-      chatSheetAccounts: saved.chatSheetAccounts && typeof saved.chatSheetAccounts === 'object' && !Array.isArray(saved.chatSheetAccounts) ? saved.chatSheetAccounts : {}
+      chatSheetAccounts: saved.chatSheetAccounts && typeof saved.chatSheetAccounts === 'object' && !Array.isArray(saved.chatSheetAccounts) ? saved.chatSheetAccounts : {},
+      truckBook: saved.truckBook && typeof saved.truckBook === 'object' && !Array.isArray(saved.truckBook) ? saved.truckBook : {},
+      carrierBook: saved.carrierBook && typeof saved.carrierBook === 'object' && !Array.isArray(saved.carrierBook) ? saved.carrierBook : {}
     };
   } catch (error) {
     console.error('Could not load My Settings:', error);
@@ -4250,6 +4253,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       notify(error.message);
       return;
     }
+    rememberCapacity(booked);
     const request = buildAssignRequest(selectedBroker, booked);
     if (request.item) {
       saveLoad(booked);
@@ -4277,6 +4281,35 @@ export default function App({ sharing = null, userId = null } = {}) {
       }
     }
     saveLoad(updatedOrder);
+  };
+
+  // Truck # (Daniel 2026-11-27): a truck saved with its driver fills the empty driver boxes.
+  const handleTruckChange = value => {
+    if (!selectedOrder) return;
+    const saved = lookupTruck(profile.truckBook, value)
+      || driverDirectory.drivers.find(entry => entry.truck && truckKey(entry.truck) === truckKey(value)) || null;
+    let { load: next } = fillFromTruck({ ...selectedOrder, truck: value }, saved);
+    if (next.driverPhone !== selectedOrder.driverPhone) next = moveToOfferWithDriverPhone(next);
+    saveLoad(next);
+  };
+
+  // Carrier loads: who hauls it (BCO truck or an outside carrier), the carrier's name and MC #.
+  // Back to BCO clears the MC # (with an MC # the bot assigns the load to that carrier).
+  const setCapacityType = type => {
+    if (!selectedOrder) return;
+    saveLoad(type === 'carrier'
+      ? { ...selectedOrder, capacityType: 'carrier' }
+      : { ...selectedOrder, capacityType: 'bco', carrierMc: '' });
+  };
+  const handleCarrierMcChange = value => {
+    if (!selectedOrder) return;
+    const saved = lookupCarrier(profile.carrierBook, value);
+    saveLoad({ ...selectedOrder, carrierMc: value, ...(saved && !String(selectedOrder.carrierName || '').trim() ? { carrierName: saved.name } : {}) });
+  };
+  const handleCarrierNameChange = value => {
+    if (!selectedOrder) return;
+    const saved = Object.values(profile.carrierBook || {}).find(entry => entry.name.toUpperCase() === String(value).trim().toUpperCase());
+    saveLoad({ ...selectedOrder, carrierName: value, ...(saved && !getCarrierMc(selectedOrder) ? { carrierMc: saved.mc } : {}) });
   };
 
   // Calculate city-to-city driving miles after location editing stops.
@@ -4685,6 +4718,8 @@ export default function App({ sharing = null, userId = null } = {}) {
       // Kept as they are: ⚙ customer rules and Google Chat list-name answers (set elsewhere).
       customerRules: profile.customerRules || {},
       chatSheetAccounts: profile.chatSheetAccounts || {},
+      truckBook: profile.truckBook || {},
+      carrierBook: profile.carrierBook || {},
       phone: profileDraft.phone.replace(/\D/g, ''),
       postingCode: profileDraft.postingCode.trim().toUpperCase(),
       visibilityGroup: profileDraft.visibilityGroup.trim().toUpperCase(),
@@ -8386,6 +8421,22 @@ export default function App({ sharing = null, userId = null } = {}) {
 
   // ⚙ Rules for the open customer (src/app/CustomerRulesPanel.jsx), saved in My Settings.
   const [showRules, setShowRules] = useState(false);
+  // Saves this load's truck (with its driver) and carrier in My Settings, so typing the truck #
+  // or MC # again brings them back (Daniel 2026-11-27).
+  const rememberCapacity = load => {
+    if (!load) return;
+    const truckBook = rememberTruck(profile.truckBook, load);
+    const carrierBook = rememberCarrier(profile.carrierBook, load);
+    if (JSON.stringify(truckBook) === JSON.stringify(profile.truckBook || {})
+      && JSON.stringify(carrierBook) === JSON.stringify(profile.carrierBook || {})) return;
+    const nextProfile = { ...profile, truckBook, carrierBook };
+    try {
+      if (writeSyncedKey('landstar_profile', JSON.stringify(nextProfile))) setProfile(nextProfile);
+    } catch (error) {
+      console.error('Could not save the truck or carrier:', error);
+    }
+  };
+
   const saveCustomerRules = rules => {
     const nextRules = { ...(profile.customerRules || {}) };
     if (hasCustomerRules(rules)) nextRules[selectedBroker] = rules;
@@ -10473,11 +10524,23 @@ export default function App({ sharing = null, userId = null } = {}) {
                 </div>
               </div>
 
-              {/* Driver & Equipment Assignment */}
-              <div className="border border-[#1c2541] bg-[#121829]/60 p-4 rounded-lg">
-                <div className="flex items-center justify-between gap-2 mb-3">
-                  <h3 className="text-xs font-bold text-purple-400 uppercase tracking-wide">Driver & Equipment Assignment</h3>
-                  <div className="flex flex-wrap gap-1.5 justify-end">
+              {/* Driver and equipment (Daniel 2026-11-27): the truck # comes first and brings back the
+                  saved driver; loads hauled by an outside carrier get its name and MC #. */}
+              {(() => {
+                const carrierAllowed = isAmeriCustomer(selectedBroker) || getCustomerRules(profile.customerRules, selectedBroker).capacity === 'both';
+                const isCarrierLoad = carrierAllowed && (selectedOrder.capacityType === 'carrier' || Boolean(getCarrierMc(selectedOrder)));
+                const savedTruck = lookupTruck(profile.truckBook, selectedOrder.truck);
+                return (
+              <div className="tms-detail-card" data-kind="driver">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="tms-detail-title"><span aria-hidden="true" />Driver and equipment</h3>
+                  {carrierAllowed && (
+                    <div className="tms-capacity-switch" role="group" aria-label="Who hauls this load">
+                      <button type="button" aria-pressed={!isCarrierLoad} onClick={() => setCapacityType('bco')} className="tms-slim-btn" data-tone="violet">BCO truck</button>
+                      <button type="button" aria-pressed={isCarrierLoad} onClick={() => setCapacityType('carrier')} className="tms-slim-btn" data-tone="amber">Carrier</button>
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-1.5 ml-auto">
                     <button
                       type="button"
                       onClick={async (event) => {
@@ -10487,7 +10550,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                         setTimeout(() => { button.textContent = '📋 Copy driver info'; }, 1500);
                       }}
                       title="Copy the driver's name, phone, truck, trailer, previous empty location, pickup ETA and load number"
-                      className="bg-slate-700 hover:bg-slate-600 text-white text-[11px] px-2.5 py-1 rounded font-semibold cursor-pointer"
+                      className="tms-slim-btn" data-tone="blue"
                     >
                       📋 Copy driver info
                     </button>
@@ -10495,7 +10558,8 @@ export default function App({ sharing = null, userId = null } = {}) {
                       type="button"
                       onClick={handleCopyDriverLink}
                       title="Copy a link drivers can open to see this load and send you an inquiry"
-                      className="bg-purple-700 hover:bg-purple-600 text-white text-[11px] px-2.5 py-1 rounded font-semibold cursor-pointer"
+                      className="tms-slim-btn"
+                      data-tone="violet"
                     >
                       🔗 Copy driver link
                     </button>
@@ -10534,93 +10598,67 @@ export default function App({ sharing = null, userId = null } = {}) {
                     <option key={entry.driver} value={entry.driverPhone} label={entry.driver} />
                   ))}
                 </datalist>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3">
-                  <div>
-                    <label htmlFor="assignment-driver" className="text-xs text-gray-400 block mb-1">Driver Name</label>
-                    <div className="flex gap-1">
-                      <input id="assignment-driver" type="text" list="known-drivers" autoComplete="off" value={selectedOrder.driver || ''} onChange={(e) => handleDriverChange(e.target.value)} placeholder="Type or pick a driver" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
-                      <button type="button" onClick={() => copyToClipboard(selectedOrder.driver || '', 'Driver Name')} title="Copy Driver Name" aria-label="Copy Driver Name" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
+                <datalist id="known-carriers">
+                  {Object.values(profile.carrierBook || {}).map(entry => <option key={entry.mc} value={entry.name} label={`MC ${entry.mc}`} />)}
+                </datalist>
+                {isCarrierLoad && (
+                  <div className="tms-field-grid" data-kind="carrier">
+                    <div>
+                      <button type="button" onClick={() => copyToClipboard(selectedOrder.carrierName || '', 'Carrier name')} title="Click to copy the carrier name" className="tms-copy-label">Carrier name<span aria-hidden="true">⧉</span></button>
+                      <input id="assignment-carrier-name" type="text" list="known-carriers" autoComplete="off" value={selectedOrder.carrierName || ''} onChange={(e) => handleCarrierNameChange(e.target.value)} onBlur={() => rememberCapacity(selectedOrder)} placeholder="Carrier company name" className="tms-slim-input w-full" />
                     </div>
-                  </div>
-                  <div>
-                    <label htmlFor="assignment-truck" className="text-xs text-gray-400 block mb-1">Truck Number</label>
-                    <div className="flex gap-1">
-                      <input id="assignment-truck" type="text" list="known-trucks" autoComplete="off" value={selectedOrder.truck || ''} onChange={(e) => handleFieldChange('truck', e.target.value)} placeholder="Truck number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
-                      <button type="button" onClick={() => copyToClipboard(selectedOrder.truck || '', 'Truck Number')} title="Copy Truck Number" aria-label="Copy Truck Number" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
-                    </div>
-                  </div>
-                </div>
-                {isAmeriCustomer(selectedBroker) && (
-                  <div className="mb-3">
-                    <label htmlFor="assignment-carrier-mc" className="text-xs text-violet-300 font-semibold block mb-1">Approved carrier MC # <span className="text-gray-500 font-normal">(leave empty for a Landstar BCO truck)</span></label>
-                    <div className="flex gap-1">
-                      <input id="assignment-carrier-mc" type="text" inputMode="numeric" autoComplete="off" value={selectedOrder.carrierMc || ''} onChange={(e) => handleFieldChange('carrierMc', e.target.value)} placeholder="MC number, e.g. 547847" className="min-w-0 w-full bg-[#0b132b] border border-violet-500/50 rounded p-2 text-sm text-white" />
-                      <button type="button" onClick={() => copyToClipboard(selectedOrder.carrierMc || '', 'Carrier MC #')} title="Copy Carrier MC #" aria-label="Copy Carrier MC #" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
+                    <div>
+                      <button type="button" onClick={() => copyToClipboard(selectedOrder.carrierMc || '', 'MC #')} title="Click to copy the mc #" className="tms-copy-label">MC #<span aria-hidden="true">⧉</span></button>
+                      <input id="assignment-carrier-mc" type="text" inputMode="numeric" autoComplete="off" value={selectedOrder.carrierMc || ''} onChange={(e) => handleCarrierMcChange(e.target.value)} onBlur={() => rememberCapacity(selectedOrder)} placeholder="MC number, e.g. 547847" className="tms-slim-input w-full" />
                     </div>
                     {getCarrierMc(selectedOrder) && (
-                      <p className="text-[11px] text-violet-200 mt-1">Book Load assigns this approved carrier on Landstar (Capacity type: Carrier) instead of a BCO truck. The bot only assigns it when the MC search finds exactly one Qualified carrier.</p>
+                      <p className="tms-field-note">Book Load assigns this carrier on Landstar (Capacity type: Carrier) instead of a BCO truck, only when the MC search finds exactly one Qualified carrier.</p>
                     )}
                   </div>
                 )}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="tms-field-grid">
                   <div>
-                    <label htmlFor="assignment-trailer" className="text-xs text-gray-400 block mb-1">Trailer Number</label>
-                    <div className="flex gap-1">
-                      <input id="assignment-trailer" type="text" list="known-trailers" autoComplete="off" value={selectedOrder.trailer || ''} onChange={(e) => handleFieldChange('trailer', e.target.value)} placeholder="Trailer number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
-                      <button type="button" onClick={() => copyToClipboard(selectedOrder.trailer || '', 'Trailer Number')} title="Copy Trailer Number" aria-label="Copy Trailer Number" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
-                    </div>
+                    <button type="button" onClick={() => copyToClipboard(selectedOrder.truck || '', 'Truck #')} title="Click to copy the truck #" className="tms-copy-label">Truck #<span aria-hidden="true">⧉</span></button>
+                    <input id="assignment-truck" type="text" list="known-trucks" autoComplete="off" value={selectedOrder.truck || ''} onChange={(e) => handleTruckChange(e.target.value)} onBlur={() => rememberCapacity(selectedOrder)} placeholder="Truck # brings back its driver" className="tms-slim-input w-full" />
+                    {savedTruck && <p className="tms-field-note">Saved: {savedTruck.driver}{savedTruck.driverPhone ? ` · ${savedTruck.driverPhone}` : ''}</p>}
                   </div>
                   <div>
-                    <label htmlFor="assignment-pickup-eta" className="text-xs text-gray-400 block mb-1">Pickup ETA</label>
-                    <input id="assignment-pickup-eta" type="text" value={selectedOrder.pickupEta || ''} onChange={(e) => handleFieldChange('pickupEta', e.target.value)} placeholder="MM/DD/YYYY HH:mm (local pickup time)" className="w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
+                    <button type="button" onClick={() => copyToClipboard(selectedOrder.driver || '', 'Driver name')} title="Click to copy the driver name" className="tms-copy-label">Driver name<span aria-hidden="true">⧉</span></button>
+                    <input id="assignment-driver" type="text" list="known-drivers" autoComplete="off" value={selectedOrder.driver || ''} onChange={(e) => handleDriverChange(e.target.value)} onBlur={() => rememberCapacity(selectedOrder)} placeholder="Type or pick a driver" className="tms-slim-input w-full" />
+                  </div>
+                  <div>
+                    <button type="button" onClick={() => copyToClipboard(selectedOrder.driverPhone || '', 'Driver cell')} title="Click to copy the driver cell" className="tms-copy-label">Driver cell<span aria-hidden="true">⧉</span></button>
+                    <input id="assignment-driver-phone" type="tel" list="known-driver-phones" autoComplete="off" value={selectedOrder.driverPhone || ''} onChange={(e) => handleFieldChange('driverPhone', e.target.value)} onBlur={() => rememberCapacity(selectedOrder)} placeholder="Cell phone" title="Entering a phone number moves an unbooked load to OFFER. Book Load separately when accepted." className="tms-slim-input w-full" />
                   </div>
                 </div>
-                <div className="mt-3">
-                  <label htmlFor="assignment-empty-location" className="text-xs text-gray-400 block mb-1">Previous Empty Location</label>
-                  <div className="flex gap-1">
-                    <input id="assignment-empty-location" type="text" autoComplete="off" value={selectedOrder.emptyLocation || ''} onChange={(e) => handleFieldChange('emptyLocation', e.target.value)} placeholder="City, ST where the truck empties before this load" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
-                    <button type="button" onClick={() => copyToClipboard(selectedOrder.emptyLocation || '', 'Previous Empty Location')} title="Copy Previous Empty Location" aria-label="Copy Previous Empty Location" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
+                <div className="tms-field-grid">
+                  <div>
+                    <button type="button" onClick={() => copyToClipboard(selectedOrder.trailer || '', 'Trailer #')} title="Click to copy the trailer #" className="tms-copy-label">Trailer #<span aria-hidden="true">⧉</span></button>
+                    <input id="assignment-trailer" type="text" list="known-trailers" autoComplete="off" value={selectedOrder.trailer || ''} onChange={(e) => handleFieldChange('trailer', e.target.value)} onBlur={() => rememberCapacity(selectedOrder)} placeholder="Trailer number" className="tms-slim-input w-full" />
                   </div>
-                </div>
-                <div className="mt-3">
-                  <label htmlFor="assignment-driver-phone" className="text-xs text-gray-400 block mb-1">Driver Cell Phone</label>
-                  <p className="text-xs text-gray-400 mb-1">Entering a phone number moves an unbooked load to OFFER. Book Load separately when accepted.</p>
-                  <div className="flex gap-1">
-                    <input id="assignment-driver-phone" type="tel" list="known-driver-phones" autoComplete="off" value={selectedOrder.driverPhone || ''} onChange={(e) => handleFieldChange('driverPhone', e.target.value)} placeholder="Enter cell phone number" className="min-w-0 w-full bg-[#0b132b] border border-[#1c2541] rounded p-2 text-sm text-white" />
-                    <button type="button" onClick={() => copyToClipboard(selectedOrder.driverPhone || '', 'Driver Cell Phone')} title="Copy Driver Cell Phone" aria-label="Copy Driver Cell Phone" className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-2.5 rounded text-xs cursor-pointer">📋</button>
+                  <div>
+                    <label htmlFor="assignment-pickup-eta" className="tms-detail-label">Pickup ETA</label>
+                    <input id="assignment-pickup-eta" type="text" value={selectedOrder.pickupEta || ''} onChange={(e) => handleFieldChange('pickupEta', e.target.value)} placeholder="MM/DD/YYYY HH:mm (local)" className="tms-slim-input w-full" />
+                  </div>
+                  <div>
+                    <button type="button" onClick={() => copyToClipboard(selectedOrder.emptyLocation || '', 'Previous empty')} title="Click to copy the previous empty" className="tms-copy-label">Previous empty<span aria-hidden="true">⧉</span></button>
+                    <input id="assignment-empty-location" type="text" autoComplete="off" value={selectedOrder.emptyLocation || ''} onChange={(e) => handleFieldChange('emptyLocation', e.target.value)} placeholder="City, ST it empties before this load" className="tms-slim-input w-full" />
                   </div>
                 </div>
               </div>
+                );
+              })()}
 
-              {/* Planning Comment Box */}
-              <div className="bg-amber-950/30 border border-amber-600/50 p-3 rounded-lg">
-                <span className="text-[11px] font-bold text-amber-400 block mb-1 uppercase">Planning Comment</span>
-                <input
-                  type="text"
-                  value={selectedOrder.planningComment}
-                  onChange={(e) => handleFieldChange('planningComment', e.target.value)}
-                  className="w-full bg-[#0b132b] border border-amber-600/30 rounded p-1.5 text-xs text-amber-200 font-mono outline-none"
-                />
-              </div>
-
-              {/* DAT RateView Reference */}
-              <div className="border border-emerald-500/40 bg-emerald-950/20 p-4 rounded-lg">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-emerald-400 uppercase tracking-wide">DAT RateView</span>
-                  <div>
-                    <button
-                      onClick={handleOpenDatRateView}
-                      className="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] px-3 py-1.5 rounded font-semibold cursor-pointer shadow"
-                    >
-                      🔎 Open DAT + Copy Load Details
-                    </button>
-                  </div>
+                <div className="tms-detail-card" data-kind="notes">
+                  <h3 className="tms-detail-title"><span aria-hidden="true" />Planning comment</h3>
+                  <input
+                    type="text"
+                    aria-label="Planning comment"
+                    value={selectedOrder.planningComment}
+                    onChange={(e) => handleFieldChange('planningComment', e.target.value)}
+                    className="tms-slim-input w-full"
+                  />
                 </div>
-                <div className="text-xs text-gray-300 font-mono bg-[#0b132b] p-2.5 rounded border border-[#1c2541]">
-                  DAT API rate fetching is active. You can also open [RateView - DAT iQ](https://iq.dat.com/rateview) if needed.
-                </div>
-              </div>
-
               <div className="flex justify-between items-center gap-2 pt-4 border-t border-[#1c2541]">
                 <button
                   type="button"

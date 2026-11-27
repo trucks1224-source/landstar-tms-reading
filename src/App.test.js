@@ -20,6 +20,7 @@ import * as chOffers from './lib/chOffers.js';
 import * as chatLoads from './lib/chatLoads.js';
 import * as undoLib from './lib/undo.js';
 import * as accountAliases from './lib/accountAliases.js';
+import * as capacityBook from './lib/capacityBook.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
 
@@ -138,6 +139,7 @@ const context = {
       if (name === './lib/chatLoads.js') return chatLoads;
       if (name === './lib/undo.js') return undoLib;
       if (name === './lib/accountAliases.js') return accountAliases;
+      if (name === './lib/capacityBook.js') return capacityBook;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
     if (name.startsWith('./app/')) return loadAppModule(name, context);
@@ -1626,6 +1628,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/chatLoads.js') return chatLoads;
       if (name === './lib/undo.js') return undoLib;
       if (name === './lib/accountAliases.js') return accountAliases;
+      if (name === './lib/capacityBook.js') return capacityBook;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === 'react') return react;
@@ -1847,6 +1850,7 @@ function createSyncContext(storage) {
       if (name === './lib/chatLoads.js') return chatLoads;
       if (name === './lib/undo.js') return undoLib;
       if (name === './lib/accountAliases.js') return accountAliases;
+      if (name === './lib/capacityBook.js') return capacityBook;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
       if (name.startsWith('./app/')) return loadAppModule(name, ctx);
@@ -4985,5 +4989,31 @@ test('load details: summary on top, posting folded, brokerable switch, calendar 
   calendar().props.onClick();
   app.render();
   assert.equal(calendar().props['aria-expanded'], true);
+  assert.equal(app.errors.length, 0);
+});
+
+test('truck # brings back its saved driver; carrier customers get carrier name and MC #', () => {
+  const profileJson = JSON.stringify({
+    truckBook: { 572203: { truck: '572203', driver: 'Juan Perez', driverPhone: '305-555-0101', trailer: 'T88', savedAt: 1 } },
+    carrierBook: { 547847: { mc: '547847', name: 'Blue Line Freight', savedAt: 1 } },
+    customerRules: { [customers[0]]: { capacity: 'both' } }
+  });
+  const app = createAppHarness(customers[0], [{ ...load, id: '901', driver: '', driverPhone: '', trailer: '', truck: '' }], null, {}, { initialStorage: { landstar_profile: profileJson } });
+  app.render();
+  const byId = id => app.find(node => node.props?.id === id);
+  byId('assignment-truck').props.onChange({ target: { value: '572203' } });
+  app.render();
+  assert.equal(byId('assignment-driver').props.value, 'Juan Perez');
+  assert.equal(byId('assignment-driver-phone').props.value, '305-555-0101');
+  assert.equal(byId('assignment-trailer').props.value, 'T88');
+  assert.equal(byId('assignment-carrier-mc'), null, 'BCO truck by default');
+  app.find(node => node.type === 'button' && textOf(node) === 'Carrier').props.onClick();
+  app.render();
+  byId('assignment-carrier-mc').props.onChange({ target: { value: '547847' } });
+  app.render();
+  assert.equal(byId('assignment-carrier-name').props.value, 'Blue Line Freight', 'a saved MC # brings back the carrier name');
+  app.find(node => node.type === 'button' && textOf(node) === 'BCO truck').props.onClick();
+  app.render();
+  assert.equal(byId('assignment-carrier-mc'), null);
   assert.equal(app.errors.length, 0);
 });

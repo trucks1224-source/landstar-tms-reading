@@ -60,7 +60,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
-  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
+  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
@@ -2218,6 +2218,38 @@ test('Phalanx list (Pha 882255 - ATZ) imports equipment, times, weight and rate 
   assert.equal(second.deliveryTime, '12/01/2026 0700 - 1400');
   assert.equal(second.weight, '42000 lbs');
   assert.equal(second.rateInput, '2100');
+  assert.equal(app.errors.length, 0);
+});
+
+test('a Phalanx list with no header row and row numbers in front still imports its rates', async () => {
+  // "Phalanx Flatbed (1).ods" (agent AAQ, 2026-11-27): no header, a row number before Load ID.
+  const phalanx = 'Pha 882255 - ATZ';
+  const rows = [
+    [9, 170159, 'AVAIL', 'F', 0, 'FTL', 'GRAND PRAIRIE', 'TX', '11/30/2026 0730', '11/30/2026 1500', 'AUSTIN', 'TX', '12/01/2026 0900', '', 'STEEL STRUT', '43989.0 LB', 204, 1000],
+    [15, 170139, 'AVAIL', 'F', 0, 'FTL', 'WAYNE', 'NJ', '11/30/2026 0600', '11/30/2026 1700', 'MEMPHIS', 'TN', '12/01/2026 0800', '12/02/2026 1500', 'METAL FITTINGS', '32400.0 LB', 1084, 2600],
+    [16, 170138, 'AVAIL', 'F', 0, 'FTL', 'WAYNE', 'NJ', '11/30/2026 0600', '11/30/2026 1700', 'PASADENA', 'TX', '12/02/2026 0730', '12/03/2026 1600', 'STEEL STRUT', '34545.0 LB', 1587, 3300],
+    [17, 170132, 'AVAIL', 'F', 0, 'FTL', 'WAYNE', 'NJ', '11/30/2026 0600', '11/30/2026 1700', 'CAPITOL HEIGHTS', 'MD', '12/01/2026 1300', '', 'STEEL STRUT', '43285.0 LB', 231, 1200]
+  ];
+  assert.equal(policy.addMissingPhalanxHeader(rows)[0][1], 'Load ID', 'the Phalanx names start at the load number');
+  assert.equal(policy.addMissingPhalanxHeader(rows).length, 5, 'the first load is kept');
+  const headed = [['Load ID', 'Rate'], [1, 2]];
+  assert.equal(policy.addMissingPhalanxHeader(headed), headed, 'a list with its header is left alone');
+  assert.equal(policy.addMissingPhalanxHeader([['24828242', 'Van', 'x']])[0][0], '24828242', 'other lists are left alone');
+
+  const app = createAppHarness(phalanx, []);
+  await app.importExcel(rows);
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[phalanx];
+  assert.deepEqual(saved.map(order => order.id).sort(), ['170132', '170138', '170139', '170159']);
+  const byId = Object.fromEntries(saved.map(order => [order.id, order]));
+  assert.equal(byId['170159'].rateInput, '1000');
+  assert.equal(byId['170139'].rateInput, '2600');
+  assert.equal(byId['170138'].rateInput, '3300');
+  assert.equal(byId['170132'].rateInput, '1200');
+  assert.equal(byId['170159'].origCity, 'GRAND PRAIRIE');
+  assert.equal(byId['170159'].destCity, 'AUSTIN');
+  assert.equal(byId['170139'].pickupTime, '11/30/2026 0600 - 1700');
+  assert.equal(byId['170139'].weight, '32400 lbs');
+  assert.equal(policy.getLandstarEquipmentCode(byId['170159'].eCode), 'FLAT');
   assert.equal(app.errors.length, 0);
 });
 

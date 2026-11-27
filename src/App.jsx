@@ -2530,6 +2530,33 @@ function findDroppedPostings(customer, importedLoads, existingLoads, equipmentSc
 // customer's list split across tabs imports as one list and summary tabs are ignored.
 const loadIdHeaders = ['order #', 'load id', 'order number', 'load posting code'];
 const originCityHeaders = ['origin city', 'orig city', 'origin', 'origin - city'];
+// The Phalanx list's columns (Pha 882255 - ATZ, 2026-11-25), from "Load ID" to "Rate".
+const phalanxColumns = ['Load ID', 'Brokerage status', 'Equip type', 'Stops', 'Order type', 'Origin city', 'Origin state',
+  'Early P/U dt', 'Late P/U dt', 'Dest city', 'Dest state', 'Early del dt', 'Late del dt', 'Commodity', 'Weight', 'Distance', 'Rate'];
+
+// A Phalanx list copied without its header row ("Phalanx Flatbed.ods", agent AAQ, 2026-11-27):
+// the first row is already a load, often with a row number in front:
+//   [9, 170159, 'AVAIL', 'F', 0, 'FTL', 'GRAND PRAIRIE', 'TX', '11/30/2026 0730', ...]
+// Found by "FTL"/"LTL" with the origin and a pickup date and time after it; the Phalanx column
+// names are put on top so the rate and every other column are read from the right place and
+// the first load is kept. Other sheets are returned as they are.
+function addMissingPhalanxHeader(rows) {
+  const first = rows?.[0] || [];
+  if (first.some(cell => /^(load id|order #|origin city|early p\/u dt|rate)$/i.test(String(cell ?? '').trim()))) return rows;
+  const orderTypeAt = first.findIndex(cell => /^(FTL|LTL)$/i.test(String(cell ?? '').trim()));
+  const loadIdAt = orderTypeAt - 4;
+  if (loadIdAt < 0
+    || !/^[A-Z]{2}$/i.test(String(first[orderTypeAt + 2] ?? '').trim())
+    || !/^\d{1,2}\/\d{1,2}\/\d{4}\s+\d{3,4}$/.test(String(first[orderTypeAt + 3] ?? '').trim())
+    || !/^\d{4,}$/.test(String(first[loadIdAt] ?? '').trim())) return rows;
+  const width = Math.max(...rows.map(row => row.length), loadIdAt + phalanxColumns.length);
+  const header = Array.from({ length: width }, (_, index) => {
+    const name = phalanxColumns[index - loadIdAt];
+    return index < loadIdAt ? `#${index + 1}` : name || '';
+  });
+  return [header, ...rows];
+}
+
 function getLoadSheetNames(workbook, xlsx) {
   const names = workbook?.SheetNames || [];
   return names.filter((name, index) => {
@@ -7920,7 +7947,7 @@ export default function App({ sharing = null, userId = null } = {}) {
           const workbook = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array', cellDates: false });
           for (const sheetName of getLoadSheetNames(workbook, XLSX)) {
             const worksheet = workbook.Sheets[sheetName];
-            const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            const rawRows = addMissingPhalanxHeader(XLSX.utils.sheet_to_json(worksheet, { header: 1 }));
             if (rawRows.length <= 1) continue;
             sheetCount += 1;
 

@@ -6,7 +6,12 @@ const path = require('path');
 const vm = require('vm');
 
 // Never touch the real queue file.
-process.env.UNPOST_QUEUE_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'unpost-')), 'queue.json');
+const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unpost-'));
+process.env.UNPOST_QUEUE_FILE = path.join(tempDir, 'queue.json');
+// The tests' own posting code, so this PC's bot/agent-config.json (ANQ, SNB, QNX since
+// 2026-11-23) never changes what counts as "mine" here.
+process.env.AGENT_CONFIG_FILE = path.join(tempDir, 'agent-config.json');
+fs.writeFileSync(process.env.AGENT_CONFIG_FILE, JSON.stringify({ postingCodes: ['ANQ'] }));
 const { enqueue, readQueue } = require('./status-server');
 const { findMatchingPostings, statesFor, claimUnpostQueue, processUnpostQueue } = require('./unpost');
 
@@ -43,7 +48,13 @@ test('matches the exported posting on ZIPs, pickup/delivery end and weight', () 
     board(6, { SourceSystemID: 'AW' }),
     board(7, { Agency: 'SNB' })
   ], request);
-  assert.deepEqual(matches.map(load => load.LoadId), [1]);
+  assert.deepEqual(matches.map(load => load.LoadId), [1], 'only your own code (ANQ here); JDV and SNB are other agents');
+});
+
+test('every one of your posting codes counts as yours (ANQ, SNB and QNX on Daniel\'s PC)', () => {
+  const postings = [board(1), board(5, { Agency: 'JDV' }), board(6, { Agency: 'SNB', SourceSystemID: 'AW' }), board(7, { Agency: 'SNB' }), board(8, { Agency: 'QNX' })];
+  assert.deepEqual(findMatchingPostings(postings, request, ['ANQ', 'SNB', 'QNX']).map(load => load.LoadId), [1, 7, 8],
+    'SNB and QNX postings match; another agent (JDV) and SNB postings from the AW system never do');
 });
 
 test('searches only the origin states of the queued loads', () => {

@@ -33,6 +33,8 @@ test('editing an order number replaces the original load and keeps selection and
     selectedOrder: original, selectedBroker: 'Para', orders: map.Para,
     normalizeLoadId: value => String(value).trim(),
     alert: message => alerts.push(message),
+    notify: message => alerts.push(message),
+    __tmsNoticeHook: message => alerts.push(message),
     setSelectedOrder: value => { selected = value; },
     setCustomerOrdersMap: update => { map = update(map); },
     setSelectedIds: update => { ids = update(ids); }
@@ -60,7 +62,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
-  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
+  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, noticeLevel, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
@@ -1558,6 +1560,8 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       setItem: (key, value) => storage.set(key, value)
     },
     alert: message => alerts.push(message),
+    notify: message => alerts.push(message),
+    __tmsNoticeHook: message => alerts.push(message),
     fetch: async url => {
       if (url === '/api/road-miles') return { ok: true, json: async () => ({ miles: 500 }) };
       assert.equal(url, '/api/dat-rate');
@@ -2220,6 +2224,16 @@ test('Phalanx list (Pha 882255 - ATZ) imports equipment, times, weight and rate 
   assert.equal(second.weight, '42000 lbs');
   assert.equal(second.rateInput, '2100');
   assert.equal(app.errors.length, 0);
+});
+
+test('pop-up messages become notices: problems stay, news clears itself', () => {
+  for (const message of ['Excel import failed: bad file', 'Select a customer before adding a load.', 'Enter the driver name (or the approved carrier MC #) before booking this load.',
+    'No loads could be exported.', 'Could not create a spreadsheet', 'Nothing to export: 2 booked load(s) are not exported to Landstar.', 'Load #12 already exists in Para.']) {
+    assert.equal(policy.noticeLevel(message), 'warn', message);
+  }
+  for (const message of ['📂 Excel Import Complete for Para 1522166 - ATZ:', '🔥 12 hot lanes saved from 189 loads booked by other agents.', '2 spreadsheets were created (up to 100 loads each).']) {
+    assert.equal(policy.noticeLevel(message), 'info', message);
+  }
 });
 
 test('a Phalanx list with no header row and row numbers in front still imports its rates', async () => {

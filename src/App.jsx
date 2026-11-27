@@ -5746,6 +5746,15 @@ const pasteImportChoices = [
   { label: 'NTG load cards', customer: '', className: 'bg-slate-700 hover:bg-slate-600' }
 ];
 
+// ---------- Notices (instead of alert() pop-ups) ----------
+const NOTICE_INFO_MS = 45 * 1000;
+// A message about something that went wrong or needs input stays until closed (warn); news
+// and confirmations clear themselves (info).
+function noticeLevel(message) {
+  return /could not|couldn'?t|failed|failure|error|not saved|missing|^enter |\benter (the|a|your)\b|^select |\bselect a\b|no loads|nothing to|cannot|can'?t|isn'?t|is not|not exported|warning|⚠|refus|reject|invalid|already exists|skipped/i
+    .test(String(message || '')) ? 'warn' : 'info';
+}
+
 // ---------- Google Chat inbox (bot/chat-bot.js) ----------
 // The Chat bot saves new pictures and spreadsheets from Daniel's Google Chat groups (Para
 // lists; RXO's LANDJA.18, which sends Excel load lists). The TMS checks the inbox
@@ -6687,26 +6696,25 @@ export default function App({ sharing = null, userId = null } = {}) {
     const columns = rows[0] || {};
     return ['Origin - City', 'Destination - City', 'Carrier Line Haul Pay Current'].every(name => name in columns) ? rows : null;
   };
-  // options.quiet: a Google Chat copy (LANDJA18 "this is whats been booked this week",
-  // 2026-11-27) reports as a TMS notice instead of a pop-up.
-  const importHotLanes = (rows, file, options = {}) => {
-    const alert = message => (options.quiet ? pushNotice(String(message).replace(/\s*\n+\s*/g, ' '), 'info') : window.alert(message));
+  // Reports as a TMS notice (also for Google Chat copies, LANDJA18 "this is whats been booked
+  // this week", 2026-11-27).
+  const importHotLanes = (rows, file) => {
     try {
       const built = buildHotLanes(rows);
       const laneCount = Object.keys(built.lanes).length;
       if (!laneCount) {
-        alert('No lanes found in this file.');
+        notify('No lanes found in this file.');
         return;
       }
       const saved = { ...built, file: file.name, importedAt: new Date().toISOString() };
       localStorage.setItem(hotLanesKey, JSON.stringify(saved));
       setHotLanes(saved);
       const loads = Object.values(customerOrdersMap || {}).flat().filter(load => getHotLane(load, saved));
-      alert(`🔥 ${laneCount} hot lanes saved from ${built.rows} loads booked by other agents.\n\n`
+      notify(`🔥 ${laneCount} hot lanes saved from ${built.rows} loads booked by other agents.\n\n`
         + `${loads.length} of your loads are on a hot lane right now. They show a 🔥 HOT LANE badge and sit at the top of the list (under ⭐ IMPORTANT loads).\n\n`
         + 'Importing a newer export with 📂 Import Excel replaces these lanes.');
     } catch (error) {
-      alert(`Could not read the hot lanes file: ${error.message}`);
+      notify(`Could not read the hot lanes file: ${error.message}`);
     }
   };
   const [showTools, setShowTools] = useState(true);
@@ -6960,7 +6968,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     if (!selectedOrder) return;
     if (field === 'id' && orders.some(order => order.id !== selectedOrder.id
       && normalizeLoadId(order.id) === normalizeLoadId(value))) {
-      alert(`Load #${value} already exists in ${selectedBroker}. The order number was not changed.`);
+      notify(`Load #${value} already exists in ${selectedBroker}. The order number was not changed.`);
       return;
     }
     let updatedOrder = { ...selectedOrder, [field]: value };
@@ -7054,10 +7062,10 @@ export default function App({ sharing = null, userId = null } = {}) {
 
     try {
       await navigator.clipboard.writeText(laneDetails);
-      alert('Landstar Loads opened. Origin and destination details are copied; paste them into the matching fields.');
+      notify('Landstar Loads opened. Origin and destination details are copied; paste them into the matching fields.');
     } catch (error) {
       console.error('Could not copy the Landstar origin and destination details:', error);
-      alert('Landstar Loads opened, but the lane details could not be copied. Check clipboard permissions and try again.');
+      notify('Landstar Loads opened, but the lane details could not be copied. Check clipboard permissions and try again.');
     }
   };
 
@@ -7107,7 +7115,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     try {
       booked = bookLoad(selectedOrder);
     } catch (error) {
-      alert(error.message);
+      notify(error.message);
       return;
     }
     const request = buildAssignRequest(selectedBroker, booked);
@@ -7118,7 +7126,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     } else {
       const line = `Landstar: not assigned automatically - ${request.reason} Assign it by hand.`;
       saveLoad({ ...booked, notes: booked.notes ? `${booked.notes}\n${line}` : line });
-      alert(`Booked in the TMS only. ${line}`);
+      notify(`Booked in the TMS only. ${line}`);
     }
   };
 
@@ -7188,7 +7196,7 @@ export default function App({ sharing = null, userId = null } = {}) {
   // ＋ Add Load: a blank load in the selected customer, filled in with the order editor.
   const handleAddManualLoad = () => {
     if (!selectedBroker) {
-      alert('Select a customer before adding a load.');
+      notify('Select a customer before adding a load.');
       return;
     }
     const load = createManualLoad();
@@ -7208,7 +7216,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     if (!id) return;
     const existing = orders.find(o => normalizeLoadId(o.id) === normalizeLoadId(id));
     if (existing) {
-      alert(`Load #${id} is already in ${selectedBroker}. Pick a different order #.`);
+      notify(`Load #${id} is already in ${selectedBroker}. Pick a different order #.`);
       return;
     }
     const load = copyLoadDetails(selectedOrder, id);
@@ -7286,7 +7294,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     if (!selectedOrder || !selectedBroker) return;
     const posting = selectedOrder.landstarPosting;
     if (!posting) {
-      alert('This load has no saved Landstar posting, so there is nothing to take off the board. If it was posted by hand, remove it on LandstarOnline.');
+      notify('This load has no saved Landstar posting, so there is nothing to take off the board. If it was posted by hand, remove it on LandstarOnline.');
       return;
     }
     const route = `${selectedOrder.origCity}, ${selectedOrder.origSt} → ${selectedOrder.destCity}, ${selectedOrder.destSt}`;
@@ -7343,13 +7351,13 @@ export default function App({ sharing = null, userId = null } = {}) {
   // selected customer, through the same merge as every other import (src/lib/textLoads.js).
   const handleTextImport = () => {
     if (!selectedBroker) {
-      alert('Pick the customer on the left first (for example Square 2570577), then import.');
+      notify('Pick the customer on the left first (for example Square 2570577), then import.');
       return;
     }
     const { loads, problems } = parseTextLoadList(textImport || '', { source: `${selectedBroker} text list` });
     const problemText = problems.length ? `\n\nNot imported (fix and paste again):\n• ${problems.join('\n• ')}` : '';
     if (!loads.length) {
-      alert(`No loads found. Each load needs a "City, ST ZIP → City, ST ZIP" line, then its weight, Ref # and DEL date.${problemText}`);
+      notify(`No loads found. Each load needs a "City, ST ZIP → City, ST ZIP" line, then its weight, Ref # and DEL date.${problemText}`);
       return;
     }
     try {
@@ -7363,7 +7371,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       showImportedList();
       setFilter('OPEN');
       setTextImport(null);
-      alert(
+      notify(
         `📋 Text list imported into ${selectedBroker}:\n`
         + `• Loads read: ${loads.length}\n`
         + `• Total in list: ${replacement.loads.length}\n`
@@ -7374,7 +7382,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         + (saved ? '' : '\n\nWarning: saving failed, check browser storage.')
       );
     } catch (error) {
-      alert(`Text import failed: ${error.message}`);
+      notify(`Text import failed: ${error.message}`);
     }
   };
 
@@ -7552,26 +7560,26 @@ export default function App({ sharing = null, userId = null } = {}) {
     const invalidFuelSurcharge = Object.entries(profileDraft.fuelSurcharge || {})
       .some(([, value]) => String(value ?? '').trim() !== '' && !(Number(String(value).replace(/[$,]/g, '')) > 0));
     if (invalidFuelSurcharge) {
-      alert('Fuel surcharge rates must be a positive $/mile number, or blank to skip a region.');
+      notify('Fuel surcharge rates must be a positive $/mile number, or blank to skip a region.');
       return;
     }
     if (nextProfile.phone.length !== 10) {
-      alert('Enter a 10-digit phone number.');
+      notify('Enter a 10-digit phone number.');
       return;
     }
     if (!nextProfile.postingCode || !nextProfile.visibilityGroup) {
-      alert('Enter your posting code and visibility group.');
+      notify('Enter your posting code and visibility group.');
       return;
     }
     if (!isValidPostingCode(nextProfile.postingCode)) {
-      alert('Posting code must be 10 characters or fewer.');
+      notify('Posting code must be 10 characters or fewer.');
       return;
     }
     try {
       writeSyncedKey('landstar_profile', JSON.stringify(nextProfile));
     } catch (error) {
       console.error('Could not save My Settings:', error);
-      alert('Could not save My Settings. Check available browser storage and try again.');
+      notify('Could not save My Settings. Check available browser storage and try again.');
       return;
     }
     setProfile(nextProfile);
@@ -7698,7 +7706,7 @@ export default function App({ sharing = null, userId = null } = {}) {
   const handleSaveEditBroker = (oldName, e) => {
     e.preventDefault();
     if (sharedCustomers[oldName]) {
-      alert('This customer is shared, so its name cannot be changed. Use 🤝 Share to stop sharing first.');
+      notify('This customer is shared, so its name cannot be changed. Use 🤝 Share to stop sharing first.');
       return;
     }
     const newName = normalizeCustomerName(editBrokerInput);
@@ -7724,13 +7732,13 @@ export default function App({ sharing = null, userId = null } = {}) {
   const handleDeleteBroker = (brokerToDelete, e) => {
     e.stopPropagation();
     if (sharedCustomers[brokerToDelete]) {
-      alert(sharedCustomers[brokerToDelete].isOwner
+      notify(sharedCustomers[brokerToDelete].isOwner
         ? 'This customer is shared. Use 🤝 Share → Stop sharing before deleting it.'
         : 'This customer is shared with you. Use 🤝 Share → Leave to remove it from your list.');
       return;
     }
     if (brokers.length <= 1) {
-      alert("You must keep at least one customer/broker.");
+      notify("You must keep at least one customer/broker.");
       return;
     }
     if (window.confirm(`Delete customer "${brokerToDelete}"?`)) {
@@ -7751,15 +7759,15 @@ export default function App({ sharing = null, userId = null } = {}) {
 
   const handleGmailImport = async () => {
     if (!gmailAuthReady || !window.google?.accounts?.oauth2) {
-      alert(gmailImportProgress || 'Google authorization is still loading. Wait a moment and try again.');
+      notify(gmailImportProgress || 'Google authorization is still loading. Wait a moment and try again.');
       return;
     }
     if (!gmailClientId.trim()) {
-      alert('Enter a Google OAuth Web client ID first. The Gmail setup instructions are shown above the search box.');
+      notify('Enter a Google OAuth Web client ID first. The Gmail setup instructions are shown above the search box.');
       return;
     }
     if (!gmailQuery.trim()) {
-      alert('Enter a Gmail search query, such as newer_than:7d or from:loads@example.com.');
+      notify('Enter a Gmail search query, such as newer_than:7d or from:loads@example.com.');
       return;
     }
 
@@ -7794,7 +7802,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       const searchResult = await searchResponse.json();
       const messages = searchResult.messages || [];
       if (!messages.length) {
-        alert('Gmail search found no matching messages.');
+        notify('Gmail search found no matching messages.');
         return;
       }
 
@@ -7814,7 +7822,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       }
 
       if (!parsedLoads.length) {
-        alert('The newest matching email was read, but no load rows could be recognized. Check that the email contains load numbers, origin/destination, weight, and pickup-date headings.');
+        notify('The newest matching email was read, but no load rows could be recognized. Check that the email contains load numbers, origin/destination, weight, and pickup-date headings.');
         return;
       }
 
@@ -7832,7 +7840,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         selectedBroker
       );
       if (!uniqueLoads.length) {
-        alert(`Found ${parsedLoads.length} loads, but they were all duplicates.`);
+        notify(`Found ${parsedLoads.length} loads, but they were all duplicates.`);
         return;
       }
 
@@ -7890,7 +7898,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       showImportedList();
       setFilter('OPEN');
       
-      alert(
+      notify(
         `✉️ Gmail Import Complete for ${selectedBroker}:\n` +
         `• Recognized loads: ${parsedLoads.length}\n` +
         `• Unique loads imported: ${replacement ? finalLoads.length : uniqueLoads.length}\n` +
@@ -7905,10 +7913,10 @@ export default function App({ sharing = null, userId = null } = {}) {
         (saved ? '• Status: Saved successfully in browser storage.' : '• Warning: Save failed, check browser storage.')
       );
 
-      if (!saved || mileageCalculationError) alert(`${saved ? '' : 'Saving failed; keep this page open and check browser storage. '}${mileageCalculationError ? `Driving miles were not calculated and remain blank where no prior miles were saved. You can still enter miles manually. Google Routes reported: ${mileageCalculationError}` : ''}`.trim());
+      if (!saved || mileageCalculationError) notify(`${saved ? '' : 'Saving failed; keep this page open and check browser storage. '}${mileageCalculationError ? `Driving miles were not calculated and remain blank where no prior miles were saved. You can still enter miles manually. Google Routes reported: ${mileageCalculationError}` : ''}`.trim());
     } catch (error) {
       console.error('Gmail load import failed:', error);
-      alert(`Gmail import failed: ${error.message || 'Check your Google OAuth client ID, Gmail API setup, and search query.'}`);
+      notify(`Gmail import failed: ${error.message || 'Check your Google OAuth client ID, Gmail API setup, and search query.'}`);
     } finally {
       setGmailImportProgress('');
     }
@@ -8006,7 +8014,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         }
 
         if (!sheetCount) {
-          alert(files.length > 1
+          notify(files.length > 1
             ? 'The selected Excel files are empty or only contain headers!'
             : 'The uploaded Excel sheet is empty or only contains headers!');
           return;
@@ -8135,7 +8143,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         );
 
         if (importedLoads.length === 0) {
-          alert("No valid loads found in the spreadsheet rows.");
+          notify("No valid loads found in the spreadsheet rows.");
           return;
         }
 
@@ -8191,7 +8199,7 @@ export default function App({ sharing = null, userId = null } = {}) {
 
         const duplicatesRemoved = replacement ? 0 : duplicateImportCount + duplicateExistingCount;
 
-        (options.quiet ? message => pushNotice(message.replace(/\s*\n+\s*/g, ' '), 'info') : alert)(
+        (options.quiet ? message => pushNotice(message.replace(/\s*\n+\s*/g, ' '), 'info') : notify)(
           `📂 Excel Import Complete for ${selectedBroker}:\n` +
           (files.length > 1 || sheetCount > 1
             ? `• Combined into one list: ${files.length} file(s), ${sheetCount} tab(s)\n`
@@ -8211,11 +8219,11 @@ export default function App({ sharing = null, userId = null } = {}) {
           (saved ? '• Status: Saved successfully in browser storage.' : '• Warning: Save failed, check browser storage.')
         );
 
-        if (!saved) alert('Saving failed; keep this page open and check browser storage.');
+        if (!saved) notify('Saving failed; keep this page open and check browser storage.');
         return saved;
       } catch (err) {
         console.error(err);
-        alert(`Excel import failed: ${err.message || "Please make sure it's a valid .xlsx, .xls or OpenOffice .ods file."}`);
+        notify(`Excel import failed: ${err.message || "Please make sure it's a valid .xlsx, .xls or OpenOffice .ods file."}`);
       }
       return false;
     };
@@ -8708,7 +8716,7 @@ export default function App({ sharing = null, userId = null } = {}) {
             ? ` ${exportedCount} previously exported loads moved to OPEN.`
             : ` ${exportedCount} previously exported loads remain in OPEN.`
           : '';
-        alert(`Read ${recognizedLoads.length} load rows, but none were added for ${brokerName}.${exportedMessage}${skippedDuplicateCount ? ' They duplicated a lane and pickup date already imported.' : ''}${datUnreadableRows.length ? `\nSkipped unreadable rows:\n${datUnreadableRows.join('\n')}` : ''}`);
+        notify(`Read ${recognizedLoads.length} load rows, but none were added for ${brokerName}.${exportedMessage}${skippedDuplicateCount ? ' They duplicated a lane and pickup date already imported.' : ''}${datUnreadableRows.length ? `\nSkipped unreadable rows:\n${datUnreadableRows.join('\n')}` : ''}`);
         return;
       }
 
@@ -8800,7 +8808,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       const newLoadCount = replacement.processedLoads.filter(load => !existingIds.has(load.id)).length;
       const updatedLoads = replacement.processedLoads.length - newLoadCount;
 
-      alert(
+      notify(
         `📸 ${isDatImport ? 'DAT' : isNtgImport ? 'NTG' : isChImport ? 'CH' : 'Customer'} Screenshot Import Complete for ${brokerName}:\n` +
         (files.length > 1 ? `• Pictures read: ${files.length}\n` : '') +
         `• Recognized rows: ${recognizedLoads.length}\n` +
@@ -8828,11 +8836,11 @@ export default function App({ sharing = null, userId = null } = {}) {
       );
 
       const importWarnings = `${saved ? '' : ' Saving failed; keep this page open and check browser storage.'}${unreadableIds ? ` ${unreadableIds} order number${unreadableIds === 1 ? ' was' : 's were'} unreadable.` : ''}${unreadablePickups ? ` ${unreadablePickups} pickup date/time${unreadablePickups === 1 ? ' was' : 's were'} not recognized; please check those loads.` : ''}${unreadableWeights ? ` ${unreadableWeights} weight${unreadableWeights === 1 ? ' was' : 's were'} not recognized; please check those loads.` : ''}${unreadableRates ? ` ${unreadableRates} DAT rate${unreadableRates === 1 ? ' was' : 's were'} not recognized; enter them manually.` : ''}`.trim();
-      if (importWarnings && !saved) alert(importWarnings);
+      if (importWarnings && !saved) notify(importWarnings);
     } catch (error) {
       const source = importMode === 'ntg' ? 'NTG screenshot' : importMode === 'dat' ? 'DAT screenshot' : 'Customer screenshot';
       console.error(`${source} import failed:`, error);
-      alert(`${source} import failed: ${error.message || 'Could not read the image.'}`);
+      notify(`${source} import failed: ${error.message || 'Could not read the image.'}`);
     } finally {
       if (worker) await worker.terminate();
       if (imageUrl) URL.revokeObjectURL(imageUrl);
@@ -8852,7 +8860,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       await importScreenshotFile(image, importMode);
     } catch (error) {
       console.error(`Could not read the ${importMode.toUpperCase()} screenshot from the clipboard:`, error);
-      alert(`Could not paste the ${importMode.toUpperCase()} screenshot: ${error.message}\n\nIf clipboard access was blocked, click the app background and press Ctrl+V instead.`);
+      notify(`Could not paste the ${importMode.toUpperCase()} screenshot: ${error.message}\n\nIf clipboard access was blocked, click the app background and press Ctrl+V instead.`);
     } finally {
       setIsImportingScreenshot(false);
       setScreenshotImportMode('');
@@ -9056,13 +9064,27 @@ export default function App({ sharing = null, userId = null } = {}) {
   // The email worker reports its status several times a minute. It is kept outside the App's
   // state so those reports redraw only the small status chip, not the whole TMS.
   const [emailWorkerStatusStore] = useState(() => createStatusStore({ state: 'starting', message: 'Starting scheduled checks', issues: [] }));
-  // Background warnings (bot results, fuel updates): banners instead of alert() pop-ups,
+  // Background warnings (bot results, fuel updates): banners instead of notify() pop-ups,
   // because an open alert freezes the whole tab and stops the email timers.
   const [notices, setNotices] = useState([]);
-  const pushNotice = (text, level = 'warn') => setNotices(current => [
-    ...current.filter(item => item.text !== text),
-    { id: `${Date.now()}-${Math.random()}`, text, level, at: new Date().toISOString() }
-  ].slice(-6));
+  // Info notices clear themselves after 45 seconds; warnings stay until closed (✕).
+  const pushNotice = (text, level = 'warn') => {
+    const id = `${Date.now()}-${Math.random()}`;
+    setNotices(current => [
+      ...current.filter(item => item.text !== text),
+      { id, text, level, at: new Date().toISOString() }
+    ].slice(-6));
+    if (level === 'info') setTimeout(() => setNotices(current => current.filter(item => item.id !== id)), NOTICE_INFO_MS);
+  };
+  // Every message that used to be an notify() pop-up (Daniel 2026-11-27: "fewer pop-ups"): a
+  // notice in the corner instead, so nothing waits for an OK click. "Are you sure?" questions
+  // (confirm) stay pop-ups: those are decisions. Tests read the messages through
+  // __tmsNoticeHook (the TMS itself never sets it).
+  function notify(message, level = noticeLevel(message)) {
+    const text = String(message ?? '');
+    if (typeof __tmsNoticeHook === 'function') __tmsNoticeHook(text);
+    pushNotice(text, level);
+  }
   // New emails from VIP customers (Heather), shown until dismissed.
   const [vipMessages, setVipMessages] = useState([]);
   const [pastedImage, setPastedImage] = useState(null);
@@ -9242,7 +9264,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         } else if (item.type === 'spreadsheet' && await readOrderExportRows(file).catch(() => null)) {
           // Other agents' bookings (an order export): hot lanes, never loads, no account to pick.
           finishChatItem(item.name);
-          importHotLanes(await readOrderExportRows(file), file, { quiet: true });
+          importHotLanes(await readOrderExportRows(file), file);
         } else if (item.type === 'spreadsheet') {
           const known =getChatSheetAccount(paramountLatest.profile?.chatSheetAccounts, item.label);
           if (known && brokers.includes(known)) {
@@ -10149,7 +10171,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     const loads = customerOrdersMap[inquiry.customer] || [];
     const target = loads.find(o => String(o.id) === String(inquiry.load_id));
     if (!target) {
-      alert(`Load #${inquiry.load_id} is no longer in ${inquiry.customer}.`);
+      notify(`Load #${inquiry.load_id} is no longer in ${inquiry.customer}.`);
       return;
     }
     if (inquiry.customer !== selectedBroker) handleSelectBroker(inquiry.customer);
@@ -10199,10 +10221,10 @@ export default function App({ sharing = null, userId = null } = {}) {
       if (selectedOrder.inquiryToken !== token) saveLoad({ ...selectedOrder, inquiryToken: token });
       const url = getInquiryUrl(token);
       await copyToClipboard(url, 'Driver link');
-      alert(`Driver link copied for load #${selectedOrder.id}:\n${url}\n\nPaste it into the load's BCO Posting Comments on Landstar, or text it to drivers. You'll get an email when a driver inquires.`);
+      notify(`Driver link copied for load #${selectedOrder.id}:\n${url}\n\nPaste it into the load's BCO Posting Comments on Landstar, or text it to drivers. You'll get an email when a driver inquires.`);
     } catch (error) {
       console.error('Could not create the driver link:', error);
-      alert(`Could not create the driver link: ${describeLinkError(error)}`);
+      notify(`Could not create the driver link: ${describeLinkError(error)}`);
     }
   };
 
@@ -10271,7 +10293,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     const problems = built.filter(entry => entry.error).map(entry => `${entry.load.id}: ${entry.error}`);
     const postings = built.filter(entry => entry.posting).map(entry => entry.posting);
     if (!postings.length) {
-      alert(`Nothing was posted to DAT.\n\n${problems.slice(0, 10).join('\n')}`);
+      notify(`Nothing was posted to DAT.\n\n${problems.slice(0, 10).join('\n')}`);
       return;
     }
     setDatBusy(true);
@@ -10279,9 +10301,9 @@ export default function App({ sharing = null, userId = null } = {}) {
       const results = await callDat({ action: 'post', postings });
       results.filter(result => !result.ok).forEach(result => problems.push(`${result.referenceId}: ${result.error}`));
       const posted = results.filter(result => result.ok).length;
-      alert(`📡 Posted ${posted} load${posted === 1 ? '' : 's'} to DAT. They are reposted every 5 minutes while the TMS server runs.${problems.length ? `\n\nNot posted (${problems.length}):\n${problems.slice(0, 10).join('\n')}${problems.length > 10 ? `\n…and ${problems.length - 10} more` : ''}` : ''}`);
+      notify(`📡 Posted ${posted} load${posted === 1 ? '' : 's'} to DAT. They are reposted every 5 minutes while the TMS server runs.${problems.length ? `\n\nNot posted (${problems.length}):\n${problems.slice(0, 10).join('\n')}${problems.length > 10 ? `\n…and ${problems.length - 10} more` : ''}` : ''}`);
     } catch (error) {
-      alert(`Could not post to DAT: ${error.message}`);
+      notify(`Could not post to DAT: ${error.message}`);
     } finally {
       setDatBusy(false);
       loadDatPostings();
@@ -10295,7 +10317,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       ? orders.filter(o => selectedIds.includes(selectionKey(selectedBroker, o.id)))
       : filteredOrders)
       .filter(o => !o.landstarRemoval && o.status !== 'BOOKED' && !isMexicoLoad(o) && !isSkippableEquipment(o.eCode));
-    if (!candidates.length) { alert('No loads to post to DAT.'); return; }
+    if (!candidates.length) { notify('No loads to post to DAT.'); return; }
     if (!window.confirm(`Post ${candidates.length} load${candidates.length === 1 ? '' : 's'} from ${selectedBroker} to the DAT load board?`)) return;
     postLoadsToDat(candidates);
   };
@@ -10306,9 +10328,9 @@ export default function App({ sharing = null, userId = null } = {}) {
     setDatBusy(true);
     try {
       const [result] = await callDat({ action: 'remove', postingIds: [posting.postingId] });
-      if (result && !result.ok) alert(`DAT would not remove load ${load.id}: ${result.error}`);
+      if (result && !result.ok) notify(`DAT would not remove load ${load.id}: ${result.error}`);
     } catch (error) {
-      alert(`Could not remove from DAT: ${error.message}`);
+      notify(`Could not remove from DAT: ${error.message}`);
     } finally {
       setDatBusy(false);
       loadDatPostings();
@@ -10348,7 +10370,7 @@ export default function App({ sharing = null, userId = null } = {}) {
   // options.quiet (automatic exports of Google Chat lists, Daniel 2026-11-27): messages show as
   // TMS notices instead of pop-ups, so the export never waits for a click.
   const runExportToLandstar = async (options = {}) => {
-    const say = message => (options.quiet ? pushNotice(`🚀 Auto-export: ${String(message).replace(/\s*\n+\s*/g, ' ')}`, 'info') : alert(message));
+    const say = message => (options.quiet ? pushNotice(`🚀 Auto-export: ${String(message).replace(/\s*\n+\s*/g, ' ')}`, 'info') : notify(message));
     setExportErrorIds([]);
     const exportPhone = profile.phone.replace(/\D/g, '');
     const exportVisibilityGroup = profile.visibilityGroup.trim().toUpperCase();
@@ -11144,6 +11166,59 @@ export default function App({ sharing = null, userId = null } = {}) {
     }
   };
 
+  // ⌨ Keyboard shortcuts (Daniel 2026-11-27). Ignored while typing in a box or with a window
+  // open; the two that send something to Landstar need Shift so a stray key never does.
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const shortcutActions = useRef({});
+  shortcutActions.current = {
+    move(step) {
+      if (!visibleOrderEntries.length) return;
+      const from = selectedCardIndex < 0 ? (step > 0 ? -1 : visibleOrderEntries.length) : selectedCardIndex;
+      const next = visibleOrderEntries[Math.min(visibleOrderEntries.length - 1, Math.max(0, from + step))];
+      if (!next) return;
+      handleSelectSearchResult(next.customer, next.order);
+      setTimeout(() => document.getElementById(`load-card-${next.order.id}`)?.scrollIntoView({ block: 'nearest' }), 30);
+    },
+    toggle() {
+      if (selectedOrder) handleToggleSelect(selectedOrder.id, { stopPropagation() {} }, selectedBroker);
+    },
+    copy() {
+      if (!selectedOrder) return;
+      void copyToClipboard(`${selectedOrder.id} ${getLoadCardRoute(selectedOrder)}`.trim(), 'Load number and route');
+      notify(`📋 Copied ${selectedOrder.id} ${getLoadCardRoute(selectedOrder)}`, 'info');
+    },
+    search() {
+      const box = document.querySelector('input[aria-label="Search loads across all customers"]');
+      box?.focus();
+      box?.select?.();
+    },
+    exportLoads() { void handleExportToLandstar(); },
+    book() { if (selectedOrder) handleBookLoad(); }
+  };
+  useEffect(() => {
+    const onKey = event => {
+      const target = event.target;
+      const typing = target?.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target?.tagName || '');
+      if (event.key === 'Escape') { setShowShortcuts(false); return; }
+      if (typing || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key === '?') { event.preventDefault(); setShowShortcuts(open => !open); return; }
+      // Another window (an import question, CH Offers, Today...) is open: leave its keys alone.
+      if (document.querySelector('[role="dialog"]')) return;
+      const act = shortcutActions.current;
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      const run = action => { event.preventDefault(); action(); };
+      if (key === 'ArrowDown' || (key === 'j' && !event.shiftKey)) run(() => act.move(1));
+      else if (key === 'ArrowUp' || (key === 'k' && !event.shiftKey)) run(() => act.move(-1));
+      else if (key === 'x' && !event.shiftKey) run(act.toggle);
+      else if (key === 'c' && !event.shiftKey) run(act.copy);
+      else if (key === '/') run(act.search);
+      else if (key === 'e' && event.shiftKey) run(act.exportLoads);
+      else if (key === 'b' && event.shiftKey) run(act.book);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const handleFieldChange = (field, value) => {
     handleInputChange(field, value);
   };
@@ -11224,7 +11299,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       localStorage.setItem(dataVersionKey, JSON.stringify(versions));
       window.location.reload();
     } catch (error) {
-      alert(`Could not restore the backup: ${error.message}`);
+      notify(`Could not restore the backup: ${error.message}`);
     }
   };
 
@@ -12102,6 +12177,46 @@ export default function App({ sharing = null, userId = null } = {}) {
             {!sharing && <BotStatusLight />}
             <EmailWorkerStatus store={emailWorkerStatusStore} drafts={paramountDrafts} />
             {/* Signed in or not: only the TMS on this PC has bots to check. */}
+            <button
+              type="button"
+              onClick={() => setShowShortcuts(true)}
+              title="Keyboard shortcuts (press ? anywhere)"
+              aria-label="Keyboard shortcuts"
+              className="bg-slate-700 hover:bg-slate-600 text-white text-xs px-2 py-1 rounded font-semibold cursor-pointer normal-case tracking-normal"
+            >
+              ⌨
+            </button>
+            {showShortcuts && (
+              <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" role="dialog" aria-label="Keyboard shortcuts" onClick={() => setShowShortcuts(false)}>
+                <div className="w-[26rem] max-w-full bg-[#121829] border border-slate-500 rounded-lg shadow-2xl p-4 normal-case tracking-normal text-left" onClick={event => event.stopPropagation()}>
+                  <div className="flex items-center justify-between mb-2">
+                    <h2 className="text-sm font-bold text-white">⌨ Keyboard shortcuts</h2>
+                    <button type="button" onClick={() => setShowShortcuts(false)} className="text-gray-300 hover:text-white text-sm px-2 cursor-pointer" aria-label="Close shortcuts">✕</button>
+                  </div>
+                  <table className="w-full text-xs text-gray-200">
+                    <tbody>
+                      {[
+                        ['↓ or J', 'Next load'],
+                        ['↑ or K', 'Previous load'],
+                        ['X', 'Check / uncheck the open load (for export)'],
+                        ['C', 'Copy the load number and route'],
+                        ['/', 'Search loads'],
+                        ['Shift + E', 'Export to Landstar (checked loads, or the list shown)'],
+                        ['Shift + B', 'Book the open load'],
+                        ['?', 'Show or hide this card'],
+                        ['Esc', 'Close this card']
+                      ].map(([keys, action]) => (
+                        <tr key={keys} className="border-b border-slate-800">
+                          <td className="py-1 pr-3 whitespace-nowrap"><kbd className="bg-slate-700 border border-slate-500 rounded px-1.5 py-0.5 font-mono text-[11px] text-white">{keys}</kbd></td>
+                          <td className="py-1">{action}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="text-[11px] text-gray-400 mt-2">Shortcuts don't work while you type in a box or while another window is open. Export and Book need Shift so a stray key never sends anything.</p>
+                </div>
+              </div>
+            )}
             <TodayPanel
               today={today}
               ordersMap={customerOrdersMap}
@@ -12210,10 +12325,10 @@ export default function App({ sharing = null, userId = null } = {}) {
                         canvas.getContext('2d').drawImage(picture, 0, 0, canvas.width, canvas.height);
                         URL.revokeObjectURL(url);
                         const logo = canvas.toDataURL('image/png');
-                        if (!isUploadedLogo(logo)) { alert('That picture could not be used as a logo. Try a smaller PNG or JPG.'); return; }
+                        if (!isUploadedLogo(logo)) { notify('That picture could not be used as a logo. Try a smaller PNG or JPG.'); return; }
                         setProfileDraft(current => ({ ...current, teamLogo: logo }));
                       };
-                      picture.onerror = () => { URL.revokeObjectURL(url); alert('That file is not a picture the TMS can read. Try a PNG or JPG.'); };
+                      picture.onerror = () => { URL.revokeObjectURL(url); notify('That file is not a picture the TMS can read. Try a PNG or JPG.'); };
                       picture.src = url;
                     }}
                   />

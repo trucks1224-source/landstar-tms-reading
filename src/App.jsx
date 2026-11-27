@@ -16,6 +16,7 @@ import {
   trackingEmailId, driverEmailId, dailyCustomerEmailId, manualUpdateKinds, buildManualUpdateEmail
 } from './lib/trackingEmails.js';
 import Prospects from './Prospects.jsx';
+import ChOffers from './ChOffers.jsx';
 import automationPolicy from '../bot/automation-policy.json';
 
 const exportedLoadRetentionMs = 30 * 24 * 60 * 60 * 1000;
@@ -231,6 +232,24 @@ function applyLocationInput(load, field, value, zipData) {
     delete next.milesSource;
   }
   return next;
+}
+
+// What a load card shows on the left. Loads added by hand start with no route and the
+// "PU: Today" / "DFL: Upcoming" placeholders, so the card builds them from the cities and
+// pickup/delivery times typed on the load. Imported loads keep their own route and dates.
+function getLoadCardRoute(load) {
+  if (String(load?.route || '').trim()) return load.route;
+  const place = (city, state) => [String(city || '').trim(), String(state || '').trim().toUpperCase()].filter(Boolean).join(', ');
+  const origin = place(load?.origCity, load?.origSt);
+  const destination = place(load?.destCity, load?.destSt);
+  return origin || destination ? `${origin || '?'} → ${destination || '?'}` : '';
+}
+
+function getLoadCardDates(load) {
+  const dateOf = value => String(value || '').match(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/)?.[0] || '';
+  const pickup = !load?.puDate || load.puDate === 'PU: Today' ? (dateOf(load?.pickupTime) ? `PU: ${dateOf(load.pickupTime)}` : load?.puDate || '') : load.puDate;
+  const delivery = !load?.delDate || load.delDate === 'DFL: Upcoming' ? (dateOf(load?.deliveryTime) ? `DFL: ${dateOf(load.deliveryTime)}` : load?.delDate || '') : load.delDate;
+  return `${pickup} ${delivery}`.trim();
 }
 
 // "📄 Copy Load" in the order editor: a new load in the same customer carrying the route,
@@ -2753,6 +2772,15 @@ function getLandstarEquipment2(ord) {
   if (['D-ST', 'D-ST,D-LG', 'D-LG,D-ST'].includes(code.replace(/\s/g, ''))) return 'D-LG';
   if (code === 'V,R') return 'REFR';
   return '';
+}
+
+// AMERI 18347- ATZ (exact account; Daniel 2026-11-27): one posting offers both trailers,
+// Equipment 1 VAN and Equipment 2 REFR, at the same contract rate. A REFR or other
+// alternate picked by hand on the load (equipment2) still wins.
+function getLandstarExportEquipment2(customer, ord) {
+  if (isAmeriCustomer(customer) && ord?.equipment2 === undefined
+    && getLandstarEquipmentCode(ord?.eCode) === 'VAN') return 'REFR';
+  return getLandstarEquipment2(ord);
 }
 
 function getLandstarEquipmentCode(value) {
@@ -5687,6 +5715,70 @@ const pasteImportChoices = [
   { label: 'Para 1522166 - ATZ H · hazmat list', customer: 'Para 1522166 - ATZ H', className: 'bg-red-700 hover:bg-red-600' },
   { label: 'NTG load cards', customer: '', className: 'bg-slate-700 hover:bg-slate-600' }
 ];
+
+// ---------- Google Chat inbox (bot/chat-bot.js) ----------
+// The Chat bot saves new pictures and spreadsheets from Daniel's Google Chat groups (Para
+// lists; RXO's LANDJA.18, which sends Excel load lists). The TMS checks the inbox
+// (GET /api/chat-inbox) and asks which account each one is for, like a Ctrl+V paste.
+// A spreadsheet's account is remembered by its LIST LABEL, the message posted just above the
+// file in the chat ("big list", "fbs", "reefer"). RXO's files are all named
+// "allLoadsSearch_Export - <date>.xlsx", so the file name tells nothing (Daniel 2026-11-27:
+// "Each list has a name on top of it"). The first time a label comes in the TMS asks which
+// account; after that that label imports into that account by itself. Rules live in My
+// Settings (profile.chatSheetAccounts), so they sync to the new laptop.
+const chatInboxPollMs = 30 * 1000;
+// Labels Daniel told us (2026-11-27); a label he picks in the TMS is saved on top of these.
+const defaultChatSheetAccounts = {
+  'big list': 'R X O 2429200 - ATZ V',
+  fbs: 'R X O 2429200 - ATZ F', fb: 'R X O 2429200 - ATZ F', flatbed: 'R X O 2429200 - ATZ F', flatbeds: 'R X O 2429200 - ATZ F',
+  reefer: 'R X O 2429200 - ATZ R', reefers: 'R X O 2429200 - ATZ R',
+  haz: 'R X O 2429200 - ATZ H', hazmat: 'R X O 2429200 - ATZ H',
+  panels: 'R X O 2429200 - ATZ P', panel: 'R X O 2429200 - ATZ P'
+};
+
+// Lists in LANDJA18 that are not Daniel's: "LOWES" and the one marked "$$" belong to agent
+// SNB (Ivan) and are never imported (Daniel 2026-11-27). Returns why, or '' to import.
+function getChatSheetSkipReason(label) {
+  const text = String(label || '');
+  if (/lowe'?s/i.test(text)) return 'the LOWES list is agent SNB\'s (Ivan)';
+  if (/\$\s*\$/.test(text)) return 'the $$ list is agent SNB\'s (Ivan)';
+  return '';
+}
+
+// A list label without what changes from day to day: case, numbers/dates, punctuation.
+// "Big List 11/27!" -> "big list".
+function getChatSheetKey(label) {
+  return String(label || '').toLowerCase()
+    .replace(/\d+/g, ' ')
+    .replace(/[^a-z]+/g, ' ')
+    .trim();
+}
+
+function getChatSheetAccount(rules, label) {
+  const key = getChatSheetKey(label);
+  if (!key) return '';
+  const saved = rules && typeof rules === 'object' ? rules[key] : '';
+  return String(saved || defaultChatSheetAccounts[key] || '');
+}
+
+function rememberChatSheetAccount(rules, label, customer) {
+  const key = getChatSheetKey(label);
+  if (!key || !customer) return { ...(rules || {}) };
+  return { ...(rules || {}), [key]: customer };
+}
+
+// The accounts offered for a chat item: RXO's chat offers the RXO accounts, Para's chat
+// the Para accounts and NTG cards (pictures only: NTG cards are never spreadsheets).
+function getChatInboxChoices(item, brokers = []) {
+  const colors = ['bg-sky-700 hover:bg-sky-600', 'bg-red-700 hover:bg-red-600', 'bg-amber-700 hover:bg-amber-600', 'bg-emerald-700 hover:bg-emerald-600', 'bg-indigo-700 hover:bg-indigo-600'];
+  const isSheet = item?.type === 'spreadsheet';
+  if (item?.kind === 'rxo') {
+    // Every RXO account (R X O 2429200 - ATZ, ATZ H, ATZ P, ATZ R...), not just the main one.
+    return brokers.filter(name => /^\s*R\s*X\s*O\b/i.test(normalizeCustomerName(name)))
+      .map((customer, index) => ({ label: customer, customer, className: colors[index % colors.length] }));
+  }
+  return isSheet ? pasteImportChoices.filter(choice => choice.customer) : pasteImportChoices;
+}
 
 // ---------- MercuryGate (Landstar's TMS) for booked Paramount loads ----------
 // The helper bot fills MercuryGate the way Daniel does by hand (bot/mercurygate-job.js):
@@ -8916,9 +9008,23 @@ export default function App({ sharing = null, userId = null } = {}) {
     setProfile(nextProfile);
     pushNotice(`⛽ Fuel surcharge updated from the ${parsed.date || 'latest'} fuel email: East ${nextRates.east} · Midwest ${nextRates.midwest} · West ${nextRates.west} · New England ${nextRates.newEngland}`, 'info');
   };
+  // The Google Chat item on screen (a picture shown in the paste window, or a spreadsheet
+  // waiting for its account), and a spreadsheet to import once its account is selected.
+  const [chatItem, setChatItem] = useState(null);
+  const [chatSheet, setChatSheet] = useState(null);
+  const [pendingChatSheet, setPendingChatSheet] = useState(null);
+  const finishChatItem = name => {
+    if (!name) return;
+    fetch('/api/chat-inbox/done', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
+      .catch(error => console.error('Could not clear the chat inbox item:', error));
+  };
   const importPastedImage = (customer) => {
     const image = pastedImage;
     setPastedImage(null);
+    if (chatItem) {
+      finishChatItem(chatItem.name);
+      setChatItem(null);
+    }
     if (!image) return;
     if (!customer) {
       void importScreenshotFile(image, 'ntg');
@@ -8927,6 +9033,80 @@ export default function App({ sharing = null, userId = null } = {}) {
     if (customer !== selectedBroker) handleSelectBroker(customer);
     void importScreenshotFile(image, 'ai', customer);
   };
+  const cancelPastedImage = () => {
+    setPastedImage(null);
+    if (chatItem) {
+      finishChatItem(chatItem.name);
+      setChatItem(null);
+    }
+  };
+  // Imports a chat spreadsheet into an account (switches to it first: the Excel import
+  // reads the selected account). remember = save "this file name goes to this account".
+  const importChatSheet = (customer, { remember = false } = {}) => {
+    const sheet = chatSheet;
+    setChatSheet(null);
+    if (!sheet) return;
+    finishChatItem(sheet.item.name);
+    if (!customer) return;
+    if (remember) {
+      const nextProfile = { ...profile, chatSheetAccounts: rememberChatSheetAccount(profile.chatSheetAccounts, sheet.item.label, customer) };
+      try {
+        if (writeSyncedKey('landstar_profile', JSON.stringify(nextProfile))) setProfile(nextProfile);
+      } catch (error) {
+        console.error('Could not save the spreadsheet account:', error);
+      }
+    }
+    if (customer !== selectedBroker) handleSelectBroker(customer);
+    setPendingChatSheet({ file: sheet.file, customer });
+  };
+  useEffect(() => {
+    if (!pendingChatSheet || pendingChatSheet.customer !== selectedBroker) return;
+    const { file } = pendingChatSheet;
+    setPendingChatSheet(null);
+    handleExcelImport({ target: { files: [file], value: '' } });
+  }, [pendingChatSheet, selectedBroker]);
+  // Checks the Google Chat inbox every 30 seconds while nothing else is on screen.
+  useEffect(() => {
+    if (pastedImage || chatItem || chatSheet || pendingChatSheet || isImportingScreenshot) return undefined;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const response = await fetch('/api/chat-inbox');
+        if (!response.ok) return;
+        const { items = [] } = await response.json();
+        const item = items[0];
+        if (!item || cancelled) return;
+        const fileResponse = await fetch(`/api/chat-inbox/file?name=${encodeURIComponent(item.name)}`);
+        if (!fileResponse.ok || cancelled) return;
+        const blob = await fileResponse.blob();
+        const file = new File([blob], item.fileName || item.name, { type: blob.type });
+        const from = [item.chat, item.sender].filter(Boolean).join(' · ');
+        const skipReason = item.type === 'spreadsheet' && item.kind === 'rxo' ? getChatSheetSkipReason(item.label) : '';
+        if (skipReason) {
+          finishChatItem(item.name);
+          pushNotice(`💬 Skipped "${item.label}" from Google Chat: ${skipReason}.`, 'info');
+        } else if (item.type === 'spreadsheet') {
+          const known =getChatSheetAccount(paramountLatest.profile?.chatSheetAccounts, item.label);
+          if (known && brokers.includes(known)) {
+            finishChatItem(item.name);
+            pushNotice(`💬 "${item.label}" list from Google Chat${item.chat ? ` (${item.chat})` : ''} imported into ${known}.`, 'info');
+            if (known !== selectedBroker) handleSelectBroker(known);
+            setPendingChatSheet({ file, customer: known });
+          } else {
+            setChatSheet({ item: { ...item, from }, file });
+          }
+        } else {
+          setChatItem({ ...item, from });
+          setPastedImage(file);
+        }
+      } catch {
+        // The TMS server has no chat inbox (or it is not reachable): try again later.
+      }
+    };
+    void check();
+    const timer = setInterval(check, chatInboxPollMs);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [pastedImage, chatItem, chatSheet, pendingChatSheet, isImportingScreenshot, brokers, selectedBroker]);
   paramountLatest.map = customerOrdersMap;
   paramountLatest.phone = profile.phone;
   paramountLatest.postingCode = profile.postingCode;
@@ -10265,7 +10445,8 @@ export default function App({ sharing = null, userId = null } = {}) {
         rowErrors.push('delivery start must be later than pickup start');
       }
       if (!equipment) rowErrors.push('valid equipment');
-      const equipmentChoices = [equipment, getLandstarEquipment2(ord), ord.equipment3].filter(Boolean);
+      const equipment2 = getLandstarExportEquipment2(selectedBroker, ord);
+      const equipmentChoices = [equipment, equipment2, ord.equipment3].filter(Boolean);
       if (new Set(equipmentChoices).size !== equipmentChoices.length) rowErrors.push('distinct equipment choices (remove duplicate alternates)');
       if (equipment === 'D-LG' && equipmentChoices.includes('D-ST')) rowErrors.push('liftgate-required loads cannot offer D-ST as an alternate');
       if (!['CGAPP', 'HAZMAT', 'CHEM'].includes(commodity)) rowErrors.push('valid commodity');
@@ -10303,7 +10484,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         "Visibility Code": visibilityCode,
         "Bill as Miles": allowMissingMiles && !(miles > 0) ? '' : miles,
         "Equipment 1(Required)": equipment,
-        "Equipment 2": getLandstarEquipment2(ord),
+        "Equipment 2": equipment2,
         "Equipment 3": ord.equipment3 || "",
         "Weight(Required)": weight ?? '',
         "Rate Type(Required)": "Flat Rate",
@@ -10971,6 +11152,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                   </label>
                   <LoadListHistory onRestore={restoreLoadListSnapshot} />
                   <Prospects />
+                  <ChOffers />
                 </div>
               </div>
             </div>
@@ -11516,17 +11698,17 @@ export default function App({ sharing = null, userId = null } = {}) {
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${ord.tag === 'ENT' ? 'tms-ent' : ord.tag === 'HOLD' ? 'bg-red-600 text-white' : ord.tag === 'OPEN' ? 'tms-open' : ord.tag === 'BOOKED' ? 'bg-purple-600 text-white' : 'bg-blue-600 text-white'}`}>{ord.tag}</span>
                   </div>
                   <div className="flex items-center gap-1.5 mb-1 min-w-0">
-                    <div className="text-xs font-medium text-gray-200 truncate">{ord.route}</div>
+                    <div className="text-xs font-medium text-gray-200 truncate">{getLoadCardRoute(ord)}</div>
                     <button
                       type="button"
-                      onClick={(e) => { e.stopPropagation();                       copyToClipboard(`${ord.id} ${ord.route || ''}`.trim(), 'Load number and route'); }}
+                      onClick={(e) => { e.stopPropagation();                       copyToClipboard(`${ord.id} ${getLoadCardRoute(ord)}`.trim(), 'Load number and route'); }}
                                             title="Copy load number and pickup/delivery city/state"
                       aria-label={`Copy route for load ${ord.id}`}
                       className="shrink-0 bg-slate-700 hover:bg-slate-600 text-white px-1.5 py-0.5 rounded text-[10px] cursor-pointer"
                     >📋</button>
                   </div>
                   <div className="tms-card-meta">
-                  <div className="tms-card-dates text-[11px] text-gray-400">{ord.puDate} {ord.delDate}</div>
+                  <div className="tms-card-dates text-[11px] text-gray-400">{getLoadCardDates(ord)}</div>
                   <div aria-label={`Rate for load ${ord.id}`} className="tms-card-rate mt-1 text-xs text-emerald-400 font-bold">
                     Rate: ${(Number(String(ord.rateInput || '').replace(/[$,]/g, '')) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}
                   </div>
@@ -11619,10 +11801,11 @@ export default function App({ sharing = null, userId = null } = {}) {
             {pastedImage && (
               <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 normal-case tracking-normal text-left" role="dialog" aria-label="Which list is this?">
                 <div className="bg-[#121829] border border-purple-500 rounded-lg shadow-2xl p-4 w-[24rem] max-w-full">
-                  <h2 className="text-sm font-bold text-purple-200 mb-1">📋 Which list did you paste?</h2>
+                  <h2 className="text-sm font-bold text-purple-200 mb-1">{chatItem ? '💬 New list picture from Google Chat' : '📋 Which list did you paste?'}</h2>
+                  {chatItem?.from && <p className="text-xs text-purple-200 mb-1">From {chatItem.from}</p>}
                   <p className="text-xs text-gray-300 mb-3">The picture is imported into the account you pick.</p>
                   <div className="flex flex-col gap-2">
-                    {pasteImportChoices.map(choice => (
+                    {(chatItem ? getChatInboxChoices(chatItem, brokers) : pasteImportChoices).map(choice => (
                       <button
                         key={choice.label}
                         type="button"
@@ -11632,7 +11815,36 @@ export default function App({ sharing = null, userId = null } = {}) {
                         {choice.label}
                       </button>
                     ))}
-                    <button type="button" onClick={() => setPastedImage(null)} className="text-gray-300 hover:text-white text-xs mt-1 cursor-pointer">Cancel</button>
+                    <button type="button" onClick={cancelPastedImage} className="text-gray-300 hover:text-white text-xs mt-1 cursor-pointer">{chatItem ? 'Skip this picture' : 'Cancel'}</button>
+                  </div>
+                </div>
+              </div>
+            )}
+            {chatSheet && !pastedImage && (
+              <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 normal-case tracking-normal text-left" role="dialog" aria-label="Which account is this spreadsheet for?">
+                <div className="bg-[#121829] border border-emerald-500 rounded-lg shadow-2xl p-4 w-[26rem] max-w-full">
+                  <h2 className="text-sm font-bold text-emerald-200 mb-1">💬 New spreadsheet from Google Chat</h2>
+                  <p className="text-sm text-white font-bold mb-1">{chatSheet.item.label ? `"${chatSheet.item.label}"` : 'No list name above the file'}</p>
+                  <p className="text-[11px] text-gray-400 font-mono break-all mb-1">{chatSheet.item.fileName || chatSheet.item.name}</p>
+                  {chatSheet.item.from && <p className="text-xs text-emerald-200 mb-1">From {chatSheet.item.from}</p>}
+                  <p className="text-xs text-gray-300 mb-3">{chatSheet.item.label
+                    ? `Which account does the "${chatSheet.item.label}" list go to? The TMS remembers: next time a "${chatSheet.item.label}" list comes in, it goes there by itself.`
+                    : 'Which account does it go to? (With no list name above it, the TMS asks every time.)'}</p>
+                  <div className="flex flex-col gap-2">
+                    {getChatInboxChoices(chatSheet.item, brokers).map(choice => (
+                      <button
+                        key={choice.label}
+                        type="button"
+                        onClick={() => importChatSheet(choice.customer, { remember: true })}
+                        className={`${choice.className} text-white text-sm px-3 py-2 rounded font-semibold cursor-pointer text-left`}
+                      >
+                        {choice.label}
+                      </button>
+                    ))}
+                    {!getChatInboxChoices(chatSheet.item, brokers).length && (
+                      <p className="text-xs text-amber-300">No matching accounts in your customer list yet. Add the account first, then it shows here.</p>
+                    )}
+                    <button type="button" onClick={() => importChatSheet('')} className="text-gray-300 hover:text-white text-xs mt-1 cursor-pointer">Skip this spreadsheet</button>
                   </div>
                 </div>
               </div>
@@ -12137,7 +12349,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                   </select>
                   {[2, 3].map(slot => {
                     const field = `equipment${slot}`;
-                    const value = slot === 2 ? getLandstarEquipment2(selectedOrder) : selectedOrder.equipment3 || '';
+                    const value = slot === 2 ? getLandstarExportEquipment2(selectedBroker, selectedOrder) : selectedOrder.equipment3 || '';
                     const choices = [...new Map(equipmentOptions.map(([code, label]) => [getLandstarEquipmentCode(code), label])).entries()];
                     return (
                       <div key={field} className="mt-2">
@@ -12149,7 +12361,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                           {value && !choices.some(([code]) => code === value) && <option value={value}>{value}</option>}
                           {choices.filter(([code]) => code && code !== getLandstarEquipmentCode(selectedOrder.eCode)
                             && !(getLandstarEquipmentCode(selectedOrder.eCode) === 'D-LG' && code === 'D-ST')
-                            && (slot === 2 || code !== getLandstarEquipment2(selectedOrder)))
+                            && (slot === 2 || code !== getLandstarExportEquipment2(selectedBroker, selectedOrder)))
                             .map(([code, label]) => <option key={code} value={code}>{code} - {label}</option>)}
                         </select>
                       </div>

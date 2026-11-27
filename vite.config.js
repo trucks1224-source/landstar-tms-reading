@@ -19,6 +19,7 @@ const { readRatesStatus, readHelperStatus, readRemovalStatus } = createRequire(i
 const { buildHealthReport, readWatchdogStatus, readEmailBotStatus, postingBotFromStatus } = createRequire(import.meta.url)('./bot/health.js')
 const { sendOnce, SEND_ACTIONS, markEmailSkipped, settleUnknownEmail, listUnknownEmails } = createRequire(import.meta.url)('./bot/email-record.js')
 const { readBotControl, writeBotControl } = createRequire(import.meta.url)('./bot/local-bot-control.js')
+const chatInbox = createRequire(import.meta.url)('./bot/chat-inbox.js')
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
@@ -106,6 +107,50 @@ export default defineConfig(({ mode }) => {
               return res.end(JSON.stringify({ error: 'Use GET.' }))
             }
             res.end(JSON.stringify(readRatesStatus()))
+          })
+          // Google Chat inbox (bot/chat-bot.js): pictures and spreadsheets from Daniel's chats.
+          //   GET  /api/chat-inbox              waiting items
+          //   GET  /api/chat-inbox/file?name=   one item's file
+          //   POST /api/chat-inbox/done {name}  imported or cancelled: move it out of the inbox
+          server.middlewares.use('/api/chat-inbox', (req, res) => {
+            res.setHeader('Cache-Control', 'no-store')
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              res.statusCode = 403
+              return res.end(JSON.stringify({ error: 'Only the local TMS can read the chat inbox.' }))
+            }
+            const url = new URL(req.url, 'http://x')
+            try {
+              if (req.method === 'GET' && url.pathname === '/file') {
+                const name = url.searchParams.get('name')
+                const bytes = readFileSync(chatInbox.inboxFilePath(name))
+                res.setHeader('Content-Type', chatInbox.contentTypeOf(name))
+                return res.end(bytes)
+              }
+              res.setHeader('Content-Type', 'application/json')
+              if (req.method === 'GET') return res.end(JSON.stringify({ items: chatInbox.listInbox(), bot: chatInbox.readChatStatus() }))
+              if (req.method === 'POST' && url.pathname === '/done') {
+                let body = ''
+                req.on('data', chunk => {
+                  body += chunk
+                  if (body.length > 1024) req.destroy()
+                })
+                req.on('end', () => {
+                  try {
+                    res.end(JSON.stringify({ done: chatInbox.markInboxDone(JSON.parse(body).name) }))
+                  } catch (error) {
+                    res.statusCode = 400
+                    res.end(JSON.stringify({ error: error.message }))
+                  }
+                })
+                return
+              }
+              res.statusCode = 405
+              res.end(JSON.stringify({ error: 'Use GET, or POST /done.' }))
+            } catch (error) {
+              res.statusCode = 404
+              res.end(JSON.stringify({ error: error.message }))
+            }
           })
           // Morning system check (header "System check"): every local piece in one answer.
           const signingInSince = {}

@@ -58,7 +58,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
-  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
+  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, getChatSheetSkipReason, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
@@ -101,7 +101,7 @@ const context = {
     if (name === './lib/teamLogos.js') return teamLogos;
     if (name === './lib/teamData.js') return teamData;
     if (name === './lib/emailWorker.js') return emailWorker;
-    if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
+    if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx'].includes(name)) return {};
     throw new Error(`Unexpected dependency: ${name}`);
   }
 };
@@ -607,6 +607,69 @@ test('AMERI 18347- ATZ: Colony and York lanes are priced, brokerable, $0 Carrier
   assert.equal(policy.getLandstarBrokerable(customers[0], { brokerable: 'false' }), 'N');
   assert.equal(policy.getLandstarBrokerable(customers[0], { brokerable: 'true' }), 'Y');
   assert.equal(policy.getLandstarCarrierAmount(customers[0], 4800), 4800);
+});
+
+test('Google Chat spreadsheets: the account is remembered by the list name above the file', () => {
+  assert.equal(policy.getChatSheetKey('Big List'), 'big list');
+  assert.equal(policy.getChatSheetKey('big list 11/27!'), 'big list', 'dates and punctuation do not matter');
+  assert.equal(policy.getChatSheetAccount({}, 'big list'), 'R X O 2429200 - ATZ V', 'Daniel: big list is ATZ V');
+  assert.equal(policy.getChatSheetAccount(undefined, 'Big List'), 'R X O 2429200 - ATZ V');
+  assert.equal(policy.getChatSheetAccount({}, 'FBS'), 'R X O 2429200 - ATZ F');
+  assert.equal(policy.getChatSheetAccount({}, 'reefer'), 'R X O 2429200 - ATZ R');
+  assert.equal(policy.getChatSheetAccount({}, 'Haz'), 'R X O 2429200 - ATZ H');
+  assert.equal(policy.getChatSheetAccount({}, 'panels'), 'R X O 2429200 - ATZ P');
+  assert.equal(policy.getChatSheetAccount({}, 'dry van extras'), '', 'not taught yet: the TMS asks');
+  assert.match(policy.getChatSheetSkipReason('LOWES'), /SNB/);
+  assert.match(policy.getChatSheetSkipReason('lowes 11/27'), /SNB/);
+  assert.match(policy.getChatSheetSkipReason('$$'), /SNB/);
+  assert.match(policy.getChatSheetSkipReason('$ $ loads'), /SNB/);
+  assert.equal(policy.getChatSheetSkipReason('big list'), '');
+  assert.equal(policy.getChatSheetSkipReason('$2500 load'), '', 'one dollar sign is not the SNB list');
+  assert.equal(policy.getChatSheetAccount({}, ''), '', 'no name above the file: always asks');
+  let rules = policy.rememberChatSheetAccount({}, 'fbs', 'R X O 2429200 - ATZ F');
+  rules = policy.rememberChatSheetAccount(rules, 'Reefer', 'R X O 2429200 - ATZ R');
+  assert.equal(policy.getChatSheetAccount(rules, 'FBS'), 'R X O 2429200 - ATZ F');
+  assert.equal(policy.getChatSheetAccount(rules, 'reefer'), 'R X O 2429200 - ATZ R');
+  assert.equal(policy.getChatSheetAccount({ 'big list': 'R X O 2429200 - ATZ' }, 'big list'), 'R X O 2429200 - ATZ', 'a picked answer wins');
+  assert.equal(Object.keys(policy.rememberChatSheetAccount({}, '', 'X')).length, 0, 'nothing remembered without a name');
+
+  const customersOf = choices => [...choices].map(choice => choice.customer);
+  const brokers = ['Para 1522166 - ATZ', 'R X O 2429200 - ATZ V', 'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P', 'Nolan 965974 - ATZ'];
+  assert.deepEqual(customersOf(policy.getChatInboxChoices({ kind: 'rxo', type: 'spreadsheet' }, brokers)),
+    ['R X O 2429200 - ATZ V', 'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P'], 'RXO chat offers every RXO account');
+  assert.deepEqual(customersOf(policy.getChatInboxChoices({ kind: 'para', type: 'picture' }, brokers)),
+    ['Para 1522166 - ATZ', 'Para 1522166 - ATZ H', ''], 'Para pictures: Para accounts and NTG cards');
+  assert.deepEqual(customersOf(policy.getChatInboxChoices({ kind: 'para', type: 'spreadsheet' }, brokers)),
+    ['Para 1522166 - ATZ', 'Para 1522166 - ATZ H'], 'NTG cards are never spreadsheets');
+});
+
+test('load cards: hand-added loads show their cities and dates, imported loads keep theirs', () => {
+  const manual = policy.createManualLoad('576220745', {
+    origCity: 'BLOOMINGTON', origSt: 'il', destCity: 'RENO', destSt: 'NV',
+    pickupTime: '12/1/2026 1900 - 2300', deliveryTime: '12/6/2026 0800 - 1600'
+  });
+  assert.equal(policy.getLoadCardRoute(manual), 'BLOOMINGTON, IL → RENO, NV');
+  assert.equal(policy.getLoadCardDates(manual), 'PU: 12/1/2026 DFL: 12/6/2026');
+  const blank = policy.createManualLoad('1');
+  assert.equal(policy.getLoadCardRoute(blank), '');
+  assert.equal(policy.getLoadCardDates(blank), 'PU: Today DFL: Upcoming', 'nothing typed yet');
+  assert.equal(policy.getLoadCardRoute({ ...blank, destCity: 'RENO', destSt: 'NV' }), '? → RENO, NV');
+  const imported = { route: 'COLONY, WY → RENO, NV', puDate: 'PU: 11/30', delDate: 'DFL: 12/2', origCity: 'X', pickupTime: '12/9/2026 0800' };
+  assert.equal(policy.getLoadCardRoute(imported), 'COLONY, WY → RENO, NV');
+  assert.equal(policy.getLoadCardDates(imported), 'PU: 11/30 DFL: 12/2');
+});
+
+test('AMERI 18347- ATZ: one Landstar posting offers VAN and REEFER', () => {
+  const ameri = 'AMERI 18347- ATZ';
+  assert.equal(policy.getLandstarEquipmentCode('VR'), 'VAN', 'Equipment 1 stays VAN');
+  assert.equal(policy.getLandstarExportEquipment2(ameri, { eCode: 'VR' }), 'REFR');
+  assert.equal(policy.getLandstarExportEquipment2(ameri, { eCode: 'V' }), 'REFR');
+  assert.equal(policy.getLandstarExportEquipment2('AMERI 18347 - ATZ', { eCode: 'VR' }), 'REFR');
+  assert.equal(policy.getLandstarExportEquipment2(ameri, { eCode: 'VR', equipment2: '' }), '', 'None picked by hand wins');
+  assert.equal(policy.getLandstarExportEquipment2(ameri, { eCode: 'VR', equipment2: '53VN' }), '53VN');
+  assert.equal(policy.getLandstarExportEquipment2(ameri, { eCode: 'F' }), 'STEP', 'non-van loads unchanged');
+  assert.equal(policy.getLandstarExportEquipment2('AMERI 18347- ATZ H', { eCode: 'VR' }), '', 'exact account only');
+  assert.equal(policy.getLandstarExportEquipment2(customers[0], { eCode: 'VR' }), '', 'other customers unchanged');
 });
 
 test('DAT posting: shipper-local pickup time, equipment, AMERI posts with no rate', () => {
@@ -1499,7 +1562,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === 'react') return react;
       if (name === 'xlsx') return XLSX;
       if (name === './lib/supabase') return { supabase };
-      if (name === './Prospects.jsx') return { default: () => null };
+      if (name === './Prospects.jsx' || name === './ChOffers.jsx') return { default: () => null };
       throw new Error(`Unexpected dependency: ${name}`);
     },
     ...extraContext
@@ -1710,7 +1773,7 @@ function createSyncContext(storage) {
       if (name === './lib/teamLogos.js') return teamLogos;
       if (name === './lib/teamData.js') return teamData;
       if (name === './lib/emailWorker.js') return emailWorker;
-      if (['react', 'xlsx', './lib/supabase', './Prospects.jsx'].includes(name)) return {};
+      if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx'].includes(name)) return {};
       throw new Error(`Unexpected dependency: ${name}`);
     }
   };

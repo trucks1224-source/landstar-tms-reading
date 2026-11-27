@@ -109,7 +109,7 @@ const context = {
       if (name === './lib/chatLoads.js') return chatLoads;
       if (name === './lib/undo.js') return undoLib;
     if (name === './lib/emailWorker.js') return emailWorker;
-    if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx'].includes(name)) return {};
+    if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
     throw new Error(`Unexpected dependency: ${name}`);
   }
 };
@@ -1591,7 +1591,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === 'react') return react;
       if (name === 'xlsx') return XLSX;
       if (name === './lib/supabase') return { supabase };
-      if (name === './Prospects.jsx' || name === './ChOffers.jsx') return { default: () => null };
+      if (name === './Prospects.jsx' || name === './ChOffers.jsx' || name === './LoadTable.jsx') return { default: () => null };
       if (name === './TodayPanel.jsx') return { ProblemBanner: () => null, TodayPanel: () => null };
       throw new Error(`Unexpected dependency: ${name}`);
     },
@@ -1806,7 +1806,7 @@ function createSyncContext(storage) {
       if (name === './lib/chatLoads.js') return chatLoads;
       if (name === './lib/undo.js') return undoLib;
       if (name === './lib/emailWorker.js') return emailWorker;
-      if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx'].includes(name)) return {};
+      if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
       throw new Error(`Unexpected dependency: ${name}`);
     }
   };

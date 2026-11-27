@@ -1257,3 +1257,15 @@ body.tms-drawer-open .tms-sidebar {
   height: 28px;
   cursor: pointer;
 }
+
+/* ▦ Table view of the load list (Daniel 2026-11-27): the list column widens so the table's
+   columns fit; the load details stay on the right. */
+@media (min-width: 768px) {
+  body.tms-table-view .tms-sidebar {
+    width: min(60vw, 980px);
+  }
+}
+.tms-load-table table td,
+.tms-load-table table th {
+  line-height: 1.35;
+}

@@ -19,6 +19,7 @@ import Prospects from './Prospects.jsx';
 import ChOffers from './ChOffers.jsx';
 import { ProblemBanner, TodayPanel } from './TodayPanel.jsx';
 import { findBigListChanges, describeListChange, restoredPostedLoads } from './lib/undo.js';
+import LoadTable from './LoadTable.jsx';
 import { chOfferToTmsLoad, getTodaysExportedLanes, CH_TMS_ACCOUNT } from './lib/chOffers.js';
 import { parseChatLoadMessage, chatLoadAccount, chatLoadToTmsLoad } from './lib/chatLoads.js';
 import automationPolicy from '../bot/automation-policy.json';
@@ -5213,6 +5214,48 @@ function TruckLights() {
       </div>
     </div>
   );
+}
+
+// ▦ Table / ▤ Cards switch for the load list (Daniel 2026-11-27). Remembered in this browser;
+// table view widens the list column (body.tms-table-view in global.css).
+const listViewKey = 'landstar_listView';
+function readListView() {
+  try { return localStorage.getItem(listViewKey) === 'table' ? 'table' : 'cards'; } catch { return 'cards'; }
+}
+
+// One table row per load (src/LoadTable.jsx).
+function buildLoadTableRow(customer, order, { checked, checkDisabled, isHotLane }) {
+  const facts = getLoadCardFacts(order);
+  const place = (city, state) => [String(city || '').trim(), String(state || '').trim().toUpperCase()].filter(Boolean).join(', ');
+  const dateOf = value => String(value || '').match(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?(?:\s+\d{4})?/)?.[0] || '';
+  const raise = order.rateRaise;
+  const exportedAt = Date.parse(order.landstarExportedAt || '');
+  return {
+    key: JSON.stringify([customer, order.id]),
+    customer, order, id: String(order.id),
+    pickupAt: getPickupSortValue(order) === Number.MAX_SAFE_INTEGER ? 0 : getPickupSortValue(order),
+    pickup: dateOf(order.pickupTime) || String(order.puDate || '').replace(/^PU:\s*/, ''),
+    origin: place(order.origCity, order.origSt),
+    destination: place(order.destCity, order.destSt),
+    delivery: dateOf(order.deliveryTime) || String(order.delDate || '').replace(/^DFL:\s*/, ''),
+    equipment: getDisplayEquipmentCode(order.eCode),
+    miles: Number(String(order.miles || '').replace(/,/g, '').match(/\d+(?:\.\d+)?/)?.[0]) || 0,
+    rate: Number(String(order.rateInput || '').replace(/[$,]/g, '')) || 0,
+    perMile: Number(facts.perMileText.replace(/[^\d.]/g, '')) || 0,
+    status: order.status,
+    hazmat: isHazmatLoad(order),
+    exportedAt: Number.isFinite(exportedAt) ? exportedAt : 0,
+    exported: facts.exported,
+    checked, checkDisabled,
+    flags: [
+      isHazmatLoad(order) && '☢',
+      isTankerLoad(order) && '🛢',
+      String(order.needsCapacity || '').trim() && '⭐',
+      isHotLane && '🔥',
+      raise && '⬆',
+      hasOpenLandstarError(order) && '⚠'
+    ].filter(Boolean)
+  };
 }
 
 function ListFocusToggle() {
@@ -11228,6 +11271,12 @@ export default function App({ sharing = null, userId = null } = {}) {
     }
   };
 
+  const [listView, setListView] = useState(readListView);
+  useEffect(() => {
+    if (typeof document !== 'undefined') document.body.classList.toggle('tms-table-view', listView === 'table');
+    try { localStorage.setItem(listViewKey, listView); } catch { /* remembered for this visit */ }
+  }, [listView]);
+
   // ⌨ Keyboard shortcuts (Daniel 2026-11-27). Ignored while typing in a box or with a window
   // open; the two that send something to Landstar need Shift so a stray key never does.
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -11925,11 +11974,34 @@ export default function App({ sharing = null, userId = null } = {}) {
 
         <div className="tms-list-bar">
           <span className="tms-list-bar-title" title={selectedBroker}>{selectedBroker}</span>
+          <button
+            type="button"
+            onClick={() => setListView(view => (view === 'table' ? 'cards' : 'table'))}
+            aria-pressed={listView === 'table'}
+            title={listView === 'table' ? 'Show the loads as cards' : 'Show the loads as a table: one row per load, sort by any column'}
+            className="tms-list-bar-button"
+          >
+            {listView === 'table' ? '▤ Cards' : '▦ Table'}
+          </button>
           <ListFocusToggle />
         </div>
         <div className="tms-load-list flex-1 overflow-y-auto p-2 space-y-2">
           {visibleOrderEntries.length === 0 ? (
             <div className="text-center text-gray-500 text-xs py-10">{isAllCustomersView ? 'No matching loads across all customers with the current filters.' : `No loads found for ${selectedBroker}. Click "📂 Import Excel" above!`}</div>
+          ) : listView === 'table' ? (
+            <LoadTable
+              rows={visibleOrderEntries.map(({ customer, order }) => buildLoadTableRow(customer, order, {
+                checked: (filter === 'OFFER' || customer === selectedBroker) && selectedIds.includes(selectionKey(customer, order.id)),
+                checkDisabled: filter !== 'OFFER' && customer !== selectedBroker,
+                isHotLane: Boolean(getHotLane(order, hotLanes))
+              }))}
+              selectedKey={selectedOrder ? JSON.stringify([selectedBroker, selectedOrder.id]) : ''}
+              showCustomer={isAllCustomersView}
+              allChecked={filteredOrders.length > 0 && filteredOrders.every(order => selectedIds.includes(selectionKey(selectedBroker, order.id)))}
+              onToggleAll={() => handleSelectAll(filteredOrders)}
+              onToggle={(row, event) => handleToggleSelect(row.order.id, event, row.customer)}
+              onOpen={row => handleSelectSearchResult(row.customer, row.order)}
+            />
           ) : (
             shownOrderEntries.map(({ customer, order: ord }) => (
               <div

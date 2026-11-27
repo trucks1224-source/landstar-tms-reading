@@ -117,6 +117,22 @@ async function hazmatSafely(context, log = console.log) {
 }
 
 const BULK_POSTINGS_URL = 'https://portal.landstaronline.com/agent/bulk-postings';
+
+// Bulk Postings' "Upload Spreadsheet" button. Found by its old hidden label or by the words
+// on it: on 2026-11-27 the label stopped matching and every upload stopped with "upload
+// window did not open", though the button was still on the page.
+const UPLOAD_BUTTON_SELECTOR = 'button[aria-label="Upload Template Spreadsheet"], button:has-text("Upload Spreadsheet")';
+function uploadSpreadsheetButton(page) {
+  return page.locator(UPLOAD_BUTTON_SELECTOR).first();
+}
+
+// What the bot sees on Bulk Postings when the upload window will not open (for the log).
+async function describeUploadButtons(page) {
+  return page.evaluate(() => Array.from(document.querySelectorAll('button'))
+    .filter(button => /upload/i.test(`${button.innerText} ${button.getAttribute('aria-label') || ''}`))
+    .map(button => `"${button.innerText.trim()}" aria-label=${JSON.stringify(button.getAttribute('aria-label'))}${button.disabled ? ' (disabled)' : ''}`)
+    .join('; ')).catch(() => '') || 'no upload button on the page';
+}
 // Persistent browser profile: you log in once, it stays signed in between runs.
 const PROFILE_DIR = path.join(__dirname, 'browser-profile');
 
@@ -192,7 +208,7 @@ async function waitForUploadToFinish(page) {
   await page.waitForTimeout(4000);
 
   // Confirm the upload button is clickable again (no overlay intercepting).
-  const btn = page.locator('button[aria-label="Upload Template Spreadsheet"]');
+  const btn = uploadSpreadsheetButton(page);
   for (let i = 0; i < 10; i++) {
     if (await page.$('.cdk-overlay-backdrop') === null) break;
     await page.waitForTimeout(1000);
@@ -241,8 +257,7 @@ async function uploadOne(page, filePath) {
     fileInput = await page.$('input[type=file]');
     if (fileInput) break;
     // No input yet: click the Upload Spreadsheet button to open the modal.
-    await page.locator('button[aria-label="Upload Template Spreadsheet"]')
-      .click({ timeout: 10000 }).catch(() => {});
+    await uploadSpreadsheetButton(page).click({ timeout: 10000 }).catch(() => {});
     try {
       fileInput = await page.waitForSelector('input[type=file]', { state: 'attached', timeout: 8000 });
     } catch {
@@ -251,6 +266,7 @@ async function uploadOne(page, filePath) {
   }
   if (!fileInput) {
     // Nothing was attached, so Landstar never received this file: it can safely be tried again.
+    console.log(`    Upload buttons on Bulk Postings: ${await describeUploadButtons(page)}`);
     const error = new Error('Landstar\'s upload window did not open (no file input). The file was NOT sent.');
     error.notSubmitted = true;
     throw error;
@@ -324,7 +340,7 @@ const timeNow = () => new Date().toLocaleTimeString('en-US', { hour: 'numeric', 
 // long as it takes for you to log in; otherwise it gives up after 5 minutes.
 async function openBulkPostings(context, page, { waitForever = false } = {}) {
   await page.goto(BULK_POSTINGS_URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
-  const uploadBtn = page.locator('button[aria-label="Upload Template Spreadsheet"]');
+  const uploadBtn = uploadSpreadsheetButton(page);
   try {
     await uploadBtn.waitFor({ state: 'visible', timeout: 20000 });
   } catch {

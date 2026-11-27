@@ -1,0 +1,180 @@
+Hi, Daniel Gomez
+Dashboards
+More Items
+QUICK POST
+231 Errors | 11 Batches
+DOWNLOAD TEMPLATE
+UPLOAD SPREADSHEET
+231 Errors
+Filter By Batch
+POSTING #
+CUSTOMER
+ORIGIN
+DESTINATION
+MILES
+EQUIPMENT
+COMMODITY
+AGENT
+REVENUE
+#8329132
+Batch #361882
+11/10/26 • 12:53
+Paramount Trans Logistics Llc
+1522166
+Azusa, CA
+11/18/26 • 08:00 -
+11/18/26 • 15:00
+Inkom, ID
+11/20/26 • 08:00 -
+11/20/26 • 17:00
+813 mi
+VAN
+HAZMAT
+40,409 lb
+ATZ
+$3,600.00
+$4.43/mi
+CARRIER AMT
+--
+#8329131
+Batch #361882
+11/10/26 • 12:53
+Paramount Trans Logistics Llc
+1522166
+La Salle, IL
+11/13/26 • 00:13 -
+11/13/26 • 13:00
+Ontario, CA
+11/17/26 • 00:00 
+1,897 mi
+VAN
+HAZMAT
+43,010 lb
+ATZ
+$5,500.00
+$2.90/mi
+CARRIER AMT
+--
+#8329130
+Batch #361882
+11/10/26 • 12:53
+Paramount Trans Logistics Llc
+1522166
+Gaffney, SC
+11/13/26 • 00:08 -
+11/13/26 • 15:00
+Calhoun, GA
+11/16/26 • 00:00 -
+11/16/26 • 08:00
+232 mi
+VAN
+HAZMAT
+43,980 lb
+ATZ
+$1,200.00
+$5.17/mi
+CARRIER AMT
+--
+#8329129
+Batch #361882
+11/10/26 • 12:53
+Paramount Trans Logistics Llc
+1522166
+Martinsburg, WV
+11/11/26 • 13:00 -
+11/11/26 • 23:45
+Hurricane, UT
+11/19/26 • 00:00 -
+11/19/26 • 08:30
+2,193 mi
+VAN
+HAZMAT
+42,912 lb
+ATZ
+$5,700.00
+$2.60/mi
+CARRIER AMT
+--
+#8329128
+Batch #361882
+11/10/26 • 12:53
+Paramount Trans Logistics Llc
+1522166
+Temple, TX
+11/11/26 • 09:00 
+Milwaukee, WI
+11/12/26 • 08:00 
+1,128 mi
+VAN
+HAZMAT
+44,000 lb
+ATZ
+$4,000.00
+$3.55/mi
+CARRIER AMT
+--
+#8326580
+Batch #361765
+11/10/26 • 09:41
+Coolmore Logistics Co
+2698845
+Rutherfordton, NC
+11/10/26 • 10:15 -
+11/13/26 • 16:00
+Miami, FL
+11/11/26 • 08:00 -
+11/11/26 • 16:00
+755 mi
+FLAT, STEP
+CGAPP
+46,000 lb
+ATZ
+$3,000.00
+$3.97/mi
+CARRIER AMT
+--
+COPYRIGHT © 2026 LANDSTAR SYSTEM, INC.
+TERMS OF USE PRIVACY POLICY LANDSTAR.COM
+● Bot logged in
+Posting #8329132
+Batch #361882
+CUSTOMER
+Paramount Trans Logistics Llc 1522166
+Ocala, FL
+Credit Limit:
+$700,000.00
+Available Credit:
+$402,058.35
+AGENCY CODE
+ATZ
+POSTING CALL BACK #
+(484) 575-6486
+ORIGIN
+Azusa, CA
+11/18/26 • 08:00 -  11/18/26 • 15:00
+DESTINATION
+Inkom, ID
+11/20/26 • 08:00 -  11/20/26 • 17:00
+MILES
+813
+Bill As:
+816
+REVENUE
+$3,600.00
+$4.43/mi
+FUEL SURCHARGE
+--
+CARRIER
+--
+EQUIPMENT
+VAN
+WEIGHT
+40,409 lb
+COMMODITY
+HAZMAT
+ADDITIONAL DETAILS
+No Comments Provided
+Hazmat
+VIEW ALL LOAD DETAILS
+DELETE
+EDIT

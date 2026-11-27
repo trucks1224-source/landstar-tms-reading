@@ -69,3 +69,10 @@ bot/pause-refresh-state.json.*.tmp
 bot/browser-profile-refresh/
 bot/refresh-status.json
 bot/refresh-status.json.*.tmp
+# Google Chat bot: its Google sign-in, inbox and live state (never commit)
+bot/browser-profile-chat/
+bot/chat-inbox/
+bot/chat-bot-status.json
+bot/chat-bot-status.json.*.tmp
+bot/chat-bot-seen.json
+bot/chat-bot-seen.json.*.tmp

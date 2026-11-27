@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "chats": [
+    { "name": "Para lists (Heather, Olga, Ashley, Edgar)", "kind": "para", "url": "" },
+    { "name": "LANDJA.18 (RXO)", "kind": "rxo", "url": "" }
+  ]
+}

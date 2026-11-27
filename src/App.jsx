@@ -17,6 +17,7 @@ import {
 } from './lib/trackingEmails.js';
 import Prospects from './Prospects.jsx';
 import ChOffers from './ChOffers.jsx';
+import { chOfferToTmsLoad, getTodaysExportedLanes, CH_TMS_ACCOUNT } from './lib/chOffers.js';
 import automationPolicy from '../bot/automation-policy.json';
 
 const exportedLoadRetentionMs = 30 * 24 * 60 * 60 * 1000;
@@ -7168,6 +7169,35 @@ export default function App({ sharing = null, userId = null } = {}) {
     setSelectedOrder(load);
   };
 
+  // 💲 CH Offers (Daniel 2026-11-27): loads checked in the bid list go into CH 593772- ATZ H as
+  // loads added by hand (list imports never delete them), so they export to Landstar.
+  const chOffersAccount = brokers.find(name => isCh593772Customer(name)
+    && normalizeCustomerName(name).toUpperCase().replace(/[^A-Z0-9]/g, '') === CH_TMS_ACCOUNT.toUpperCase().replace(/[^A-Z0-9]/g, '')) || CH_TMS_ACCOUNT;
+  const chOffersLoads = customerOrdersMap[chOffersAccount] || [];
+  const handleAddChOffersToTms = offers => {
+    const existingIds = new Set(chOffersLoads.map(load => normalizeLoadId(load.id)));
+    const newLoads = [];
+    let already = 0;
+    for (const offer of offers) {
+      const fields = chOfferToTmsLoad(offer);
+      if (existingIds.has(normalizeLoadId(fields.id))) { already += 1; continue; }
+      existingIds.add(normalizeLoadId(fields.id));
+      newLoads.push(createManualLoad(fields.id, fields));
+    }
+    if (newLoads.length) {
+      if (!brokers.includes(chOffersAccount)) setBrokers(prev => (prev.includes(chOffersAccount) ? prev : [...prev, chOffersAccount]));
+      setCustomerOrdersMap(prev => ({ ...prev, [chOffersAccount]: [...newLoads, ...(prev[chOffersAccount] || [])] }));
+    }
+    return { added: newLoads.length, already };
+  };
+  const chOffersNewLanes = getTodaysExportedLanes(chOffersLoads);
+  const chOffersInTmsKeys = new Set(chOffersLoads.flatMap(load => [load.chOfferKey, String(load.id)]).filter(Boolean));
+  const openChOffersLoad = load => {
+    handleSelectBroker(chOffersAccount);
+    setView('loads');
+    setSelectedOrder(load);
+  };
+
   // Every load with a booking date lands in the booking log (and stays there even after
   // the load delivers, drops off a list or is deleted), feeding the 📊 Bookings report.
   // A booking comes off only when you remove capacity or move the load out of BOOKED
@@ -11152,7 +11182,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                   </label>
                   <LoadListHistory onRestore={restoreLoadListSnapshot} />
                   <Prospects />
-                  <ChOffers />
+                  <ChOffers onAddToTms={handleAddChOffersToTms} newLanes={chOffersNewLanes} inTmsKeys={chOffersInTmsKeys} onOpenLoad={openChOffersLoad} />
                 </div>
               </div>
             </div>

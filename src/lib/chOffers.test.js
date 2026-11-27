@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseNavisphereLoads, chOfferAmount, chEquipmentCode, chLaneKey, CH_OFFER_OVER_DAT } from './chOffers.js';
+import {
+  parseNavisphereLoads, chOfferAmount, chEquipmentCode, chLaneKey, CH_OFFER_OVER_DAT,
+  chTimeRange, chOfferToTmsLoad, getTodaysExportedLanes, chLoadMatchesSearch, CH_TMS_ACCOUNT
+} from './chOffers.js';
 
 // Copied from Navisphere's Find Loads page (Ctrl+A, Ctrl+C), 2026-11-25.
 const page = `Find Loads
@@ -257,4 +260,63 @@ test('the Copy CH loads bookmark text gives load numbers, Online only and offer 
   assert.equal(loads[0].equipment, 'Van');
   assert.equal(loads[0].pickupTime, '08:00 AM - 12:00 PM');
   assert.equal(loads[1].key, '576222069', 'the load number identifies the load');
+});
+
+const offer = (overrides = {}) => ({
+  key: '576220745', loadNumber: '576220745',
+  origin: { city: 'Bloomington', state: 'IL' }, destination: { city: 'Reno', state: 'NV' },
+  pickupDate: '12/01/2026', pickupTime: '07:00 PM - 11:00 PM', dropDate: '12/06/2026', dropTime: '08:00 AM',
+  miles: 1802, weight: 36422, equipment: 'Van', equipmentCode: 'V', endorsement: '', stops: '1 pick, 1 drop',
+  chRate: 9351, datRate: 2600, offer: 3125, ...overrides
+});
+
+test('checked CH offers become CH 593772- ATZ H loads at the CH rate', () => {
+  assert.equal(CH_TMS_ACCOUNT, 'CH 593772- ATZ H');
+  assert.equal(chTimeRange('07:00 PM - 11:00 PM'), '1900 - 2300');
+  assert.equal(chTimeRange('12:00 AM'), '0000 - 0000');
+  assert.equal(chTimeRange(''), '');
+  const load = chOfferToTmsLoad(offer());
+  assert.equal(load.id, '576220745');
+  assert.equal(load.eCode, 'V');
+  assert.equal(load.origCity, 'BLOOMINGTON');
+  assert.equal(load.pickupTime, '12/01/2026 1900 - 2300');
+  assert.equal(load.deliveryTime, '12/06/2026 0800 - 0800');
+  assert.equal(load.weight, '36422 lbs');
+  assert.equal(load.miles, '1802');
+  assert.equal(load.rateInput, '9351');
+  assert.equal(load.rateSource, 'customer-bin', 'posts at the CH rate like CH loads from Gmail');
+  assert.equal(load.chOfferKey, '576220745');
+});
+
+test('a Make Offer load posts at your offer; hazmat and reefer keep their equipment', () => {
+  const makeOffer = chOfferToTmsLoad(offer({ chRate: null, offer: 3125 }));
+  assert.equal(makeOffer.rateInput, '3125');
+  assert.equal(makeOffer.rateSource, 'user-entered');
+  assert.match(makeOffer.notes, /Make Offer load/);
+  const haz = chOfferToTmsLoad(offer({ endorsement: 'HAZ', equipmentCode: 'R' }));
+  assert.equal(haz.eCode, 'RZ');
+  assert.equal(haz.hazmat, 'true');
+  assert.equal(chOfferToTmsLoad(offer({ equipmentCode: 'F' })).eCode, 'F');
+  assert.match(chOfferToTmsLoad(offer({ loadNumber: '', key: 'A|B|C' })).id, /^CH-ABC/);
+});
+
+test('New lanes: only loads exported to Landstar today, newest first', () => {
+  const now = new Date(2026, 10, 27, 15, 0);
+  const at = (hour, day = 27) => new Date(2026, 10, day, hour, 0).toISOString();
+  const lanes = getTodaysExportedLanes([
+    { id: 'a', landstarExportedAt: at(9) },
+    { id: 'b', landstarExportedAt: at(14) },
+    { id: 'c', landstarExportedAt: at(16, 26) },
+    { id: 'd' }
+  ], now);
+  assert.deepEqual(lanes.map(load => load.id), ['b', 'a']);
+});
+
+test('search: every word has to match somewhere in the load', () => {
+  assert.equal(chLoadMatchesSearch(offer(), 'reno'), true);
+  assert.equal(chLoadMatchesSearch(offer(), 'bloomington nv'), true);
+  assert.equal(chLoadMatchesSearch(offer(), '576220745'), true);
+  assert.equal(chLoadMatchesSearch(offer(), 'reno reefer'), false);
+  assert.equal(chLoadMatchesSearch(offer(), ''), true);
+  assert.equal(chLoadMatchesSearch({ id: '99', origCity: 'DALLAS', origSt: 'TX', destCity: 'MIAMI', destSt: 'FL' }, 'dallas fl'), true, 'TMS loads too');
 });

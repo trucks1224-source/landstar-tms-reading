@@ -120,6 +120,83 @@ export function chOfferAmount(datRate) {
   return Math.ceil((target - 25) / 50) * 50 + 25;
 }
 
+// The TMS account checked CH offers go into (Daniel 2026-11-27), and so are exported to Landstar.
+export const CH_TMS_ACCOUNT = 'CH 593772- ATZ H';
+
+// "08:00 AM - 03:00 PM" -> "0800 - 1500"; "12:00 PM" -> "1200 - 1200" (the Landstar export
+// widens a single time to one hour). '' when there is no time.
+export function chTimeRange(text) {
+  const times = String(text || '').match(/\d{1,2}:\d{2}\s*[AP]M/gi) || [];
+  const to24 = time => {
+    const [, hour, minute, half] = time.match(/(\d{1,2}):(\d{2})\s*([AP])M/i);
+    const value = (Number(hour) % 12) + (/p/i.test(half) ? 12 : 0);
+    return `${String(value).padStart(2, '0')}${minute}`;
+  };
+  if (!times.length) return '';
+  return `${to24(times[0])} - ${to24(times[1] || times[0])}`;
+}
+
+// A checked CH offer -> a TMS load for CH 593772- ATZ H. It posts at CH's own rate (the
+// "BIN", like CH loads from Gmail); a "Make Offer" load has no CH rate, so it posts at your
+// offer (DAT + $500). Added like a hand-entered load: list imports never delete it.
+export function chOfferToTmsLoad(load) {
+  const hazmat = /haz/i.test(load.endorsement || '');
+  const code = load.equipmentCode || chEquipmentCode(load.equipment);
+  const eCode = hazmat ? (code === 'R' ? 'RZ' : code === 'F' ? 'FV' : 'VZ') : code;
+  const pickupRange = chTimeRange(load.pickupTime) || '0800 - 1600';
+  const dropRange = chTimeRange(load.dropTime) || '0800 - 1600';
+  const upper = value => String(value || '').toUpperCase();
+  const binRate = load.chRate > 0;
+  const rate = binRate ? load.chRate : load.offer;
+  return {
+    id: String(load.loadNumber || '').trim() || `CH-${String(load.key || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 24)}`,
+    eCode,
+    status: 'OPEN', tag: 'OPEN',
+    route: `${upper(load.origin.city)}, ${upper(load.origin.state)} → ${upper(load.destination.city)}, ${upper(load.destination.state)}`,
+    puDate: `PU: ${load.pickupDate}`,
+    delDate: load.dropDate ? `DFL: ${load.dropDate}` : 'DFL: Upcoming',
+    pickupTime: `${load.pickupDate} ${pickupRange}`,
+    deliveryTime: load.dropDate ? `${load.dropDate} ${dropRange}` : '',
+    origCity: upper(load.origin.city), origSt: upper(load.origin.state), origZip: '',
+    destCity: upper(load.destination.city), destSt: upper(load.destination.state), destZip: '',
+    weight: load.weight > 0 ? `${load.weight} lbs` : '',
+    miles: load.miles > 0 ? String(load.miles) : '',
+    rateInput: rate > 0 ? String(Math.round(rate)) : '',
+    ...(rate > 0 ? { rateSource: binRate ? 'customer-bin' : 'user-entered' } : {}),
+    ...(hazmat ? { hazmat: 'true' } : {}),
+    brokerable: 'false',
+    planningComment: 'From CH Offers (Navisphere)',
+    notes: [load.stops && load.stops !== '1 pick, 1 drop' ? load.stops : '', load.endorsement ? `Endorsement: ${load.endorsement}` : '', binRate ? '' : `Make Offer load: posted at your offer (DAT ${load.datRate ? `$${Math.round(load.datRate)}` : 'n/a'} + $${CH_OFFER_OVER_DAT})`]
+      .filter(Boolean).join(' · '),
+    chOfferKey: load.key
+  };
+}
+
+// CH 593772- ATZ H loads exported to Landstar today, newest first (the "New lanes" tab).
+export function getTodaysExportedLanes(loads, now = new Date()) {
+  const day = date => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  const today = day(now);
+  return (loads || [])
+    .filter(load => {
+      const at = Date.parse(load?.landstarExportedAt || '');
+      return Number.isFinite(at) && day(new Date(at)) === today;
+    })
+    .sort((a, b) => Date.parse(b.landstarExportedAt) - Date.parse(a.landstarExportedAt));
+}
+
+// Search box: every word must appear somewhere in the load (city, state, load #, equipment,
+// dates, rate...). Works for CH offers and TMS loads.
+export function chLoadMatchesSearch(load, query) {
+  const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const text = [
+    load.loadNumber, load.id, load.origin?.city, load.origin?.state, load.destination?.city, load.destination?.state,
+    load.origCity, load.origSt, load.destCity, load.destSt, load.equipment, load.eCode, load.endorsement,
+    load.pickupDate, load.pickupTime, load.dropDate, load.status, load.chRate, load.offer, load.rateInput, load.weight, load.miles
+  ].filter(value => value !== undefined && value !== null && value !== '').join(' ').toLowerCase();
+  return words.every(word => text.includes(word));
+}
+
 // Lane + equipment key for sharing one DAT lookup between identical lanes.
 export function chLaneKey(load) {
   return [load.origin.city, load.origin.state, load.destination.city, load.destination.state, load.equipmentCode].join('|').toUpperCase();

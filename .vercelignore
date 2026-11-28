@@ -1,0 +1,3 @@
+# Test files are not website functions (Vercel's free plan allows 12 functions and counts every
+# .js file in api/; 2026-11-27 the deploy failed at 14).
+api/**/*.test.js

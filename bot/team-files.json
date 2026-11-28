@@ -1,0 +1,33 @@
+{
+    "note":  "Files a teammate bot keeps up to date (written by teammate-setup\\build.ps1).",
+    "files":  [
+                  "agent-config.js",
+                  "assign.js",
+                  "automation-policy.json",
+                  "bot-postings.js",
+                  "clarity.js",
+                  "dedupe.js",
+                  "desktop-exports.js",
+                  "file-log.js",
+                  "hazmat-watch.js",
+                  "local-bot-control.js",
+                  "mercurygate.js",
+                  "mercurygate-job.js",
+                  "package.json",
+                  "package-lock.json",
+                  "posting-maintenance.js",
+                  "prechecked.js",
+                  "raise-window.js",
+                  "rate-check.js",
+                  "ratecon.js",
+                  "rate-work.js",
+                  "refresh.js",
+                  "review-settle.js",
+                  "status-server.js",
+                  "unpost.js",
+                  "update.js",
+                  "upload.js",
+                  "upload-completion.js",
+                  "upload-safety.js"
+              ]
+}

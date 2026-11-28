@@ -152,6 +152,8 @@ function maybeRestart(key, isUp, start, label) {
 async function check() {
   // Heartbeat for the TMS system check (bot/health.js).
   try { writeWatchdogHeartbeat(); } catch (error) { log(`Could not write the watchdog heartbeat: ${error.message}`); }
+  // Email Daniel when something needs him (bot/alerts.js; at most once a minute, never blocks).
+  void require('./alerts').checkAlerts({ log }).catch(() => {});
   const [tmsUp, posting] = await Promise.all([answers(TMS_URL), postingBotState()]);
   maybeRestart('tms', tmsUp, launchTms, 'The TMS dev server');
   if (!readBotControl()) return;

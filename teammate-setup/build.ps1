@@ -15,7 +15,13 @@ New-Item -ItemType Directory -Force -Path (Join-Path $stage 'bot') | Out-Null
 # The upload bot and everything it loads, plus its package list.
 $traced = @(& node (Join-Path $setupDir 'trace-deps.cjs'))
 if ($LASTEXITCODE -ne 0 -or -not ($traced -contains 'upload.js')) { throw 'Could not list the bot files (trace-deps.cjs failed).' }
-$files = $traced + @('package.json', 'package-lock.json', 'automation-policy.json')
+$files = $traced + @('package.json', 'package-lock.json', 'automation-policy.json', 'update.js', 'team-files.json')
+# The list teammates' bots download from GitHub to update themselves (bot\update.js). Commit and
+# push it with the bot code: an update reaches teammates once it is on GitHub's main branch.
+$teamList = @($traced + @('package.json', 'package-lock.json', 'automation-policy.json', 'update.js') | Sort-Object -Unique |
+  Where-Object { $_ -notmatch '(^|[\\/])(agent-config|protected-loads)\.json$' -and $_ -notmatch '\.env' })
+$manifest = [ordered]@{ note = 'Files a teammate bot keeps up to date (written by teammate-setup\build.ps1).'; files = $teamList }
+[IO.File]::WriteAllText((Join-Path $botDir 'team-files.json'), ($manifest | ConvertTo-Json -Depth 3), (New-Object System.Text.UTF8Encoding($false)))
 foreach ($name in ($files | Sort-Object -Unique)) {
   if ($name -match '(^|[\\/])(agent-config|protected-loads)\.json$' -or $name -match '\.env') { continue }
   $target = Join-Path (Join-Path $stage 'bot') $name

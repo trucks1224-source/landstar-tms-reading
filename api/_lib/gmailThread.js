@@ -1033,8 +1033,30 @@ export async function handleProspectEmail(request, { connectGmail = connect } = 
 // action "thread": who a reply-all goes to, plus replies from others since `since`.
 // action "send": reply-all inside the thread with `text`.
 // action "rxoRequests" / "rxoSend": RXO update requests (see handleRxoEmail).
+// An alert from the bots to Daniel himself (bot/alerts.js): a plain email to the connected
+// Gmail account's own address. Never to anyone else, no copies.
+async function sendAlertToSelf({ subject, text }) {
+  const { accessToken, myEmail } = await connect();
+  if (!myEmail) return { status: 409, body: { error: 'The connected Gmail address is unknown.' } };
+  const body = String(text || '').trim().slice(0, 8000);
+  if (!body) return { status: 400, body: { error: 'The alert is empty.' } };
+  const encodedSubject = `=?UTF-8?B?${Buffer.from(oneLine(subject || 'TMS alert').slice(0, 200), 'utf8').toString('base64')}?=`;
+  const raw = [
+    `To: ${myEmail}`,
+    `Subject: ${encodedSubject}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64'
+  ].join('\r\n') + `\r\n\r\n${Buffer.from(body, 'utf8').toString('base64')}`;
+  const sent = await gmailJson(accessToken, `${GMAIL}/messages/send`, {
+    method: 'POST', body: JSON.stringify({ raw: Buffer.from(raw, 'utf8').toString('base64url') })
+  });
+  return { status: 200, body: { ok: true, id: sent.id } };
+}
+
 export async function handleParamountEmail(request = {}) {
   const { action, orderNumber, since, text } = request;
+  if (action === 'alertSelf') return sendAlertToSelf(request);
   if (action === 'checkCallSend') {
     if (!request.checkCallAt) return { status: 400, body: { error: 'The logged check call timestamp is required.' } };
     return handleDailyCustomerUpdate(request);

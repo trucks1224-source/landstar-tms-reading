@@ -694,8 +694,24 @@ async function watchSession(context, isStopping) {
   let cleanupDueAt = Date.now() + 5 * 60 * 1000; // old uploaded exports deleted every 6 hours
   let uploadBlockedUntil = 0;
   let uploadPauseMessage = '';
+  // Teammates' bots (their launcher sets TEAM_AUTO_UPDATE=1): every 30 minutes, look for newer
+  // code on GitHub; when it is there and nothing is uploading, exit 75 and the launcher updates
+  // and starts the bot again (Daniel 2026-11-27). Daniel's own bot never does this.
+  const autoUpdate = process.env.TEAM_AUTO_UPDATE === '1';
+  let updateCheckAt = Date.now() + 30 * 60 * 1000;
+  let updateWaiting = false;
 
   while (!closed) {
+    if (autoUpdate && !updateWaiting && Date.now() >= updateCheckAt) {
+      updateCheckAt = Date.now() + 30 * 60 * 1000;
+      updateWaiting = await require('./update').updateAvailable().catch(() => false);
+      if (updateWaiting) console.log(`\n[${timeNow()}] A bot update is ready; it installs as soon as nothing is uploading.`);
+    }
+    if (updateWaiting && Date.now() - lastActivity > 60 * 1000) {
+      console.log(`[${timeNow()}] Restarting to install the bot update...`);
+      setStatus('starting', 'Installing a bot update');
+      process.exit(75);
+    }
     try {
       if (!readBotControl()) {
         setStatus('logged-in', 'Local bots paused');

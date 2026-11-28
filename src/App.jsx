@@ -26,6 +26,7 @@ import { groupCustomers, moveCustomers, splitCustomerName, shortAccountName, acc
 import { accountKey, findListedAccount } from './lib/accountAliases.js';
 import { lookupTruck, rememberTruck, lookupCarrier, rememberCarrier, fillFromTruck, truckKey } from './lib/capacityBook.js';
 import { splitBigList, addToSnbList, BIG_LIST_MILES, isPriorityBigListLane } from './lib/bigListSplit.js';
+import { SNB_ACCOUNT_KEY, SNB_LISTS, snbListOf, replaceSnbList, clearUntaggedSnbLoads } from './lib/snbLists.js';
 import { getTeamAutoExportAccounts, getLoadsToAutoExport, TEAM_EXPORT_SETTLE_MS } from './lib/teamAutoExport.js';
 import { isPastPickupLoad, removePastPickupLoads } from './lib/pastPickupCleanup.js';
 import { aiRowToLoad, imageForAi } from './lib/aiScreenshot.js';
@@ -1845,6 +1846,10 @@ const LARGE_DROP_MIN = 10;
 
 // One export at a time (see handleExportToLandstar). Outside the App so it never shifts App state.
 const exportGuard = { running: false, finishedAt: 0 };
+// Accounts whose new chat list waits to be exported, oldest first (see queueAutoExport).
+const autoExportQueue = [];
+// When each SNB list last came in tagged, and whether the one-time clean-up ran (src/lib/snbLists.js).
+const SNB_LISTS_SEEN_KEY = 'landstar_snbListsSeen';
 const EXPORT_REPEAT_MS = 15 * 1000;
 
 // The LANDSTAR ERROR badge shows until the load is exported again after the error.
@@ -3630,6 +3635,29 @@ export default function App({ sharing = null, userId = null } = {}) {
   // equipment categories in the file (see replaceImportedCustomerLoads).
   // options.quiet: the "Import Complete" summary shows as a TMS notice, not a pop-up (Google
   // Chat imports). Resolves true once the loads are imported and selected.
+  // SNB: this list's loads replace its loads from last time; once all three lists (lowes, $$,
+  // big list) have come in tagged, untagged loads from before are cleared once (Daniel 2026-11-28).
+  const applySnbList = (loads, incoming, list) => {
+    const { loads: replaced, removed, covered } = replaceSnbList(loads, incoming, list);
+    let result = replaced;
+    let seen = {};
+    try { seen = JSON.parse(localStorage.getItem(SNB_LISTS_SEEN_KEY) || '{}') || {}; } catch { /* first time */ }
+    seen[list] = new Date().toISOString();
+    let untagged = 0;
+    if (!seen.cleared && SNB_LISTS.every(name => seen[name])) {
+      const cleared = clearUntaggedSnbLoads(result);
+      result = cleared.loads;
+      untagged = cleared.removed;
+      seen.cleared = new Date().toISOString();
+    }
+    try { localStorage.setItem(SNB_LISTS_SEEN_KEY, JSON.stringify(seen)); } catch { /* tried again next list */ }
+    const label = { lowes: 'Lowes', money: '$$', big: "big list (Ivan's part)" }[list] || list;
+    if (removed || covered || untagged) {
+      pushNotice(`🧹 SNB ${label}: ${removed} load${removed === 1 ? '' : 's'} no longer on the list deleted${covered ? `, ${covered} posted one${covered === 1 ? '' : 's'} moved to ENT` : ''}${untagged ? `; ${untagged} old load${untagged === 1 ? '' : 's'} on none of the three lists cleared` : ''}.`, 'info');
+    }
+    return result;
+  };
+
   const handleExcelImport = (e, options = {}) => {
     let files = Array.from(e.target.files || []);
     e.target.value = '';
@@ -3868,7 +3896,7 @@ export default function App({ sharing = null, userId = null } = {}) {
           const split = splitBigList(importedRows);
           if (split.snb.length) {
             const { list, added } = addToSnbList(customerOrdersMap[snbAccount] || [], split.snb);
-            snbOrders = list;
+            snbOrders = applySnbList(list, split.snb, 'big');
             sentToSnb = added;
             importedRows = split.mine;
           }
@@ -3940,7 +3968,9 @@ export default function App({ sharing = null, userId = null } = {}) {
           : { loads: mergedLoadList, duplicateCount: 0 };
         const replacement = replaceImportedCustomerLoads(selectedBroker, importedRows, existingLoads);
         queueDroppedPostings(replacement, existingLoads);
-        const finalLoads = replacement ? replacement.loads : mergedFinalLoads;
+        let finalLoads = replacement ? replacement.loads : mergedFinalLoads;
+        // Ivan's "lowes" and "$$" lists replace only their own loads in SNB (src/lib/snbLists.js).
+        if (options.snbList && accountKey(selectedBroker) === SNB_ACCOUNT_KEY) finalLoads = applySnbList(finalLoads, importedRows, options.snbList);
         const nextOrders = { ...customerOrdersMap, [selectedBroker]: finalLoads, ...(snbOrders ? { [snbAccount]: snbOrders } : {}) };
         const saved = persistAppData(brokers, nextOrders);
         setCustomerOrdersMap(nextOrders);
@@ -4989,7 +5019,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       }
     }
     if (customer !== selectedBroker) handleSelectBroker(customer);
-    setPendingChatSheet({ file: sheet.file, customer });
+    setPendingChatSheet({ file: sheet.file, customer, snbList: snbListOf(sheet.item.label) });
   };
   // 🚨 / 📅 What the bots did today and what needs Daniel (GET /api/today, bot/today.js),
   // checked every 30 seconds on the bot PC only (the website has no bots to ask).
@@ -5011,8 +5041,15 @@ export default function App({ sharing = null, userId = null } = {}) {
   }, []);
 
   // After a chat list for an auto-export account is imported (and its loads selected), the
-  // next render exports them; set to the account name until then.
+  // next render exports them; set to the account name until then. Several lists in a row wait
+  // in line (autoExportQueue): 2026-11-28 8:16 AM seven lists came within two minutes and each
+  // import replaced the one waiting before it, so Flat and Haz were never exported.
   const [autoExportFor, setAutoExportFor] = useState('');
+  const queueAutoExport = account => {
+    if (!account) return;
+    if (!autoExportQueue.includes(account)) autoExportQueue.push(account);
+    setAutoExportFor(current => current || autoExportQueue[0]);
+  };
   // A single load Tyler posted as a message in LANDJA18 (src/lib/chatLoads.js): into the RXO
   // account for its equipment, at the higher of his price and the DAT rate, then exported to
   // Landstar by itself. A load already in that account is left as it is (one copy).
@@ -5054,27 +5091,36 @@ export default function App({ sharing = null, userId = null } = {}) {
     // RXO VAN waits for Daniel to export it (2026-11-27).
     if (!isChatAutoExportAccount(account)) return;
     setSelectedIds([selectionKey(account, order.id)]);
-    setAutoExportFor(account);
+    queueAutoExport(account);
   };
   useEffect(() => {
     if (!pendingChatSheet || pendingChatSheet.customer !== selectedBroker) return;
-    const { file, customer } = pendingChatSheet;
+    const { file, customer, snbList } = pendingChatSheet;
     const autoExport = isChatAutoExportAccount(customer);
     setPendingChatSheet(null);
-    Promise.resolve(handleExcelImport({ target: { files: [file], value: '' } }, { quiet: autoExport || isDanielsChatAccount(customer) }))
-      .then(imported => { if (autoExport && imported) setAutoExportFor(customer); })
+    Promise.resolve(handleExcelImport({ target: { files: [file], value: '' } }, { quiet: autoExport || isDanielsChatAccount(customer), snbList }))
+      .then(imported => { if (autoExport && imported) queueAutoExport(customer); })
       .catch(error => console.error('Chat list import failed:', error));
   }, [pendingChatSheet, selectedBroker]);
   // Starts once the imported list is on screen (Daniel 2026-11-27: it waited for checked loads,
   // but a list import checks none, so RXO lists never exported by themselves). With nothing
   // checked it exports the open list, like the Export button; a single chat load is checked.
+  // The next account in line waits while another list is importing or an export runs; then the
+  // TMS opens that account and exports it, and moves on to the next one.
   useEffect(() => {
     if (!autoExportFor) return;
-    if (autoExportFor !== selectedBroker) return;
-    setAutoExportFor('');
-    pushNotice(`🚀 Exporting the new ${autoExportFor} list to Landstar automatically${selectedIds.length ? ` (${selectedIds.length} load${selectedIds.length === 1 ? '' : 's'})` : ''}...`, 'auto');
-    void handleAutoExport();
-  }, [autoExportFor, selectedBroker, selectedIds, customerOrdersMap]);
+    if (exportGuard.running || pendingChatSheet) return;
+    const account = autoExportFor;
+    const nextInLine = () => {
+      const index = autoExportQueue.indexOf(account);
+      if (index >= 0) autoExportQueue.splice(index, 1);
+      setAutoExportFor(autoExportQueue[0] || '');
+    };
+    if (!brokers.includes(account)) { nextInLine(); return; }
+    if (account !== selectedBroker) { handleSelectBroker(account); return; }
+    pushNotice(`🚀 Exporting the new ${account} list to Landstar automatically${selectedIds.length ? ` (${selectedIds.length} load${selectedIds.length === 1 ? '' : 's'})` : ''}...`, 'auto');
+    Promise.resolve(handleAutoExport()).catch(error => console.error('Auto-export failed:', error)).finally(nextInLine);
+  }, [autoExportFor, selectedBroker, selectedIds, customerOrdersMap, pendingChatSheet]);
   // Checks the Google Chat inbox every 30 seconds. A file that needs you (a picture, a list with
   // a new name) opens a question; while one is open, files that run by themselves keep going
   // (single loads, lists with a known name, other agents' booking exports) and the others wait
@@ -5124,7 +5170,7 @@ export default function App({ sharing = null, userId = null } = {}) {
             finishChatItem(item.name);
             pushNotice(`💬 "${item.label}" list from Google Chat${item.chat ? ` (${item.chat})` : ''} imported into ${known}.`, 'auto');
             if (known !== selectedBroker) handleSelectBroker(known);
-            setPendingChatSheet({ file, customer: known });
+            setPendingChatSheet({ file, customer: known, snbList: snbListOf(item.label) });
             return;
           }
           // Needs you: ask, unless a question is already open (then it waits its turn).
@@ -7242,7 +7288,13 @@ export default function App({ sharing = null, userId = null } = {}) {
   };
   const teamExport = getTeamAutoExportAccounts({
     userId, ownerId: TMS_OWNER_ID, sharedCustomers, brokers, ownerExports: isDanielsChatAccount
-  }).map(({ account, own }) => ({ account, loads: getLoadsToAutoExport(customerOrdersMap[account] || [], triedIn(account), { skipHandAdded: own }) }))
+  }).map(({ account, own }) => ({
+    account,
+    loads: getLoadsToAutoExport(customerOrdersMap[account] || [], triedIn(account), { skipHandAdded: own })
+      // SNB: only loads on one of the three lists (tagged by src/lib/snbLists.js); old untagged
+      // loads may be gone from RXO's lists and wait for the one-time clean-up (Daniel 2026-11-28).
+      .filter(load => accountKey(account) !== SNB_ACCOUNT_KEY || load.snbList)
+  }))
     .find(entry => entry.loads.length);
   const teamExportKey = teamExport ? `${teamExport.account}\n${teamExport.loads.map(load => load.id).join(',')}` : '';
   useEffect(() => {
@@ -7254,7 +7306,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       handleSelectBroker(account);
       setSelectedIds(loads.map(load => selectionKey(account, load.id)));
       pushNotice(`🚀 ${loads.length} new load${loads.length === 1 ? '' : 's'} in ${account}: exporting to Landstar for your bot...`, 'auto');
-      setAutoExportFor(account);
+      queueAutoExport(account);
     }, TEAM_EXPORT_SETTLE_MS);
     return () => clearTimeout(timer);
   }, [teamExportKey, autoExportFor, pendingChatSheet]);

@@ -25,6 +25,7 @@ import * as bigListSplit from './lib/bigListSplit.js';
 import * as teamAutoExport from './lib/teamAutoExport.js';
 import * as pastPickupCleanup from './lib/pastPickupCleanup.js';
 import * as teamStatus from './lib/teamStatus.js';
+import * as snbLists from './lib/snbLists.js';
 import * as aiScreenshot from './lib/aiScreenshot.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
@@ -149,6 +150,7 @@ const context = {
       if (name === './lib/teamAutoExport.js') return teamAutoExport;
       if (name === './lib/pastPickupCleanup.js') return pastPickupCleanup;
       if (name === './lib/teamStatus.js') return teamStatus;
+      if (name === './lib/snbLists.js') return snbLists;
       if (name === './lib/aiScreenshot.js') return aiScreenshot;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
@@ -688,6 +690,11 @@ test('Google Chat spreadsheets: the account is remembered by the list name above
   rules = policy.rememberChatSheetAccount(rules, 'Reefer', 'R X O 2429200 - ATZ R');
   assert.equal(policy.getChatSheetAccount(rules, 'FBS'), 'R X O 2429200 - ATZ F');
   assert.equal(policy.getChatSheetAccount(rules, 'reefer'), 'R X O 2429200 - ATZ R');
+  // A greeting in front of a known list name (Tyler, 2026-11-28: "gm guys - big list").
+  assert.equal(policy.getChatSheetAccount({}, 'gm guys - big list'), 'R X O 2429200 - ATZ V');
+  assert.equal(policy.getChatSheetAccount({}, 'Good morning! reefer list'), 'R X O 2429200 - ATZ R');
+  assert.equal(policy.getChatSheetAccount({}, 'morning - reefer'), 'R X O 2429200 - ATZ R');
+  assert.equal(policy.getChatSheetAccount({}, 'something new'), '', 'an unknown name still asks');
   assert.equal(policy.getChatSheetAccount({ 'big list': 'R X O 2429200 - ATZ' }, 'big list'), 'R X O 2429200 - ATZ', 'a picked answer wins');
   assert.equal(Object.keys(policy.rememberChatSheetAccount({}, '', 'X')).length, 0, 'nothing remembered without a name');
 
@@ -1653,6 +1660,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/teamAutoExport.js') return teamAutoExport;
       if (name === './lib/pastPickupCleanup.js') return pastPickupCleanup;
       if (name === './lib/teamStatus.js') return teamStatus;
+      if (name === './lib/snbLists.js') return snbLists;
       if (name === './lib/aiScreenshot.js') return aiScreenshot;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
@@ -1880,6 +1888,7 @@ function createSyncContext(storage) {
       if (name === './lib/teamAutoExport.js') return teamAutoExport;
       if (name === './lib/pastPickupCleanup.js') return pastPickupCleanup;
       if (name === './lib/teamStatus.js') return teamStatus;
+      if (name === './lib/snbLists.js') return snbLists;
       if (name === './lib/aiScreenshot.js') return aiScreenshot;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};

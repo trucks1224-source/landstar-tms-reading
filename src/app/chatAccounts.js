@@ -69,8 +69,14 @@ function getChatSheetAccount(rules, label) {
   if (snb) return snb;
   const key = getChatSheetKey(label);
   if (!key) return '';
-  const saved = rules && typeof rules === 'object' ? rules[key] : '';
-  return String(saved || defaultChatSheetAccounts[key] || '');
+  const known = { ...defaultChatSheetAccounts, ...(rules && typeof rules === 'object' ? rules : {}) };
+  if (known[key]) return String(known[key]);
+  // A known list name inside a longer label (Daniel 2026-11-28: Tyler wrote "gm guys - big list"
+  // and the TMS asked which account): the longest known name found as whole words wins.
+  const found = Object.keys(known)
+    .filter(name => name && ` ${key} `.includes(` ${name} `))
+    .sort((a, b) => b.length - a.length)[0];
+  return found ? String(known[found]) : '';
 }
 
 function rememberChatSheetAccount(rules, label, customer) {

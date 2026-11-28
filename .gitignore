@@ -77,3 +77,7 @@ bot/chat-bot-status.json.*.tmp
 bot/chat-bot-seen.json
 bot/chat-bot-seen.json.*.tmp
 bot/chat-debug.json
+# Alert email state and the loads the TMS reports as NOT CONFIRMED (live state, never commit)
+bot/alerts-state.json
+bot/unconfirmed-loads.json
+bot/unconfirmed-loads.json.*.tmp

@@ -92,7 +92,7 @@ export {
   preservesImportedLoadStatus, getReimportedLoadStatus, getPendingDriverStatusReply, getEmailPostingCode, getRxoEmailPostingCodes, isValidPostingCode, describeRateWorker, hasPickupDayStarted, getCitySuggestions, applyLocationInput,
   keepPreviouslyExportedLoadsOpen, markDifferentScheduleLoadsEnt,
   countPreviouslyExportedLoads, createLaneDayKey, replaceImportedCustomerLoads,
-  parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
+  parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity, toLandstarZip,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
   getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, isDanielsChatAccount, addMissingPhalanxHeader, noticeLevel, getLoadCardFacts, getLoadUrgency, isFlatbedOnlyPhalanx, isFlatbedLoad, getCustomerRules, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
@@ -996,6 +996,12 @@ test('Landstar city names are capped at 18 characters with known abbreviations',
   assert.equal(policy.toLandstarCity('Houston'), 'Houston');
   assert.equal(policy.toLandstarCity('A Very Long City Name Here').length, 18);
   assert.equal(policy.toLandstarCity(''), '');
+  // Landstar rejected "EDMONTON INTERNATI" (2026-11-17 to 11-25): the city alone is found.
+  assert.equal(policy.toLandstarCity('Edmonton International Airport'), 'Edmonton');
+  assert.equal(policy.toLandstarCity('EDMONTON INTERNATIONAL'), 'EDMONTON');
+  // Westborough, MA 01580 is a business-only ZIP Landstar does not know; 01581 is the town's.
+  assert.equal(policy.toLandstarZip('01580'), '01581');
+  assert.equal(policy.toLandstarZip('77001'), '77001');
 });
 
 test('ZIP city verification still fills missing cities and fixes close OCR errors', () => {

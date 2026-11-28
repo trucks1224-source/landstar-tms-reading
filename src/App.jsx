@@ -655,8 +655,16 @@ const landstarCityPhrases = [
   [/\bAir Reserve Base\b/i, 'ARB'],
   [/\bAir Force Base\b/i, 'AFB'],
   [/\bNaval Air Station\b/i, 'NAS'],
-  [/\bMarine Corps Air Station\b/i, 'MCAS']
+  [/\bMarine Corps Air Station\b/i, 'MCAS'],
+  // "Edmonton International Airport" was cut to "EDMONTON INTERNATI", which Landstar rejected as
+  // "Invalid Destination" 9 times (2026-11-17 to 11-25); the city alone is found.
+  [/\s+(International|Intl\.?)(\s+Airport)?\s*$/i, ''],
+  [/\s+Airport\s*$/i, '']
 ];
+// Business-only ZIP codes Landstar's map does not know -> the town's main ZIP (Westborough, MA
+// 01580 was rejected 8 times as "Invalid Destination", 2026-11-17 to 11-25).
+const landstarZipFixes = { '01580': '01581' };
+const toLandstarZip = zip => landstarZipFixes[zip] || zip;
 function toLandstarCity(value) {
   const city = String(value || '').trim();
   let abbreviated = landstarCityAbbreviations[city.toUpperCase()] || city;
@@ -6449,10 +6457,10 @@ export default function App({ sharing = null, userId = null } = {}) {
       const destinationCountry = getCountryForRegion(destinationState);
       const enteredOriginZip = originCountry === 'CA'
         ? normalizeCanadianPostalCode(ord.origZip)
-        : String(ord.origZip || '').replace(/\D/g, '').slice(0, 5);
+        : toLandstarZip(String(ord.origZip || '').replace(/\D/g, '').slice(0, 5));
       const enteredDestinationZip = destinationCountry === 'CA'
         ? normalizeCanadianPostalCode(ord.destZip)
-        : String(ord.destZip || '').replace(/\D/g, '').slice(0, 5);
+        : toLandstarZip(String(ord.destZip || '').replace(/\D/g, '').slice(0, 5));
       const enteredOriginLocation = originCountry === 'US' && enteredOriginZip.length === 5
         ? lookupZip(enteredOriginZip)
         : null;

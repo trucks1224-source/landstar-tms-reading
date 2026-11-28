@@ -607,7 +607,9 @@ async function main() {
     if (firstPage.url() !== chat.url) await firstPage.goto(chat.url, { waitUntil: 'domcontentloaded' }).catch(() => {});
     await firstPage.waitForTimeout(8000);
     const seen = readSeen();
-    const wanted = pickSpreadsheets(await readPageFiles(firstPage)).filter(sheet => match && sheet.fileName.includes(match));
+    const onPage = pickSpreadsheets(await readPageFiles(firstPage));
+    log(`Recover: the chat shows ${onPage.length} spreadsheet(s); newest: ${onPage.slice(-6).map(sheet => `"${sheet.label || '?'}" ${sheet.fileName}`).join(' | ')}`);
+    const wanted = onPage.filter(sheet => match && sheet.fileName.includes(match));
     for (const sheet of wanted) {
       try {
         const bytes = await downloadSpreadsheet(context, sheet, firstPage);

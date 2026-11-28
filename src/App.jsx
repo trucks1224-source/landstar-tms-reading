@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
-import { isTmsOwner } from './lib/teamAdmin.js';
+import { isTmsOwner, TMS_OWNER_ID } from './lib/teamAdmin.js';
 import { detectScreenshotGrid, readScreenshotGrid } from './lib/screenshotTable.js';
 import { findNtgCardRegions } from './lib/ntgCards.js';
 import { parseTextLoadList } from './lib/textLoads.js';
@@ -26,6 +26,8 @@ import { groupCustomers, moveCustomers, splitCustomerName, shortAccountName, acc
 import { accountKey, findListedAccount } from './lib/accountAliases.js';
 import { lookupTruck, rememberTruck, lookupCarrier, rememberCarrier, fillFromTruck, truckKey } from './lib/capacityBook.js';
 import { splitBigList, addToSnbList, BIG_LIST_MILES, isPriorityBigListLane } from './lib/bigListSplit.js';
+import { getTeamAutoExportAccounts, getLoadsToAutoExport, TEAM_EXPORT_SETTLE_MS } from './lib/teamAutoExport.js';
+import { isPastPickupLoad, removePastPickupLoads } from './lib/pastPickupCleanup.js';
 import { aiRowToLoad, imageForAi } from './lib/aiScreenshot.js';
 import { chOfferToTmsLoad, getTodaysExportedLanes, CH_TMS_ACCOUNT } from './lib/chOffers.js';
 import { parseChatLoadMessage, chatLoadAccount, chatLoadToTmsLoad } from './lib/chatLoads.js';
@@ -291,6 +293,7 @@ import {
   defaultChatSheetAccounts,
   chatAutoExportAccounts,
   isChatAutoExportAccount,
+  isDanielsChatAccount,
   SNB_CHAT_ACCOUNT,
   getSnbChatSheetAccount,
   getChatSheetKey,
@@ -3845,7 +3848,7 @@ export default function App({ sharing = null, userId = null } = {}) {
         });
         const { mileageError: excelMileageError } = await applyGoogleRoadMiles(importedRows, null, 'Imported from Excel');
         // RXO's big list is shared with Ivan (Daniel 2026-11-27): Texas pickups and loads over 500
-        // miles stay here; the rest goes to R X O 2429200 - SNB (Ivan's, never auto-exported).
+        // miles stay here; the rest goes to R X O 2429200 - SNB (Ivan's; his own TMS exports it).
         const snbAccount = accountKey(selectedBroker) === 'RXO2429200ATZV' ? findListedAccount('R X O 2429200 - SNB', brokers) : '';
         let sentToSnb = 0;
         let snbOrders = null;
@@ -5030,6 +5033,8 @@ export default function App({ sharing = null, userId = null } = {}) {
     setSelectedOrder(order);
     pushNotice(`💬 Load ${load.loadNumber} (${load.origin.city}, ${load.origin.state} → ${load.destination.city}, ${load.destination.state}) from Google Chat added to ${account} at $${order.rateInput || '?'} (RXO $${load.price || 'n/a'}, DAT $${Math.round(datRate) || 'n/a'}).`, 'info');
     if (!(Number(order.rateInput) > 0)) return;
+    // RXO VAN waits for Daniel to export it (2026-11-27).
+    if (!isChatAutoExportAccount(account)) return;
     setSelectedIds([selectionKey(account, order.id)]);
     setAutoExportFor(account);
   };
@@ -5038,7 +5043,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     const { file, customer } = pendingChatSheet;
     const autoExport = isChatAutoExportAccount(customer);
     setPendingChatSheet(null);
-    Promise.resolve(handleExcelImport({ target: { files: [file], value: '' } }, { quiet: autoExport }))
+    Promise.resolve(handleExcelImport({ target: { files: [file], value: '' } }, { quiet: autoExport || isDanielsChatAccount(customer) }))
       .then(imported => { if (autoExport && imported) setAutoExportFor(customer); })
       .catch(error => console.error('Chat list import failed:', error));
   }, [pendingChatSheet, selectedBroker]);
@@ -7198,6 +7203,52 @@ export default function App({ sharing = null, userId = null } = {}) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  // Teammates' TMS (Daniel 2026-11-27: "can this just happen for all my teammates?", also their
+  // own accounts): new loads in an account Daniel shares with them (Ivan: R X O 2429200 - SNB,
+  // filled by Daniel's chat imports) or in their own accounts (their imports) export by
+  // themselves once they have sat unchanged for TEAM_EXPORT_SETTLE_MS, so the teammate's bot
+  // posts them under the teammate's own code. One account per export. Never in Daniel's TMS.
+  const teamExportTried = useRef(new Map());
+  const triedIn = account => {
+    if (!teamExportTried.current.has(account)) teamExportTried.current.set(account, new Set());
+    return teamExportTried.current.get(account);
+  };
+  const teamExport = getTeamAutoExportAccounts({
+    userId, ownerId: TMS_OWNER_ID, sharedCustomers, brokers, ownerExports: isDanielsChatAccount
+  }).map(({ account, own }) => ({ account, loads: getLoadsToAutoExport(customerOrdersMap[account] || [], triedIn(account), { skipHandAdded: own }) }))
+    .find(entry => entry.loads.length);
+  const teamExportKey = teamExport ? `${teamExport.account}\n${teamExport.loads.map(load => load.id).join(',')}` : '';
+  useEffect(() => {
+    if (!teamExport) return undefined;
+    const timer = setTimeout(() => {
+      if (exportGuard.running || autoExportFor || pendingChatSheet) return;
+      const { account, loads } = teamExport;
+      loads.forEach(load => triedIn(account).add(String(load.id)));
+      handleSelectBroker(account);
+      setSelectedIds(loads.map(load => selectionKey(account, load.id)));
+      pushNotice(`🚀 ${loads.length} new load${loads.length === 1 ? '' : 's'} in ${account}: exporting to Landstar for your bot...`, 'auto');
+      setAutoExportFor(account);
+    }, TEAM_EXPORT_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [teamExportKey, autoExportFor, pendingChatSheet]);
+
+  // Loads whose pickup day has passed are deleted (Daniel 2026-11-27), checked whenever the
+  // loads change and every 30 minutes (a new day). Booked loads and loads with a truck stay.
+  const [pastPickupTick, setPastPickupTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setPastPickupTick(tick => tick + 1), 30 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const pastPickupCount = Object.values(customerOrdersMap || {}).reduce((sum, loads) => sum + (loads || []).filter(load => isPastPickupLoad(load)).length, 0);
+  useEffect(() => {
+    if (!pastPickupCount) return;
+    const { removed } = removePastPickupLoads(customerOrdersMap);
+    setCustomerOrdersMap(prev => removePastPickupLoads(prev).orders);
+    setSelectedOrder(current => (current && isPastPickupLoad(current) ? null : current));
+    const summary = Object.entries(removed).map(([customer, count]) => `${customer} ${count}`).join(', ');
+    if (summary) pushNotice(`🗑 Deleted ${pastPickupCount} load${pastPickupCount === 1 ? '' : 's'} whose pickup day has passed (${summary}).`, 'auto');
+  }, [pastPickupCount, pastPickupTick]);
 
   const handleFieldChange = (field, value) => {
     handleInputChange(field, value);

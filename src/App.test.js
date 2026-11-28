@@ -22,6 +22,8 @@ import * as undoLib from './lib/undo.js';
 import * as accountAliases from './lib/accountAliases.js';
 import * as capacityBook from './lib/capacityBook.js';
 import * as bigListSplit from './lib/bigListSplit.js';
+import * as teamAutoExport from './lib/teamAutoExport.js';
+import * as pastPickupCleanup from './lib/pastPickupCleanup.js';
 import * as aiScreenshot from './lib/aiScreenshot.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
@@ -92,7 +94,7 @@ export {
   parseScreenshotLines, correctCitiesFromZip, getLandstarCity, toLandstarCity,
   normalizeCanadianPostalCode, getCountryForRegion, lookupCanadianPostalCode,
   createLaneRateKey, getSavedLaneRate, getFixedLaneRate, findCanadianPlace, getCarrierMc, parseCityGridScreenshotText, isCityGridScreenshot, applyAmeriLoadDefaults, isAmeriMenardsLoad, getTruckPay, buildDatPosting, getDatEquipment, isAmeriCustomer, getLandstarBrokerable, getLandstarCarrierAmount, getLandstarCarrierLoadAlerts, getEquipmentDescription, normalizeEquipmentCode, isSkippableEquipment,
-  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, addMissingPhalanxHeader, noticeLevel, getLoadCardFacts, getLoadUrgency, isFlatbedOnlyPhalanx, isFlatbedLoad, getCustomerRules, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
+  getLandstarEquipmentCode, getLandstarEquipment2, getLandstarExportEquipment2, getLoadCardRoute, getLoadCardDates, getChatSheetKey, getChatSheetAccount, rememberChatSheetAccount, getChatInboxChoices, isChatAutoExportAccount, isDanielsChatAccount, addMissingPhalanxHeader, noticeLevel, getLoadCardFacts, getLoadUrgency, isFlatbedOnlyPhalanx, isFlatbedLoad, getCustomerRules, getLandstarCommodity, getLandstarCommodityValue, isTeamEquipment, isTeamLoad, getRatePerMile, hasLoadRate, isHazmatLoad, isTankerLoad, getLoadCommodity, voteNtgLoadNumber, isFlatbedEquipment,
   toExcelDateTime, splitScheduleRange, parseSchedulePickerParts, formatSchedulePickerParts,
   normalizeBrokerList, addCustomersWithLoads, normalizeCustomerOrders, getLoadSearchEntries, deduplicateDatImports, parseDatRateText,
   parseDatScreenshotLines, correctDatCities, removeExpiredExportedLoads, markLoadsExported,
@@ -143,6 +145,8 @@ const context = {
       if (name === './lib/accountAliases.js') return accountAliases;
       if (name === './lib/capacityBook.js') return capacityBook;
       if (name === './lib/bigListSplit.js') return bigListSplit;
+      if (name === './lib/teamAutoExport.js') return teamAutoExport;
+      if (name === './lib/pastPickupCleanup.js') return pastPickupCleanup;
       if (name === './lib/aiScreenshot.js') return aiScreenshot;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
@@ -686,13 +690,17 @@ test('Google Chat spreadsheets: the account is remembered by the list name above
   assert.equal(Object.keys(policy.rememberChatSheetAccount({}, '', 'X')).length, 0, 'nothing remembered without a name');
 
   // Auto-export to Landstar: Daniel's RXO accounts only, never Ivan's SNB account.
-  for (const name of ['R X O 2429200 - ATZ V', 'R X O 2429200 - ATZ F', 'R X O 2429200 - ATZ R', 'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P']) {
+  for (const name of ['R X O 2429200 - ATZ F', 'R X O 2429200 - ATZ R', 'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P']) {
     assert.equal(policy.isChatAutoExportAccount(name), true, name);
   }
+  // RXO VAN (big list) imports by itself but Daniel exports it (2026-11-27).
+  assert.equal(policy.isChatAutoExportAccount('R X O 2429200 - ATZ V'), false, 'big list waits for Daniel');
+  assert.equal(policy.isChatAutoExportAccount('R X O 2429200 - VAN'), false, 'big list waits for Daniel');
+  assert.equal(policy.isDanielsChatAccount('R X O 2429200 - VAN'), true, "a teammate's TMS never exports it");
   assert.equal(policy.isChatAutoExportAccount('R X O 2429200 - SNB'), false, "Ivan's loads post under his code, from his TMS");
   assert.equal(policy.isChatAutoExportAccount('Para 1522166 - ATZ'), false, 'Para lists are never auto-exported');
   assert.equal(policy.isChatAutoExportAccount('R X O 2429200 - ATZ'), false);
-  for (const name of ['R X O 2429200 - VAN', 'R X O 2429200 - REEFER', 'R X O 2429200 - Flat', 'R X O 2429200 - Panels']) {
+  for (const name of ['R X O 2429200 - REEFER', 'R X O 2429200 - Flat', 'R X O 2429200 - Panels']) {
     assert.equal(policy.isChatAutoExportAccount(name), true, `renamed account ${name}`);
   }
   assert.equal(policy.isParaCustomer('Para 1522166 - N HAZ'), true);
@@ -1634,6 +1642,8 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/accountAliases.js') return accountAliases;
       if (name === './lib/capacityBook.js') return capacityBook;
       if (name === './lib/bigListSplit.js') return bigListSplit;
+      if (name === './lib/teamAutoExport.js') return teamAutoExport;
+      if (name === './lib/pastPickupCleanup.js') return pastPickupCleanup;
       if (name === './lib/aiScreenshot.js') return aiScreenshot;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
@@ -1858,6 +1868,8 @@ function createSyncContext(storage) {
       if (name === './lib/accountAliases.js') return accountAliases;
       if (name === './lib/capacityBook.js') return capacityBook;
       if (name === './lib/bigListSplit.js') return bigListSplit;
+      if (name === './lib/teamAutoExport.js') return teamAutoExport;
+      if (name === './lib/pastPickupCleanup.js') return pastPickupCleanup;
       if (name === './lib/aiScreenshot.js') return aiScreenshot;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};

@@ -24,14 +24,25 @@ const defaultChatSheetAccounts = {
 
 // Accounts whose Google Chat lists export to Landstar by themselves right after the import
 // (Daniel 2026-11-27: "only RXO"). Never R X O 2429200 - SNB: those are Ivan's loads and must
-// post under his own code, from his TMS.
+// post under his own code, from his TMS (Ivan's TMS exports them by itself: lib/teamAutoExport.js).
 const chatAutoExportAccounts = new Set([
   'R X O 2429200 - ATZ V', 'R X O 2429200 - ATZ F', 'R X O 2429200 - ATZ R',
   'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P'
 ].map(name => name.toUpperCase().replace(/[^A-Z0-9]/g, '')));
 
-function isChatAutoExportAccount(customer) {
+// Lists that import by themselves but wait for Daniel to export (Daniel 2026-11-27: "RXO VAN,
+// this one can be imported automatically but don't export to Landstar automatically, let me do it").
+const chatImportOnlyAccounts = new Set(['R X O 2429200 - ATZ V'].map(name => name.toUpperCase().replace(/[^A-Z0-9]/g, '')));
+
+// Daniel's own RXO chat accounts (exported by him, by hand or automatically): a teammate's TMS
+// never exports them, even when shared.
+function isDanielsChatAccount(customer) {
   return chatAutoExportAccounts.has(accountKey(normalizeCustomerName(customer)));
+}
+
+function isChatAutoExportAccount(customer) {
+  const key = accountKey(normalizeCustomerName(customer));
+  return chatAutoExportAccounts.has(key) && !chatImportOnlyAccounts.has(key);
 }
 
 // Lists in LANDJA18 for agent SNB (Ivan): "LOWES" and the one marked "$$" import into
@@ -96,6 +107,7 @@ export {
   defaultChatSheetAccounts,
   chatAutoExportAccounts,
   isChatAutoExportAccount,
+  isDanielsChatAccount,
   SNB_CHAT_ACCOUNT,
   getSnbChatSheetAccount,
   getChatSheetKey,

@@ -68,6 +68,7 @@ const ASSIGN_QUEUE_FILE = process.env.ASSIGN_QUEUE_FILE || path.join(__dirname, 
 // Results are kept in files so the helper bot (helper.js, its own process) and the main bot
 // share them: whichever process serves /status reads them fresh.
 const RESULTS_FILE = process.env.BOT_RESULTS_FILE || path.join(__dirname, 'bot-results.json');
+const UNCONFIRMED_FILE = process.env.UNCONFIRMED_FILE || path.join(__dirname, 'unconfirmed-loads.json');
 const HELPER_STATUS_FILE = process.env.HELPER_STATUS_FILE || path.join(__dirname, 'helper-status.json');
 const IS_HELPER = process.env.BOT_ROLE === 'helper';
 const IS_REMOVAL = process.env.BOT_ROLE === 'removal';
@@ -428,6 +429,26 @@ function start() {
     }
     // Which postings are confirmed on Landstar (the upload ledger: every file Landstar took),
     // so the TMS marks a load Posted only once its upload went through (Daniel 2026-11-27).
+    // Loads the TMS marks NOT CONFIRMED (exported 3+ hours ago, never confirmed by Landstar), so the
+    // alert email can tell Daniel (bot/alerts.js). The TMS sends the full list every few minutes.
+    if (req.method === 'POST' && route === '/unconfirmed') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; if (body.length > 200000) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const loads = (JSON.parse(body || '{}').loads || []).slice(0, 500).map(load => ({
+            customer: String(load.customer || ''), id: String(load.id || ''), exportedAt: String(load.exportedAt || ''), route: String(load.route || '')
+          }));
+          saveJsonFile(UNCONFIRMED_FILE, { at: Date.now(), loads });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (error) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: error.message }));
+        }
+      });
+      return;
+    }
     if (req.method === 'GET' && route === '/posted') {
       const since = Number(new URL(req.url, 'http://x').searchParams.get('since')) || 0;
       let ledger = {};

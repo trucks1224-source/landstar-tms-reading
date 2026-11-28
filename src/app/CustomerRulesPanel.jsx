@@ -126,6 +126,20 @@ export default function CustomerRulesPanel({ customer, rules, onSave, onClose })
         </section>
 
         <section className="mb-4">
+          <h3 className="text-xs font-bold text-gray-200 mb-1">How to read this customer's screenshots</h3>
+          <p className="text-[10px] text-gray-500 mb-1">Only for customers who send pictures. Write it like you'd explain it to a new dispatcher: which column is which, what a color means, what to skip. When this is filled in, ✨ Customer Screenshot is read by AI (Claude) with these words. Needs an AI key on this computer.</p>
+          <textarea
+            value={draft.screenshotInstructions}
+            onChange={event => set('screenshotInstructions', event.target.value)}
+            rows={4}
+            maxLength={3000}
+            placeholder={'Example: Each row is one load. First column is the load #; a red load # means on hold. Pickup is the "Ship" column, delivery the "Due" column. The rate is the last column. Skip rows marked LTL.'}
+            aria-label="How to read this customer's screenshots"
+            className={`${input} w-full`}
+          />
+        </section>
+
+        <section className="mb-4">
           <h3 className="text-xs font-bold text-gray-200 mb-1">Excel columns for this customer's files</h3>
           <p className="text-[10px] text-gray-500 mb-1">Only needed when this customer's spreadsheets don't import right. Pick one of their files: the TMS reads its column names, then you say which column is which. Every later file in that layout imports by itself.</p>
           <label className="inline-block text-xs bg-slate-700 hover:bg-slate-600 rounded px-2 py-1 cursor-pointer mb-1">

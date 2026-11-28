@@ -30,6 +30,20 @@ function saveJson(file, value) {
   fs.renameSync(temp, file);
 }
 
+// Loads the TMS reports as NOT CONFIRMED (exported 3+ hours ago, Landstar never confirmed them;
+// status-server.js /unconfirmed). A report older than 30 minutes is stale (the TMS tab closed).
+const UNCONFIRMED_FILE = process.env.UNCONFIRMED_FILE || path.join(__dirname, 'unconfirmed-loads.json');
+function unconfirmedProblem(report, now = Date.now()) {
+  const loads = Array.isArray(report?.loads) ? report.loads : [];
+  if (!loads.length || now - Number(report.at || 0) > 30 * 60 * 1000) return null;
+  const ids = loads.map(load => load.id).sort();
+  return {
+    key: `unconfirmed-${ids.join(',')}`, level: 'bad',
+    title: `${loads.length} load${loads.length === 1 ? '' : 's'} exported 3+ hours ago never reached Landstar`,
+    detail: `${loads.slice(0, 8).map(load => `${load.customer} #${load.id}${load.route ? ` (${load.route})` : ''}`).join('; ')}${loads.length > 8 ? `; and ${loads.length - 8} more` : ''}. In the TMS: Landstar -> Errors, then check Bulk Postings or export them again.`
+  };
+}
+
 // Chat files waiting longer than CHAT_WAITING_MS: one problem.
 function chatWaitingProblem(items, now = Date.now()) {
   const old = (items || []).filter(item => now - Number(item.savedAt || item.at || now) >= CHAT_WAITING_MS);
@@ -97,6 +111,8 @@ async function checkAlerts({ log = console.log, now = Date.now(), fetchImpl = fe
       const waiting = chatWaitingProblem(items, now);
       if (waiting) problems.push(waiting);
     } catch { /* no inbox */ }
+    const unconfirmed = unconfirmedProblem(readJson(UNCONFIRMED_FILE, null), now);
+    if (unconfirmed) problems.push(unconfirmed);
     const { send, state } = planAlerts(problems, readJson(STATE_FILE, {}), now);
     if (send.length) {
       const { subject, text } = buildAlertEmail(send, now);
@@ -121,4 +137,4 @@ async function checkAlerts({ log = console.log, now = Date.now(), fetchImpl = fe
   }
 }
 
-module.exports = { checkAlerts, planAlerts, buildAlertEmail, chatWaitingProblem, LASTS_MS, GAP_MS, RESEND_MS };
+module.exports = { checkAlerts, planAlerts, buildAlertEmail, chatWaitingProblem, unconfirmedProblem, LASTS_MS, GAP_MS, RESEND_MS };

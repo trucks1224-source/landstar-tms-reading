@@ -26,6 +26,7 @@ import { groupCustomers, moveCustomers, splitCustomerName, shortAccountName, acc
 import { accountKey, findListedAccount } from './lib/accountAliases.js';
 import { lookupTruck, rememberTruck, lookupCarrier, rememberCarrier, fillFromTruck, truckKey } from './lib/capacityBook.js';
 import { splitBigList, addToSnbList, BIG_LIST_MILES, isPriorityBigListLane } from './lib/bigListSplit.js';
+import { aiRowToLoad, imageForAi } from './lib/aiScreenshot.js';
 import { chOfferToTmsLoad, getTodaysExportedLanes, CH_TMS_ACCOUNT } from './lib/chOffers.js';
 import { parseChatLoadMessage, chatLoadAccount, chatLoadToTmsLoad } from './lib/chatLoads.js';
 import automationPolicy from '../bot/automation-policy.json';
@@ -181,6 +182,65 @@ import {
   parseSchedulePickerParts,
   formatSchedulePickerParts
 } from './app/dates.js';
+import {
+  truckLights,
+  truckStacks,
+  smokePuffs,
+  truckFlashMs,
+  TruckLights,
+  canStartBotHere,
+  LocalBotsSwitch,
+  describeRateWorker,
+  RateWorkerLight,
+  HelperBotLight,
+  EmailWorkerStatus
+} from './app/BotLights.jsx';
+import {
+  InquiriesPanel,
+  LoadEmailBox,
+  paramountApprovedKey,
+  driverApprovedKey,
+  paperworkApprovedKey,
+  rxoApprovedKey,
+  readApprovedCount
+} from './app/LoadEmailBox.jsx';
+import {
+  readCanvasStrip,
+  voteNtgLoadNumber,
+  fillMissingNtgCardDetails,
+  readNtgScreenshotCards,
+  readChScreenshot
+} from './app/screenshotReading.jsx';
+import {
+  buildDriverDirectory,
+  checkCallDueMs,
+  getLastCheckCall,
+  getTrackingAlert,
+  buildDriverText,
+  inquiryCompanyName,
+  buildInquiryDetails
+} from './app/driverInfo.js';
+import {
+  playExportSound,
+  WELCOME_LINES,
+  speakWelcomeGreeting
+} from './app/sounds.jsx';
+import {
+  excelSerialToBoardTime,
+  postingZip,
+  buildLandstarPosting,
+  BOT_UNPOST_URL,
+  unpostQueueKey,
+  readUnpostQueue,
+  writeUnpostQueue,
+  BOT_ASSIGN_URL,
+  assignQueueKey,
+  buildAssignRequest,
+  getCarrierMc,
+  readAssignQueue,
+  sendAssignQueueToBot,
+  sendUnpostQueueToBot
+} from './app/botQueues.jsx';
 
 // Landstar's bulk upload accepts at most 25 loads per spreadsheet.
 const landstarExportChunkSize = 25;
@@ -393,41 +453,6 @@ function getPostingMaintenanceLoads(customerOrders) {
     })));
 }
 
-// Drivers, trucks and trailers already used on any load, for auto-complete.
-// When a driver appears on several loads, the most recently booked one wins
-// and any missing phone/truck/trailer is filled from their other loads.
-function buildDriverDirectory(customerOrdersMap) {
-  const clean = value => String(value || '').trim();
-  const drivers = new Map();
-  const trucks = new Set();
-  const trailers = new Set();
-  Object.values(customerOrdersMap || {}).flat().forEach(load => {
-    const truck = clean(load?.truck);
-    const trailer = clean(load?.trailer);
-    if (truck) trucks.add(truck);
-    if (trailer) trailers.add(trailer);
-    const driver = clean(load?.driver);
-    if (!driver) return;
-    const key = driver.toUpperCase();
-    const entry = { driver, driverPhone: clean(load.driverPhone), truck, trailer, at: Date.parse(load.bookedAt) || 0 };
-    const known = drivers.get(key);
-    if (!known) { drivers.set(key, entry); return; }
-    const [newer, older] = entry.at > known.at ? [entry, known] : [known, entry];
-    drivers.set(key, {
-      ...newer,
-      driverPhone: newer.driverPhone || older.driverPhone,
-      truck: newer.truck || older.truck,
-      trailer: newer.trailer || older.trailer
-    });
-  });
-  const byText = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-  return {
-    drivers: Array.from(drivers.values()).sort((a, b) => byText(a.driver, b.driver)),
-    trucks: Array.from(trucks).sort(byText),
-    trailers: Array.from(trailers).sort(byText)
-  };
-}
-
 function findKnownDriver(directory, name) {
   const key = String(name || '').trim().toUpperCase();
   return key ? directory.drivers.find(entry => entry.driver.toUpperCase() === key) || null : null;
@@ -450,162 +475,6 @@ const sortedStateCodes = Array.from(stateCodes).sort();
 
 function getCountryForRegion(region) {
   return canadianProvinceCodes.has(String(region || '').trim().toUpperCase()) ? 'CA' : 'US';
-}
-
-async function readCanvasStrip(worker, canvas, x0, y0, x1, y1, pattern, thresholds = [150, 110, 190, 0]) {
-  const left = Math.max(0, Math.round(x0));
-  const top = Math.max(0, Math.round(y0));
-  const width = Math.min(canvas.width, Math.round(x1)) - left;
-  const height = Math.min(canvas.height, Math.round(y1)) - top;
-  if (width < 4 || height < 4) return '';
-  for (const threshold of thresholds) {
-    const cropCanvas = document.createElement('canvas');
-    cropCanvas.width = width * 2 + 64;
-    cropCanvas.height = height * 2 + 64;
-    const cropContext = cropCanvas.getContext('2d', { willReadFrequently: true });
-    cropContext.fillStyle = '#fff';
-    cropContext.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
-    cropContext.drawImage(canvas, left, top, width, height, 32, 32, width * 2, height * 2);
-    if (threshold) {
-      const pixels = cropContext.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
-      for (let offset = 0; offset < pixels.data.length; offset += 4) {
-        const luminance = pixels.data[offset] * 0.299 + pixels.data[offset + 1] * 0.587 + pixels.data[offset + 2] * 0.114;
-        const value = luminance < threshold ? 0 : 255;
-        pixels.data[offset] = value;
-        pixels.data[offset + 1] = value;
-        pixels.data[offset + 2] = value;
-        pixels.data[offset + 3] = 255;
-      }
-      cropContext.putImageData(pixels, 0, 0);
-    }
-    const { data: stripData } = await worker.recognize(cropCanvas);
-    const found = stripData.text.match(pattern)?.[0];
-    if (found) return found;
-  }
-  return '';
-}
-
-// Picks the most common digit at each position across several OCR readings of one load number.
-function voteNtgLoadNumber(candidates) {
-  const readings = candidates.filter(candidate => /^\d{7}$/.test(candidate));
-  if (!readings.length) return null;
-  const value = Array.from({ length: 7 }, (_, position) => {
-    const counts = {};
-    readings.forEach(reading => { counts[reading[position]] = (counts[reading[position]] || 0) + 1; });
-    return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
-  }).join('').replace(/^0/, '9');
-  return { value, unanimous: readings.length >= 2 && readings.every(reading => reading === value) };
-}
-
-// Re-reads the small parts of one cropped NTG/Beon load card that full-card OCR tends to miss.
-async function fillMissingNtgCardDetails(worker, canvas, lines) {
-  const W = canvas.width;
-  const H = canvas.height;
-  const words = lines.flatMap(line => line.words || [])
-    .map(word => ({ text: String(word.text || '').trim(), ...word.bbox }))
-    .filter(word => word.text);
-  const add = (text, x0, y0, x1, y1) => lines.push({ text, bbox: { x0, y0, x1, y1 }, words: [{ text, bbox: { x0, y0, x1, y1 } }] });
-  const find = pattern => words.find(word => pattern.test(word.text));
-  const allText = words.map(word => word.text).join(' ');
-  const milesWord = words.find(word => /miles?$/i.test(word.text) && word.x0 > W * 0.15 && word.x1 < W * 0.65);
-  const totalLabel = words.find(word => /^total$/i.test(word.text) && word.x0 > W * 0.6);
-  const weightLabel = words.find(word => /^w\w{2,4}t$/i.test(word.text) && word.x0 > W * 0.6);
-  const label = totalLabel || weightLabel;
-  const labelHeight = label ? label.y1 - label.y0 : H * 0.08;
-  const valueTop = label ? label.y1 + labelHeight * 0.2 : H * 0.35;
-  const valueBottom = label ? label.y1 + labelHeight * 3 : H * 0.75;
-
-  await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '0123456789,.$' });
-  const idCandidates = words.filter(word => word.x0 < W * 0.2 && /^\d{7}$/.test(word.text)).map(word => word.text);
-  for (const threshold of [0, 150, 110, 190, 130, 170]) {
-    const reading = await readCanvasStrip(worker, canvas, 0, 0, W * 0.08, H, /\d{7}/, [threshold]);
-    if (reading) idCandidates.push(reading.slice(0, 7));
-  }
-  const loadNumber = voteNtgLoadNumber(idCandidates);
-  if (loadNumber) {
-    const text = loadNumber.value;
-    lines.unshift({ text, bbox: { x0: W * 0.01, y0: H * 0.45, x1: W * 0.05, y1: H * 0.5 }, words: [{ text, bbox: { x0: W * 0.01, y0: H * 0.45, x1: W * 0.05, y1: H * 0.5 } }] });
-    if (!loadNumber.unanimous) lines.ntgIdUncertain = true;
-  }
-  const statsLeft = W * 0.67;
-  if (!words.some(word => word.x0 > statsLeft && /^\$\s*[\d,]+(\.\d+)?$/.test(word.text))) {
-    const rateLeft = totalLabel ? totalLabel.x0 - W * 0.01 : W * 0.765;
-    const rateText = await readCanvasStrip(worker, canvas, rateLeft, valueTop, rateLeft + W * 0.075, valueBottom, /\d[\d,]*\.\d{2}/);
-    if (rateText) add(`$${rateText}`, rateLeft + W * 0.01, (valueTop + valueBottom) / 2 - 4, rateLeft + W * 0.06, (valueTop + valueBottom) / 2 + 4);
-  }
-  if (!words.some(word => word.x0 > statsLeft && /^(\d{1,3}(,\d{3})+|\d{2,6})(\.\d+)?$/.test(word.text))) {
-    const weightLeft = weightLabel ? weightLabel.x0 - W * 0.02 : W * 0.69;
-    const weightRight = totalLabel ? totalLabel.x0 - W * 0.01 : W * 0.765;
-    const weightText = await readCanvasStrip(worker, canvas, weightLeft, valueTop, weightRight, valueBottom, /\d{1,3}(,\d{3})+(\.\d+)?|\d{2,6}(\.\d+)?/);
-    if (weightText) add(weightText, weightLeft + W * 0.01, (valueTop + valueBottom) / 2 - 4, weightRight - W * 0.01, (valueTop + valueBottom) / 2 + 4);
-  }
-
-  await worker.setParameters({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '' });
-  if (!/van|reefer|flat|truck|sprinter|hot\s*shot|step|conestoga/i.test(allText)) {
-    const lineHeight = milesWord ? milesWord.y1 - milesWord.y0 : H * 0.08;
-    const top = milesWord ? milesWord.y0 - lineHeight * 3.4 : 0;
-    const bottom = milesWord ? milesWord.y0 - lineHeight * 0.3 : H * 0.5;
-    const equipment = await readCanvasStrip(worker, canvas, W * 0.2, top, W * 0.52, bottom, /[\w /]*(van|reefer|flat\s*bed|truck|sprinter|hot\s*shot)[\w /]*/i);
-    const centerX = milesWord ? (milesWord.x0 + milesWord.x1) / 2 : W * 0.37;
-    if (equipment) add(equipment.trim(), centerX - 4, top, centerX + 4, bottom);
-  }
-  if (!/haz|\b\w{1,2}zmat\b/i.test(allText)) {
-    const tagText = await readCanvasStrip(worker, canvas, 0, H * 0.7, W * 0.35, H, /.*(haz|tank).*/is);
-    const tags = [/haz/i.test(tagText) && 'Hazmat', /tank/i.test(tagText) && 'Tanker'].filter(Boolean);
-    if (tags.length) add(tags.join(' '), W * 0.01, H * 0.9, W * 0.1, H * 0.95);
-  }
-}
-
-async function readNtgScreenshotCards(worker, image, onProgress) {
-  const analysis = document.createElement('canvas');
-  analysis.width = image.naturalWidth || image.width;
-  analysis.height = image.naturalHeight || image.height;
-  const analysisContext = analysis.getContext('2d', { willReadFrequently: true });
-  if (!analysisContext) return [];
-  analysisContext.drawImage(image, 0, 0);
-  // Zoomed-out Beon pages have thin, very light gaps between cards: a stricter white level
-  // keeps neighbouring cards apart. Use whichever level finds more separate cards.
-  const pixels0 = analysisContext.getImageData(0, 0, analysis.width, analysis.height).data;
-  const regions = [246, 250]
-    .map(whiteLevel => findNtgCardRegions(pixels0, analysis.width, analysis.height, { whiteLevel }))
-    .reduce((best, found) => (found.length > best.length ? found : best), []);
-  const loads = [];
-  for (const [index, region] of regions.entries()) {
-    onProgress?.(`Reading NTG load card ${index + 1} of ${regions.length}...`);
-    const regionWidth = region.x1 - region.x0;
-    const regionHeight = region.y1 - region.y0;
-    // Small (zoomed-out) cards are enlarged more so their small print can be read.
-    const scale = Math.max(1, Math.min(4, 5600 / regionWidth));
-    const cardCanvas = document.createElement('canvas');
-    cardCanvas.width = Math.round(regionWidth * scale);
-    cardCanvas.height = Math.round(regionHeight * scale);
-    const cardContext = cardCanvas.getContext('2d', { willReadFrequently: true });
-    if (!cardContext) continue;
-    cardContext.imageSmoothingQuality = 'high';
-    cardContext.drawImage(image, region.x0, region.y0, regionWidth, regionHeight, 0, 0, cardCanvas.width, cardCanvas.height);
-    const pixels = cardContext.getImageData(0, 0, cardCanvas.width, cardCanvas.height);
-    for (let offset = 0; offset < pixels.data.length; offset += 4) {
-      const gray = pixels.data[offset] * 0.299 + pixels.data[offset + 1] * 0.587 + pixels.data[offset + 2] * 0.114;
-      pixels.data[offset] = gray;
-      pixels.data[offset + 1] = gray;
-      pixels.data[offset + 2] = gray;
-    }
-    cardContext.putImageData(pixels, 0, 0);
-    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
-    const { data } = await worker.recognize(cardCanvas, {}, { blocks: true });
-    const lines = (data.blocks || []).flatMap(block => block.paragraphs.flatMap(paragraph => paragraph.lines));
-    await fillMissingNtgCardDetails(worker, cardCanvas, lines);
-    loads.push(...parseNtgScreenshotLines(lines, cardCanvas.width, cardCanvas.height, { wholeCard: true })
-      .map(load => ({
-        ...load,
-        id: /^NTG-/.test(load.id) ? `NTG-${Date.now()}-${index}` : load.id,
-        ...(lines.ntgIdUncertain && !/^NTG-/.test(load.id)
-          ? { notes: [load.notes, 'Load number was hard to read from the screenshot; please verify it.'].filter(Boolean).join(' ') }
-          : {})
-      })));
-  }
-  await worker.setParameters({ tessedit_pageseg_mode: '3', tessedit_char_whitelist: '' });
-  return loads;
 }
 
 function parseDatRateText(text) {
@@ -719,56 +588,6 @@ async function getGmailApiError(response, action) {
   return new Error(`Gmail ${action} failed (${response.status})${details ? `: ${details}` : '.'}`);
 }
 
-async function readChScreenshot(worker, canvas, lines, brokerName, laneRates, scale) {
-  const headers = findChHeaders(lines);
-  if (!headers) return { loads: [], skippedLtl: 0, skippedNoDate: 0 };
-  const bounds = getChColumnBounds(headers, canvas.width);
-  // Reading each narrow column on its own is far more accurate than reading it inside the full table.
-  const readStrip = async (left, right, whitelist) => {
-    const x0 = Math.max(0, Math.round(left));
-    const x1 = Math.min(canvas.width, Math.round(right));
-    if (x1 - x0 < 8) return [];
-    const factor = Math.max(1, 4 / scale);
-    const margin = 40;
-    const strip = document.createElement('canvas');
-    strip.width = Math.round((x1 - x0) * factor) + margin * 2;
-    strip.height = Math.round(canvas.height * factor) + margin * 2;
-    const context = strip.getContext('2d', { willReadFrequently: true });
-    if (!context) return [];
-    context.fillStyle = '#fff';
-    context.fillRect(0, 0, strip.width, strip.height);
-    context.imageSmoothingQuality = 'high';
-    context.drawImage(canvas, x0, 0, x1 - x0, canvas.height, margin, margin, (x1 - x0) * factor, canvas.height * factor);
-    // Highlighted rows (yellow, green, gray) confuse OCR, so light backgrounds are whitened while dark text stays.
-    const pixels = context.getImageData(0, 0, strip.width, strip.height);
-    for (let offset = 0; offset < pixels.data.length; offset += 4) {
-      const luminance = pixels.data[offset] * 0.299 + pixels.data[offset + 1] * 0.587 + pixels.data[offset + 2] * 0.114;
-      const value = luminance >= 205 ? 255 : luminance;
-      pixels.data[offset] = value;
-      pixels.data[offset + 1] = value;
-      pixels.data[offset + 2] = value;
-      pixels.data[offset + 3] = 255;
-    }
-    context.putImageData(pixels, 0, 0);
-    await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: whitelist });
-    const { data } = await worker.recognize(strip, {}, { blocks: true });
-    return (data.blocks || [])
-      .flatMap(block => block.paragraphs.flatMap(paragraph => paragraph.lines))
-      .map(line => ({
-        y: ((line.bbox.y0 + line.bbox.y1) / 2 - margin) / factor,
-        text: line.text.replace(/\s+/g, '')
-      }));
-  };
-  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  const strips = {
-    ost: await readStrip(bounds.ostLeft, bounds.destinationLeft, letters),
-    dst: await readStrip(bounds.dstLeft, bounds.pickupLeft, letters),
-    bin: await readStrip(bounds.binLeft, canvas.width, '0123456789')
-  };
-  await worker.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
-  return parseChScreenshotLines(lines, canvas.width, canvas.height, brokerName, laneRates, strips);
-}
-
 // Earliest pickup start Landstar will accept, as an Excel serial on the local clock:
 // now plus a lead time (for the upload bot's rate check and upload), rounded up to
 // the next quarter hour. Landstar rejects "Pickup Start Date cannot be in the past".
@@ -776,34 +595,6 @@ function getEarliestPickupSerial(now = new Date(), leadMinutes = 30) {
   const quarterHour = 15 * 60 * 1000;
   const wallClock = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes() + leadMinutes);
   return (Math.ceil(wallClock / quarterHour) * quarterHour - Date.UTC(1899, 11, 30)) / 86400000;
-}
-
-// Excel serial (local clock) -> "MM/DD/YY HH:MM", the way the Landstar board shows times.
-function excelSerialToBoardTime(serial) {
-  if (typeof serial !== 'number' || !Number.isFinite(serial)) return '';
-  const date = new Date(Math.round(serial * 86400000) + Date.UTC(1899, 11, 30));
-  const pad = value => String(value).padStart(2, '0');
-  return `${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())}/${pad(date.getUTCFullYear() % 100)} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
-}
-
-// What identifies a load's posting on Landstar (Landstar postings carry no customer
-// load number): both ZIPs, pickup and delivery END times, and weight, exactly as exported.
-// End times are used because the export may move a past pickup START up to now.
-// US ZIPs that lost their leading zeros as numbers (NJ 07036 -> 7036) get them back, so they
-// match Landstar's posting. Canadian postal codes (letters) are left as they are.
-const postingZip = value => {
-  const zip = String(value || '').trim().toUpperCase();
-  return /^\d{3,4}$/.test(zip) ? zip.padStart(5, '0') : zip;
-};
-
-function buildLandstarPosting(record) {
-  return {
-    originZip: postingZip(record['Origin Zipcode(Required)']),
-    destZip: postingZip(record['Destination Zipcode(Required)']),
-    pickupThru: excelSerialToBoardTime(record['Pickup Date (Thru)(Required)']),
-    deliveryThru: excelSerialToBoardTime(record['Delivery Date (Thru)(Required)']),
-    weight: Number(record['Weight(Required)']) || 0
-  };
 }
 
 // Tabs of an Excel workbook that hold loads: the first tab always (as before), plus any
@@ -986,85 +777,6 @@ const equipmentOptions = [
   ['24VN', '24-foot van'], ['28VN', '28-foot van'], ['48VN', '48-foot van'], ['53VN', '53-foot van'],
   ['48FL', '48-foot flatbed'], ['53FL', '53-foot flatbed'], ['53SD', '53-foot step deck']
 ];
-
-function playExportSound() {
-  try {
-    const AudioCtx = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    [190, 250].forEach((freq) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      const start = ctx.currentTime;
-      osc.frequency.value = freq;
-      osc.type = 'sawtooth';
-      gain.gain.setValueAtTime(0.0001, start);
-      [0, 0.42].forEach((offset) => {
-        gain.gain.setValueAtTime(0.0001, start + offset);
-        gain.gain.exponentialRampToValueAtTime(0.08, start + offset + 0.025);
-        gain.gain.setValueAtTime(0.08, start + offset + 0.23);
-        gain.gain.exponentialRampToValueAtTime(0.0001, start + offset + 0.29);
-      });
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(start);
-      osc.stop(start + 0.75);
-    });
-    setTimeout(() => ctx.close(), 1000);
-  } catch {
-    // Sound is optional.
-  }
-}
-
-// Greets the signed-in agent by posting code with a warm, natural voice. Voices load
-// asynchronously in some browsers, so wait for them before speaking.
-const WELCOME_LINES = [
-  code => `Hey, welcome back${code ? `, agent ${code}` : ''}! Good to see you.`,
-  code => `Hi${code ? `, agent ${code}` : ''}! Welcome back.`,
-  code => `Welcome back${code ? `, agent ${code}` : ''}. Hope you're doing well today.`,
-];
-
-function speakWelcomeGreeting(postingCode) {
-  try {
-    if (typeof window === 'undefined' || !window.speechSynthesis || typeof SpeechSynthesisUtterance === 'undefined') return;
-    const code = String(postingCode || '').trim().toUpperCase();
-    // Spell the posting code letter by letter so it reads naturally.
-    const spokenCode = code.split('').join(' ');
-    const line = WELCOME_LINES[Math.floor(Math.random() * WELCOME_LINES.length)];
-    const utterance = new SpeechSynthesisUtterance(line(spokenCode));
-    utterance.pitch = 1;
-    utterance.rate = 1;
-    utterance.volume = 0.9;
-    const speak = () => {
-      const voices = window.speechSynthesis.getVoices();
-      // Prefer Chrome's natural-sounding Google voices; they avoid the robotic
-      // tone of the older Microsoft desktop voices.
-      const preferred = voices.find(voice => /^google us english$/i.test(voice.name))
-        || voices.find(voice => /google uk english female/i.test(voice.name))
-        || voices.find(voice => /^google/i.test(voice.name) && /^en([-_]|$)/i.test(voice.lang))
-        || voices.find(voice => /aria|jenny|samantha/i.test(voice.name))
-        || voices.find(voice => /^en([-_]|$)/i.test(voice.lang));
-      if (preferred) utterance.voice = preferred;
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(utterance);
-    };
-    if (window.speechSynthesis.getVoices().length) {
-      speak();
-      return;
-    }
-    const onVoicesChanged = () => {
-      window.speechSynthesis.removeEventListener('voiceschanged', onVoicesChanged);
-      speak();
-    };
-    window.speechSynthesis.addEventListener('voiceschanged', onVoicesChanged);
-    // Some browsers never fire voiceschanged; speak with the default voice after a short wait.
-    window.setTimeout(() => {
-      window.speechSynthesis.removeEventListener('voiceschanged', onVoicesChanged);
-      if (!window.speechSynthesis.speaking) speak();
-    }, 500);
-  } catch {
-    // The greeting is optional.
-  }
-}
 
 // Customer lists mark hazmat and tanker freight in the equipment type ("Van Hazmat",
 // "Tanker") or the commodity ("HAZMAT CHEMICALS"). "NON-HAZMAT ..." is not hazmat.
@@ -2080,37 +1792,6 @@ async function readClipboardImage(clipboard) {
   throw new Error('No screenshot is on the clipboard. Take a snip with Win+Shift+S, then return here and paste it.');
 }
 
-// ---------- Booked Loads page & driver tracking ----------
-
-const checkCallDueMs = 4 * 60 * 60 * 1000;
-
-function getLastCheckCall(load) {
-  const calls = Array.isArray(load.checkCalls) ? load.checkCalls : [];
-  return calls.length ? calls[calls.length - 1] : null;
-}
-
-// What needs attention on a booked load: late (red) beats check call due (amber).
-function getTrackingAlert(load, now = Date.now()) {
-  if (!hasPickupDayStarted(load, now)) return null;
-  const stage = load.trackingStage || 'Booked';
-  if (stage === 'Delivered') return null;
-  const pickupAt = parseScheduleStart(load.pickupTime);
-  if (pickupAt && now > pickupAt && ['Booked', 'Dispatched'].includes(stage)) {
-    return { level: 'late', text: 'Pickup time passed, not at pickup yet' };
-  }
-  const deliveryAt = parseScheduleStart(load.deliveryTime);
-  if (deliveryAt && now > deliveryAt && stage !== 'At Delivery') {
-    return { level: 'late', text: 'Delivery time passed, not delivered' };
-  }
-  const pickupDay = new Date(pickupAt);
-  pickupDay.setHours(0, 0, 0, 0);
-  const lastAt = Math.max(Date.parse(getLastCheckCall(load)?.at) || Date.parse(load.bookedAt) || 0, pickupDay.getTime());
-  if (Number.isFinite(lastAt) && now - lastAt > checkCallDueMs) {
-    return { level: 'due', text: `Check call due (${Math.floor((now - lastAt) / 3600000)}h since last update)` };
-  }
-  return null;
-}
-
 // Records a check call (and the stage it reports) on the load; keeps the last 20.
 function logCheckCall(load, { stage, note = '' }, at = new Date().toISOString()) {
   const nextStage = trackingStages.includes(stage) ? stage : (load.trackingStage || 'Booked');
@@ -2135,32 +1816,6 @@ function toUsPhoneE164(phone) {
 function getGoogleVoiceUrl(phone) {
   const number = toUsPhoneE164(phone);
   return number ? `https://voice.google.com/u/0/messages?itemId=t.${encodeURIComponent(number)}` : 'https://voice.google.com/u/0/messages';
-}
-
-// A short text for the driver, matching where the load is. Kept SMS-short.
-function buildDriverText(load, customer = '', now = Date.now()) {
-  const first = titleCase(String(load.driver || '').trim().split(/\s+/)[0] || '');
-  const hi = `Hi${first ? ` ${first}` : ''}, this is Daniel with Landstar.`;
-  const bill = load.paramountTracking?.freightBill ? `load ${load.paramountTracking.freightBill}` : `load #${load.id}`;
-  const pickup = [titleCase(load.origCity), load.origSt].filter(Boolean).join(', ');
-  const delivery = [titleCase(load.destCity), load.destSt].filter(Boolean).join(', ');
-  const app = getTrackingAppName(customer);
-  const tracking = ` Please keep ${app || 'your tracking app'} on for the whole trip.`;
-  const stage = load.trackingStage || 'Booked';
-  if (stage === 'Delivered') {
-    if (load.paperworkReceivedAt) return `${hi} Thank you for delivering ${bill} in ${delivery}!`;
-    return `${hi} Please send the signed POD for ${bill} (${delivery}) today, just reply to the BCO email with a photo. `
-      + `Paperwork is due within ${PAPERWORK_DUE_HOURS} hours of delivery or the customer can charge back.`;
-  }
-  if (stage === 'At Delivery') return `${hi} Are you unloaded on ${bill} in ${delivery}? Please send the signed POD as soon as you're done.`;
-  if (stage === 'Loaded' || stage === 'In Transit') {
-    return `${hi} How is ${bill} going? What's your ETA to ${delivery}${load.deliveryTime ? ` (appt ${load.deliveryTime})` : ''}?${tracking}`;
-  }
-  if (stage === 'At Pickup') return `${hi} Are you loaded yet on ${bill} in ${pickup}? Please send me the BOL photo when you leave.${tracking}`;
-  const pickupAt = parseScheduleStart(load.pickupTime);
-  const today = pickupAt && sameLocalDay(pickupAt, now) ? ' today' : '';
-  return `${hi} Checking on ${bill}, picking up${today} in ${pickup}${load.pickupTime ? ` (appt ${load.pickupTime})` : ''}. `
-    + `What's your ETA to the shipper?${app ? ` Please turn on ${app} now.` : ''}`;
 }
 
 // Text button: copy the message, open the Google Voice conversation; Daniel pastes and sends.
@@ -2468,36 +2123,11 @@ function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, o
   );
 }
 
-// ---------- Driver inquiry links ----------
-
-const inquiryCompanyName = 'Landstar';
-
 // Long random code for a load's public driver link (not guessable).
 function createInquiryToken() {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-// Only what a driver should see: no customer name, notes or internal fields.
-function buildInquiryDetails(load, profile = {}) {
-  const rate = Number(String(load?.rateInput || '').replace(/[$,]/g, ''));
-  const phone = String(profile.phone || '').replace(/\D/g, '');
-  const weight = parseWeightPounds(load?.weight);
-  const miles = Number(normalizeMilesValue(load?.miles));
-  return {
-    ref: String(load?.id || ''),
-    company: inquiryCompanyName,
-    callbackPhone: phone.length === 10 ? `(${phone.slice(0, 3)}) ${phone.slice(3, 6)}-${phone.slice(6)}` : '',
-    origin: `${load?.origCity || ''}, ${load?.origSt || ''}`.replace(/^, |, $/g, ''),
-    destination: `${load?.destCity || ''}, ${load?.destSt || ''}`.replace(/^, |, $/g, ''),
-    pickup: String(load?.pickupTime || ''),
-    delivery: String(load?.deliveryTime || ''),
-    equipment: getEquipmentDescription(load?.eCode) || String(load?.eCode || ''),
-    weight: weight ? `${weight.toLocaleString('en-US')} lbs` : '',
-    miles: miles > 0 ? `${Math.round(miles)} mi` : '',
-    rate: rate > 0 ? `$${rate.toLocaleString('en-US')}` : ''
-  };
 }
 
 // Driver links always point at the live site, even when the TMS runs on this
@@ -2523,57 +2153,6 @@ function getLandstarExportComment(load) {
 // Full-height list: hides everything above the load list (logo, tools, customers,
 // filters) so the loads fill the whole sidebar. Remembered per browser.
 const listFocusKey = 'landstar_listFocus';
-
-// The truck's own painted lights (roof and step markers, headlights, fog lights,
-// under-glow) are cut out of the art into two layers so the glow sits exactly on them:
-// public/truck-lights-yellow.png (roof, side and step markers) and
-// public/truck-lights-under.png (white headlights, fog lights and under-glow). They flash for a few seconds after sign-in, then stay on.
-// Lights the art doesn't have (mirrors, exhaust stacks) are added as dots; positions
-// are percentages of the 1152x768 background, shown centered with "contain".
-const truckLights = [
-  // LED strips down the outer edge of each mirror
-  ['mirror', 45.35, 40.2], ['mirror', 64.15, 37.9],
-  // lights running up the left exhaust stack, bottom to top
-  ['stack', 43.6, 54.6], ['stack', 43.3, 51], ['stack', 42.9, 47.4], ['stack', 42.6, 43.8], ['stack', 42.3, 40.2],
-  ['stack', 42, 36.6], ['stack', 41.7, 33], ['stack', 41.4, 29.4],
-];
-// Exhaust stack tops; smoke rises from here all the time.
-const truckStacks = [[41, 27.6], [56.3, 22.8]];
-const smokePuffs = 12;
-const truckFlashMs = 6000;
-
-function TruckLights() {
-  const [flashing, setFlashing] = useState(true);
-  useEffect(() => {
-    const timer = setTimeout(() => setFlashing(false), truckFlashMs);
-    return () => clearTimeout(timer);
-  }, []);
-  return (
-    <div className="tms-truck-fx" aria-hidden="true">
-      <div className="tms-truck-box">
-        <div className={`tms-broski-badge${flashing ? ' is-flashing' : ''}`} />
-        {truckStacks.map(([x, y], stack) => (
-          <div key={`stack-${stack}`} className="tms-smoke" style={{ left: `${x}%`, top: `${y}%` }}>
-            {Array.from({ length: smokePuffs }, (_, puff) => (
-              <span key={puff} style={{ animationDelay: `${-(puff * 0.4 + stack * 0.2).toFixed(1)}s` }} />
-            ))}
-          </div>
-        ))}
-        <div className={`tms-truck-lit${flashing ? ' is-flashing' : ''}`}>
-          <div className="tms-truck-glow is-yellow" />
-          <div className="tms-truck-glow is-under" />
-          {truckLights.map(([kind, x, y], index) => (
-            <span
-              key={index}
-              className={`tms-truck-light is-${kind}`}
-              style={{ left: `${x}%`, top: `${y}%`, '--chase': index }}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ▦ Table / ▤ Cards switch for the load list (Daniel 2026-11-27). Remembered in this browser;
 // table view widens the list column (body.tms-table-view in global.css).
@@ -2639,170 +2218,13 @@ function ListFocusToggle() {
   );
 }
 
-function InquiriesPanel({ inquiries, onOpen, onSeen, onClose }) {
-  return (
-    <div className="fixed right-4 top-16 z-40 w-[26rem] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto bg-[#121829] border border-purple-500 rounded-lg shadow-2xl p-3 normal-case tracking-normal text-left" role="dialog" aria-label="Driver inquiries">
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-sm font-bold text-purple-200">📨 Driver inquiries</h2>
-        <button type="button" onClick={onClose} className="text-gray-300 hover:text-white text-sm px-2 cursor-pointer" aria-label="Close inquiries">✕</button>
-      </div>
-      {inquiries.length === 0 && <p className="text-xs text-gray-300">No inquiries yet. Use 🔗 Copy driver link on a load and send it to drivers.</p>}
-      {inquiries.map(inquiry => (
-        <div key={inquiry.id} className={`border rounded p-2 mb-2 text-xs text-white ${inquiry.seen ? 'border-[#1c2541] opacity-75' : 'border-purple-400 bg-purple-950/30'}`}>
-          <div className="flex justify-between gap-2">
-            <span className="font-bold">{inquiry.driver_name}</span>
-            <span className="text-gray-400">{formatCheckTime(inquiry.created_at)}</span>
-          </div>
-          <p>
-            <a href={`tel:${String(inquiry.driver_phone).replace(/[^\d+]/g, '')}`} className="text-emerald-300 underline">📞 {inquiry.driver_phone}</a>
-            {inquiry.mc_or_truck ? ` · ${inquiry.mc_or_truck}` : ''}
-          </p>
-          {inquiry.message && <p className="text-gray-200 mt-1">“{inquiry.message}”</p>}
-          <p className="text-gray-400 mt-1">Load #{inquiry.load_id} · {inquiry.customer}</p>
-          {inquiry.notify_error && <p className="text-amber-300 mt-1">Email not sent: {inquiry.notify_error}</p>}
-          <div className="flex gap-2 mt-1">
-            <button type="button" onClick={() => onOpen(inquiry)} className="bg-purple-600 hover:bg-purple-500 text-white px-2 py-0.5 rounded font-semibold cursor-pointer">Open load</button>
-            {!inquiry.seen && <button type="button" onClick={() => onSeen(inquiry)} className="bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded cursor-pointer">Mark seen</button>}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// Tracking emails for one load (Paramount / RXO), shown inside its Booked Loads card:
-// a warning badge while an email waits for Send, which opens the email to review.
-function LoadEmailBox({ drafts = [], replies = [], onChangeText, onChangeManual, onSend, onSkip, onDismissReply }) {
-  const [open, setOpen] = useState(false);
-  // "✉ Customer update" opens its email right away.
-  const manualCount = drafts.filter(draft => draft.kind === 'manualUpdate').length;
-  useEffect(() => {
-    if (manualCount) setOpen(true);
-  }, [manualCount]);
-  if (!drafts.length && !replies.length) return null;
-  const kindLabel = { manualUpdate: 'Your update', customerUpdate: 'Reply to customer update request', initial: 'Tracking link + pickup ETA', pickupEta: 'Morning pickup ETA', arrived: 'Arrived at shipper', departed: 'Loaded, left shipper', arrivedDelivery: 'Arrived at receiver', delivered: 'Delivered', rxo: 'Reply to update request', rxoForward: 'Forward RXO request to Ivan', driverEta: 'Driver ETA update', driverStatus: 'Driver status update', paperwork: 'POD / paperwork (files attached)', location: 'Daily location update', dailyCustomer: 'Daily customer update', checkCall: 'Logged check call update' };
-  const approvalsLeft = draft => Math.max(0, PARAMOUNT_AUTO_SEND_AFTER
-    - readApprovedCount(draft.kind === 'paperwork' ? paperworkApprovedKey : draft.kind === 'driver' ? driverApprovedKey : ['rxo', 'customerUpdate'].includes(draft.kind) ? rxoApprovedKey : paramountApprovedKey));
-  const who = draft => (draft.kind === 'driver' ? 'Driver' : ['checkCall', 'manualUpdate'].includes(draft.kind) ? draft.customer : draft.kind === 'rxoForward' ? 'Ivan' : draft.kind === 'customerUpdate' ? draft.customer : draft.kind === 'rxo' || draft.target === 'rxo' || isRxoAccount(draft.customer) ? 'RXO' : 'Paramount');
-  // Paperwork drafts carry no addresses: the send replies on the customer's email thread.
-  const recipients = draft => [...(draft.to || []), ...(draft.cc || [])];
-  return (
-    <div data-email-draft={drafts.length ? 'waiting' : undefined} className="mt-3 text-xs text-white normal-case tracking-normal text-left">
-      <div className="flex flex-wrap gap-2">
-        {drafts.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setOpen(value => !value)}
-            aria-expanded={open}
-            title="An email is waiting for you to review and send"
-            className="bg-amber-400 hover:bg-amber-300 text-black px-2 py-0.5 rounded font-bold cursor-pointer"
-          >
-            ⚠ {drafts.length === 1 ? 'Email ready to send' : `${drafts.length} emails ready to send`} · {open ? 'Hide' : 'Review'}
-          </button>
-        )}
-        {replies.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setOpen(value => !value)}
-            className="bg-sky-500 hover:bg-sky-400 text-black px-2 py-0.5 rounded font-bold cursor-pointer"
-          >
-            💬 {replies.length === 1 ? 'New reply' : `${replies.length} new replies`} · {open ? 'Hide' : 'Read'}
-          </button>
-        )}
-      </div>
-      {open && replies.map(reply => (
-        <div key={reply.id} className="border border-sky-400 bg-sky-950/30 rounded p-2 mt-2">
-          <p className="font-bold text-sky-200">💬 {reply.driver ? 'Driver · ' : ''}{reply.from} · {formatCheckTime(reply.at)}</p>
-          <p className="mt-1 text-gray-100">“{reply.snippet}”</p>
-          <div className="flex gap-2 mt-1">
-            <a href={`https://mail.google.com/mail/u/0/#all/${reply.threadId}`} target="_blank" rel="noreferrer" className="bg-sky-600 hover:bg-sky-500 text-white px-2 py-0.5 rounded font-semibold">Open in Gmail</a>
-            <button type="button" onClick={() => onDismissReply(reply)} className="bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded cursor-pointer">Dismiss</button>
-          </div>
-        </div>
-      ))}
-      {open && drafts.map(draft => (
-        <div key={draft.id} className="border border-amber-400 rounded p-2 mt-2">
-          <p className="font-bold text-amber-200">✉️ {who(draft)} email · {draft.kind === 'driver' ? driverEmailLabels[draft.driverKind] : kindLabel[draft.kind]}</p>
-          {draft.request && <p className="text-amber-100 mt-0.5">They asked: “{draft.request}”</p>}
-          {draft.warning && <p role="alert" className="mt-1 bg-red-600 text-white font-bold rounded px-2 py-1">⚠ {draft.warning} Send only if it is; otherwise click Don&apos;t send.</p>}
-          {['rxo', 'customerUpdate'].includes(draft.kind) && !draft.complete && <p className="text-amber-300 mt-0.5">Fill in the blanks (like the pickup ETA) before sending.</p>}
-          {draft.kind === 'manualUpdate' && (
-            <div className="flex flex-wrap gap-2 mt-1 items-center">
-              <label className="flex items-center gap-1">
-                <span className="text-gray-300">Update:</span>
-                <select
-                  value={draft.updateKind}
-                  disabled={draft.sending}
-                  onChange={event => onChangeManual(draft, { updateKind: event.target.value })}
-                  className="bg-[#0b1020] border border-[#1c2541] rounded px-1 py-0.5 text-xs text-white"
-                >
-                  {manualUpdateKinds.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                </select>
-              </label>
-              <label className="flex items-center gap-1">
-                <span className="text-gray-300">Time:</span>
-                <input
-                  value={draft.updateTime}
-                  disabled={draft.sending}
-                  onChange={event => onChangeManual(draft, { updateTime: event.target.value })}
-                  placeholder="11/24 14:30 CST"
-                  className="bg-[#0b1020] border border-[#1c2541] rounded px-1 py-0.5 text-xs text-white w-36"
-                  aria-label={`Update time for order ${draft.loadId}`}
-                />
-              </label>
-              <span className="text-gray-400">Changing these rewrites the email below.</span>
-            </div>
-          )}
-          <p className="text-gray-300">{recipients(draft).length
-            ? `Reply all to: ${recipients(draft).join(', ')}`
-            : draft.kind === 'manualUpdate'
-              ? `Reply all on the ${draft.customer} email thread for order ${draft.loadId}`
-              : `Sends with the files on the ${who(draft)} email thread`}</p>
-          <textarea
-            value={draft.text}
-            onChange={event => onChangeText(draft, event.target.value)}
-            rows={10}
-            className="w-full mt-1 bg-[#0b1020] border border-[#1c2541] rounded p-1.5 text-xs text-white font-sans"
-            aria-label={`Email text for order ${draft.loadId}`}
-          />
-          {draft.error && <p className="text-red-300 mt-1">Not sent: {draft.error}</p>}
-          {draft.sending && draft.retryNote && <p className="text-amber-300 mt-1">{draft.retryNote}</p>}
-          <div className="flex flex-wrap gap-2 mt-1 items-center">
-            <button type="button" disabled={draft.sending} onClick={() => onSend(draft)} className="bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white px-3 py-0.5 rounded font-semibold cursor-pointer">{draft.sending ? 'Sending…' : 'Send'}</button>
-            <button type="button" disabled={draft.sending} onClick={() => onSkip(draft)} className="bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded cursor-pointer">Don&apos;t send</button>
-            <span className="text-gray-400">{draft.warning || draft.kind === 'manualUpdate' ? 'Waits for your Send' : paramountAlwaysAskKinds.has(draft.kind) ? 'Always waits for your Send' : approvalsLeft(draft) ? `${approvalsLeft(draft)} more approval${approvalsLeft(draft) === 1 ? '' : 's'}, then these send automatically` : 'Sending automatically'}</span>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // The Landstar upload bot (bot/status-server.js) reports its login status on
 // this computer while it runs. No answer means the bot is not running.
 const BOT_STATUS_URL = 'http://127.0.0.1:47615/status';
-const BOT_UNPOST_URL = 'http://127.0.0.1:47615/unpost';
 
-// Postings waiting to be removed from Landstar by the upload bot (loads that dropped
-// off a customer's list). Kept in this browser until the bot confirms it has them.
-const unpostQueueKey = 'landstar_unpostQueue';
 // More removals than this from one import, and over half the customer's posted loads, needs a yes.
 const LARGE_DROP_MIN = 10;
-function readUnpostQueue() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(unpostQueueKey));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-function writeUnpostQueue(queue) {
-  try {
-    localStorage.setItem(unpostQueueKey, JSON.stringify(queue));
-  } catch (error) {
-    console.error('Could not save the Landstar removal queue:', error);
-  }
-}
+
 function addToUnpostQueue(droppedPostings) {
   const queue = readUnpostQueue();
   const seen = new Set(queue.map(item => `${item.customer}|${item.loadId}`));
@@ -2815,10 +2237,7 @@ function addToUnpostQueue(droppedPostings) {
   writeUnpostQueue(queue);
   return queue.length;
 }
-// Loads booked in the TMS: the bot assigns the truck (BCO tractor number) to the load's
-// Landstar posting. Kept in this browser until the bot confirms it has them.
-const BOT_ASSIGN_URL = 'http://127.0.0.1:47615/assign';
-const assignQueueKey = 'landstar_assignQueue';
+
 const assignSeenKey = 'landstar_assignSeenAt';
 
 // ---------- Rate raises from the bot's board-rate watch (bot/hazmat-watch.js) ----------
@@ -2958,53 +2377,6 @@ function getRemovalBadge(load) {
   return { text: '⚠ NOT REMOVED', className: 'bg-red-600 text-white', title: `Still on Landstar after 3 tries (${when}): posted by hand or Landstar refused. Remove it on LandstarOnline.` };
 }
 
-// What the bot needs to assign a booked load on Landstar, or why it can't.
-function buildAssignRequest(customer, load) {
-  const truck = String(load?.truck || '').trim();
-  // An approved carrier's MC number (AMERI 18347- ATZ) books a carrier instead of a BCO truck.
-  const carrierMc = getCarrierMc(load);
-  if (!truck && !carrierMc) return { reason: 'There is no truck number or carrier MC # on this load.' };
-  let posting = load?.landstarPosting;
-  const recoverPosting = !posting?.originZip;
-  if (recoverPosting) {
-    const pickup = splitScheduleRange(load.pickupTime);
-    const delivery = splitScheduleRange(load.deliveryTime);
-    const from = toExcelDateTime(pickup[0]);
-    let thru = toExcelDateTime(pickup[1] || pickup[0], pickup[0]);
-    const deliveryFrom = toExcelDateTime(delivery[0]);
-    let deliveryThru = toExcelDateTime(delivery[1] || delivery[0], delivery[0]);
-    if (from !== null && thru !== null && thru <= from) thru = from + 1 / 24;
-    if (deliveryFrom !== null && deliveryThru !== null && deliveryThru <= deliveryFrom) deliveryThru = deliveryFrom + 1 / 24;
-    if (!load.origZip || !load.destZip || thru === null || deliveryThru === null || !(parseWeightPounds(load.weight) > 0)) {
-      return { reason: 'Saved posting details are missing, and ZIPs, pickup/delivery times and weight are required to safely recover the bot-uploaded posting.' };
-    }
-    posting = buildLandstarPosting({
-      'Origin Zipcode(Required)': load.origZip, 'Destination Zipcode(Required)': load.destZip,
-      'Pickup Date (Thru)(Required)': thru, 'Delivery Date (Thru)(Required)': deliveryThru,
-      'Weight(Required)': parseWeightPounds(load.weight)
-    });
-  }
-  return {
-    item: {
-      customer, loadId: String(load.id), truck: carrierMc ? '' : truck,
-      ...(carrierMc ? { carrierMc } : {}),
-      driver: String(load.driver || '').trim(), posting, recoverPosting
-    }
-  };
-}
-
-// The approved carrier's MC number typed on the load (digits only; "MC-547847" -> "547847").
-function getCarrierMc(load) {
-  return String(load?.carrierMc || '').replace(/\D/g, '');
-}
-function readAssignQueue() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(assignQueueKey));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
 function addToAssignQueue(item) {
   const key = `${item.customer}|${item.loadId}`;
   const queue = readAssignQueue().filter(existing => `${existing.customer}|${existing.loadId}` !== key);
@@ -3014,30 +2386,7 @@ function addToAssignQueue(item) {
     console.error('Could not save the Landstar assign queue:', error);
   }
 }
-// Hands booked loads to the bot; returns how many it accepted (0 if the bot is off).
-async function sendAssignQueueToBot() {
-  const queue = readAssignQueue();
-  if (!queue.length) return 0;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3000);
-  try {
-    const response = await fetch(BOT_ASSIGN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bookings: queue }),
-      signal: controller.signal
-    });
-    if (!response.ok) return 0;
-    const sent = new Set(queue.map(item => `${item.customer}|${item.loadId}|${item.truck}`));
-    const left = readAssignQueue().filter(item => !sent.has(`${item.customer}|${item.loadId}|${item.truck}`));
-    localStorage.setItem(assignQueueKey, JSON.stringify(left));
-    return queue.length;
-  } catch {
-    return 0;
-  } finally {
-    clearTimeout(timer);
-  }
-}
+
 // Results the bot reports that this browser hasn't shown yet.
 function takeNewAssignResults(results) {
   if (!Array.isArray(results) || !results.length) return [];
@@ -3073,7 +2422,7 @@ function applyAssignResult(load, result) {
 // a Send click; after that they go out on their own.
 const BOT_TRACKING_URL = 'http://127.0.0.1:47615/tracking';
 const PARAMOUNT_EMAIL_URL = '/api/paramount-email';
-const paramountApprovedKey = 'landstar_paramountApprovedSends';
+
 const paramountMaySendItself = kind => !paramountAlwaysAskKinds.has(kind) && readParamountApprovedCount() >= PARAMOUNT_AUTO_SEND_AFTER;
 // The App's latest loads/profile for the email timers, and drafts already being handled.
 const paramountLatest = {};
@@ -3179,18 +2528,7 @@ function emailRecordMeta(draft) {
   return { customer: draft.customer, loadId: draft.loadId, kind: draft.kind === 'driver' ? `driver ${draft.driverKind}` : draft.kind };
 }
 
-// ---------- Driver emails ----------
-// Every booked load whose Landstar freight bill the bot found in Clarity: the TMS replies
-// in Daniel's "BCO Load Detail" email to the driver (Cc his Landstar address):
-//   dispatch        right after the BCO Load Detail email: turn on the tracking app, confirm.
-//   pickupMorning   7:00 AM on pickup day: good to go? ETA to the shipper?
-//   pickedUp        once Clarity shows the truck left the shipper: ETA for delivery?
-//   deliveryMorning 7:00 AM on delivery day (picked up on an earlier day): good? ETA?
-//   pod             once delivered: please send the POD.
-// The first few wait for a Send click; driver replies show on the load with a pop-up.
-const driverApprovedKey = 'landstar_driverApprovedSends';
- // daily reminders stop after a week
-const paperworkApprovedKey = 'landstar_paperworkApprovedSends';
+ 
 
 async function checkBeforePodRequest(load, tracking, readPaperwork = callParamountEmail) {
   if (load.paperworkReceivedAt) return { received: true, files: [] };
@@ -3346,7 +2684,6 @@ function applyMercuryGateResult(load, result) {
   };
 }
 
-const rxoApprovedKey = 'landstar_rxoApprovedSends';
 const rxoHandledKey = 'landstar_rxoHandledRequests';
 
 function readRxoHandled() {
@@ -3376,33 +2713,6 @@ function markCustomerHandled(messageId) {
   try { localStorage.setItem(customerHandledKey, JSON.stringify([...readCustomerHandled(), messageId].slice(-500))); } catch { /* asked again next time */ }
 }
 
-function readApprovedCount(key) {
-  try { return Number(localStorage.getItem(key)) || 0; } catch { return 0; }
-}
-
-// Hands the queue to the bot; returns how many it accepted (0 if the bot is off).
-async function sendUnpostQueueToBot() {
-  const queue = readUnpostQueue();
-  if (!queue.length) return 0;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3000);
-  try {
-    const response = await fetch(BOT_UNPOST_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ postings: queue }),
-      signal: controller.signal
-    });
-    if (!response.ok) return 0;
-    const sent = new Set(queue.map(item => `${item.customer}|${item.loadId}`));
-    writeUnpostQueue(readUnpostQueue().filter(item => !sent.has(`${item.customer}|${item.loadId}`)));
-    return queue.length;
-  } catch {
-    return 0;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 const botStatusStyles = {
   'logged-in': { label: 'Bot logged in', dot: '#22c55e', glow: '0 0 8px #22c55e' },
   uploading: { label: 'Bot uploading', dot: '#22c55e', glow: '0 0 8px #22c55e' },
@@ -3414,55 +2724,6 @@ const botStatusStyles = {
 // The local TMS (npm run dev) can start the bot; the live site can only show its status.
 const BOT_START_URL = '/api/bot/start';
 const BOT_START_GRACE_MS = 45_000;
-const canStartBotHere = () => typeof window !== 'undefined'
-  && ['127.0.0.1', 'localhost'].includes(window.location?.hostname);
-
-function LocalBotsSwitch() {
-  const [enabled, setEnabled] = useState(null);
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    let active = true;
-    const check = async () => {
-      try {
-        const response = await fetch('/api/local-bots', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
-        const result = await response.json();
-        if (!response.ok || typeof result.enabled !== 'boolean') throw new Error(result.error || 'Invalid bot control status');
-        if (active) { setEnabled(result.enabled); setError(''); }
-      } catch (err) {
-        if (active) { setEnabled(null); setError(`Bot control unavailable: ${err.message}`); }
-      }
-    };
-    void check();
-    const timer = setInterval(check, 5000);
-    return () => { active = false; clearInterval(timer); };
-  }, []);
-  const toggle = async () => {
-    setBusy(true);
-    try {
-      const response = await fetch('/api/local-bots', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: !enabled }), signal: AbortSignal.timeout(3000)
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Could not change bot control');
-      setEnabled(result.enabled);
-      setError('');
-    } catch (err) { setError(`Bot control unavailable: ${err.message}`); }
-    finally { setBusy(false); }
-  };
-  return (
-    <span className="inline-flex items-center gap-1">
-      <button type="button" disabled={enabled === null || busy} onClick={toggle}
-        aria-label={enabled ? 'Pause local bots' : 'Resume local bots'}
-        title="Pauses posting, helper, rate and removal workers after their current task. Email automation is separate. Start Everything must be running to restart missing workers."
-        className="bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white text-xs px-2.5 py-1 rounded">
-        {enabled === null ? 'Bot control unavailable' : enabled ? 'Pause all local bots' : 'Resume local bots'}
-      </button>
-      {error && <span role="alert" className="text-amber-300 text-xs">{error}</span>}
-    </span>
-  );
-}
 
 export function BotStatusLight() {
   const [status, setStatus] = useState({ state: 'off', message: 'Upload bot is not running' });
@@ -3627,106 +2888,6 @@ export function BotStatusLight() {
   );
 }
 
-function describeRateWorker(status) {
-  if (status.state === 'off') return 'Rate worker off';
-  if (status.state === 'signing-in') return 'Rate worker: sign in to Landstar';
-  if (status.state === 'starting') return 'Rate worker starting';
-  if (status.state === 'blocked') return 'Rate worker: needs attention';
-  if (status.state === 'working') return 'Rate worker: checking';
-  return status.state === 'logged-in' ? 'Rate worker on' : 'Rate worker: status unavailable';
-}
-
-function RateWorkerLight() {
-  const [status, setStatus] = useState({ state: 'off', message: 'Rate worker is not running' });
-  const [error, setError] = useState('');
-  const [starting, setStarting] = useState(false);
-  useEffect(() => {
-    if (!canStartBotHere()) return undefined;
-    let cancelled = false;
-    let timer;
-    const check = async () => {
-      try {
-        const response = await fetch('/api/rates/status', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
-        if (!response.ok) throw new Error(`Rate-worker status returned HTTP ${response.status}`);
-        const next = await response.json();
-        if (!cancelled) { setStatus(next); setError(''); }
-      } catch (failure) {
-        if (!cancelled) setError(`Rate-worker status unavailable: ${failure.message}`);
-      } finally {
-        if (!cancelled) timer = setTimeout(check, 5000);
-      }
-    };
-    void check();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, []);
-  if (!canStartBotHere()) return null;
-  const start = async () => {
-    setStarting(true);
-    setError('');
-    try {
-      const response = await fetch('/api/rates/start', { method: 'POST', signal: AbortSignal.timeout(10000) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Could not start the rate worker.');
-      setStatus({ state: 'starting', message: 'Opening rate-worker browser; sign in if asked' });
-    } catch (failure) {
-      setError(failure.message);
-    } finally { setStarting(false); }
-  };
-  const label = starting ? 'Rate worker starting' : describeRateWorker(status);
-  return (
-    <details className="relative normal-case tracking-normal text-left text-xs" aria-label="Rate worker">
-      <summary className="bg-slate-800 border border-slate-600 rounded px-2.5 py-1 cursor-pointer">
-        <span role="status">{error ? 'Rate worker: needs attention' : label}</span>
-      </summary>
-      <div className="absolute right-0 bottom-full mb-2 z-50 w-72 max-w-[90vw] bg-slate-900 border border-slate-600 rounded p-3 shadow-xl space-y-2">
-        <p>{error || status.message}</p>
-        <p>Prepares export rates using the Landstar board. DAT API quotes remain in the TMS. This worker never uploads loads.</p>
-        {status.state === 'off' && <button type="button" disabled={starting} onClick={start} className="bg-blue-600 rounded px-3 py-1 disabled:opacity-50">Start rate worker</button>}
-      </div>
-    </details>
-  );
-}
-
-// The helper bot (bot/helper.js): Assign Capacity, Clarity and MercuryGate in its own window.
-// Its state comes through the main bot's status; when it's off, a click starts it.
-function HelperBotLight({ helper }) {
-  const [starting, setStarting] = useState(0);
-  const state = helper?.state || 'off';
-  const isOn = state === 'logged-in' || state === 'working';
-  const color = isOn ? '#22c55e' : state === 'signing-in' || (starting && Date.now() - starting < 60000) ? '#facc15' : '#64748b';
-  const dot = <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: '50%', background: color, boxShadow: color === '#64748b' ? 'none' : `0 0 8px ${color}`, display: 'inline-block' }} />;
-  const label = isOn ? `Helper ${state === 'working' ? `· ${helper.message || 'working'}` : 'on'}`
-    : state === 'signing-in' ? 'Helper · sign in to Landstar in its window' : starting ? 'Helper starting…' : 'Helper off · Start';
-  if (!isOn && state !== 'signing-in' && canStartBotHere()) {
-    return (
-      <button
-        type="button"
-        onClick={async () => {
-          setStarting(Date.now());
-          try {
-            const response = await fetch('/api/helper/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-            if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'The helper bot could not be started.');
-          } catch (error) {
-            setStarting(0);
-            alert(`${error.message}\n\nYou can also double-click "Start Helper Bot.bat" in the bot folder.`);
-          }
-        }}
-        title="The helper bot does Assign Capacity, Clarity checks and MercuryGate so the main bot can keep uploading. Click to start it."
-        className="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal cursor-pointer border border-slate-600"
-      >
-        {dot}
-        {label}
-      </button>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1.5 bg-slate-800 text-white text-xs px-2.5 py-1 rounded font-medium normal-case tracking-normal" title={helper?.message || label} role="status">
-      {dot}
-      {label}
-    </span>
-  );
-}
-
 // The bot light's progress line: files uploaded / still waiting, and what the bot is on.
 // "Rate-checking R_X_O_2429200___ATZ_9of108" -> "12 uploaded · 94 waiting · Rate-checking file 9 of 108"
 function describeBotProgress(status) {
@@ -3759,30 +2920,6 @@ function createStatusStore(initial) {
       return () => listeners.delete(listener);
     }
   };
-}
-
-// The email worker chip in the header: redraws on its own when the worker reports.
-function EmailWorkerStatus({ store, drafts }) {
-  const [status, setStatus] = useState(store.get);
-  useEffect(() => {
-    setStatus(store.get());
-    return store.subscribe(setStatus);
-  }, [store]);
-  return (
-    <details className="relative normal-case tracking-normal text-left text-xs" aria-label="Driver-to-broker worker">
-      <summary className="bg-slate-800 border border-slate-600 rounded px-2.5 py-1 cursor-pointer">
-        <span role="status" aria-live="polite">{describeEmailWorker(status, drafts)}</span>
-      </summary>
-      <div className="absolute left-0 top-full mt-2 z-50 w-80 max-w-[90vw] max-h-[60vh] overflow-y-auto bg-slate-900 border border-slate-600 rounded p-3 shadow-xl space-y-2">
-        <p>{status.message}</p>
-        {status.lastCheckedAt && <p>Last completed check: {new Date(status.lastCheckedAt).toLocaleTimeString()}</p>}
-        <p>Runs while the local TMS is open. Posting runs separately. Only one local tab runs automatic email checks.</p>
-        {status.issues.map(issue => <p key={issue.task} className="text-amber-300">{issue.task}: {issue.message}</p>)}
-        {drafts.some(draft => draft.error) && <p className="text-amber-300">Email send failures are shown in Booked Loads.</p>}
-        {drafts.some(draft => !draft.error && !draft.sending) && <p>Emails awaiting approval are in Booked Loads.</p>}
-      </div>
-    </details>
-  );
 }
 
 // Load cards drawn at a time in the load list (more appear as you scroll).
@@ -5517,11 +4654,16 @@ export default function App({ sharing = null, userId = null } = {}) {
         throw new Error(files.length > 1 ? 'Please choose only image files.' : 'Please choose an image file.');
       }
 
-      setScreenshotImportProgress('Loading OCR module...');
-      const tesseractModule = await import('tesseract.js');
-      const createWorker = tesseractModule.createWorker || tesseractModule.default?.createWorker;
-      if (typeof createWorker !== 'function') {
-        throw new Error('The OCR engine could not be loaded.');
+      // ⚙ Rules say how to read this customer's screenshots: read by AI, no OCR engine needed.
+      const aiInstructions = importMode === 'ai' ? getCustomerRules(profile.customerRules, brokerName).screenshotInstructions : '';
+      let createWorker = null;
+      if (!aiInstructions) {
+        setScreenshotImportProgress('Loading OCR module...');
+        const tesseractModule = await import('tesseract.js');
+        createWorker = tesseractModule.createWorker || tesseractModule.default?.createWorker;
+        if (typeof createWorker !== 'function') {
+          throw new Error('The OCR engine could not be loaded.');
+        }
       }
       // Reads one picture into load rows; the import below runs once on all of them.
       const readScreenshotImage = async (file, label = '') => {
@@ -5804,7 +4946,22 @@ export default function App({ sharing = null, userId = null } = {}) {
       const gridSkippedRows = [];
       let chSkipNote = '';
       let canvas;
-      for (const [fileIndex, file] of files.entries()) {
+      // Claude reads them (the TMS server's /api/read-screenshot) instead of the built-in reader.
+      if (aiInstructions) {
+        setScreenshotImportProgress(files.length > 1 ? `Reading ${files.length} pictures with AI...` : 'Reading the picture with AI...');
+        const images = await Promise.all(files.map(imageForAi));
+        const response = await fetch('/api/read-screenshot', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ images, instructions: aiInstructions, customer: brokerName })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(`${result.error || `The AI reader answered HTTP ${response.status}.`} Nothing was imported.`);
+        if (!Array.isArray(result.loads) || !result.loads.length) throw new Error('The AI found no loads in the picture. Nothing was imported.');
+        const now = Date.now();
+        recognizedLoads = result.loads.map((row, index) => aiRowToLoad(row, { index, now, holdsOnHold: true }));
+        if (result.unreadable) gridSkippedRows.push(`AI could not read: ${result.unreadable}`);
+      }
+      for (const [fileIndex, file] of (aiInstructions ? [] : files).entries()) {
         const label = files.length > 1 ? `Picture ${fileIndex + 1} of ${files.length}` : '';
         let picture;
         try {
@@ -6913,8 +6070,32 @@ export default function App({ sharing = null, userId = null } = {}) {
         // The bot is not answering: try again next time.
       }
     };
-    void syncPostedConfirmations();
-    const confirmationsTimer = setInterval(syncPostedConfirmations, 20000);
+    // Loads still NOT CONFIRMED 3+ hours after export go to the bot, so the alert email can tell
+    // Daniel (bot/alerts.js; Daniel 2026-11-27). Sent every few minutes, an empty list included.
+    let unconfirmedSentAt = 0;
+    const reportUnconfirmed = async () => {
+      if (!canStartBotHere() || !postedConfirmations.supported || Date.now() - unconfirmedSentAt < 3 * 60 * 1000) return;
+      unconfirmedSentAt = Date.now();
+      const loads = [];
+      for (const [customer, list] of Object.entries(paramountLatest.map || {})) {
+        for (const load of list || []) {
+          if (getPostingState(load) === 'error' && load.landstarExportedAt && !load.landstarConfirmedAt
+            && !hasOpenLandstarError(load) && !load.exportError) {
+            loads.push({ customer, id: String(load.id), exportedAt: load.landstarExportedAt, route: [`${load.origCity || ''}, ${load.origSt || ''}`, `${load.destCity || ''}, ${load.destSt || ''}`].join(' -> ') });
+          }
+        }
+      }
+      try {
+        await fetch('http://127.0.0.1:47615/unconfirmed', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ loads }), signal: AbortSignal.timeout(10000)
+        });
+      } catch {
+        // The bot is not answering: try again next time.
+      }
+    };
+    const syncAndReport = async () => { await syncPostedConfirmations(); await reportUnconfirmed(); };
+    void syncAndReport();
+    const confirmationsTimer = setInterval(syncAndReport, 20000);
     const onRefreshIssue = event => {
       if (event.detail?.message) pushNotice(event.detail.message);
     };

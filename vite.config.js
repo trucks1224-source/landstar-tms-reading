@@ -9,6 +9,7 @@ import { processRoadMilesRequest } from './api/road-miles.js'
 import { processDatRateRequest, getDatConfig } from './api/dat-rate.js'
 import { createDatPostingService, createDatRequest, getDatPostingConfig, DAT_REPOST_MINUTES } from './api/_lib/datPosting.js'
 import { handleParamountEmail } from './api/_lib/gmailThread.js'
+import { readScreenshotLoads } from './api/_lib/readScreenshot.js'
 import { getServiceClient } from './api/_lib/server.js'
 import { processInviteRequest } from './api/invite-user.js'
 import { describeSaveResult, extractProspects, isBlockedProspect } from './src/lib/prospects.js'
@@ -31,7 +32,9 @@ const readToday = options => {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   for (const key of ['GOOGLE_MAPS_API_KEY', 'DAT_USERNAME', 'DAT_PASSWORD', 'DAT_USER_USERNAME', 'DAT_AUTH_BASE', 'DAT_RATECAST_URL', 'DAT_FREIGHT_BASE', 'DAT_PARTNER_ID',
-    'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET']) {
+    'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
+    // The AI key for reading customer screenshots (api/_lib/readScreenshot.js), Daniel 2026-11-27.
+    'ANTHROPIC_API_KEY']) {
     if (!process.env[key] && env[key]) {
       process.env[key] = env[key]
     }
@@ -411,6 +414,34 @@ export default defineConfig(({ mode }) => {
               console.error('Could not start the Landstar bot:', error)
               lastBotStart = 0
               reply(500, { error: 'The bot could not be started. Double-click Start Landstar Bot.bat in the bot folder.' })
+            }
+          })
+
+          // Customer screenshots read by Claude (⚙ Rules "How to read this customer's screenshots").
+          // Only this computer's TMS can call it; the AI key stays in .env on this computer.
+          server.middlewares.use('/api/read-screenshot', async (req, res) => {
+            const reply = (status, body) => {
+              res.statusCode = status
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify(body))
+            }
+            if (req.method !== 'POST') return reply(405, { error: 'Use POST.' })
+            const origin = req.headers.origin
+            if (origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
+              return reply(403, { error: 'Only the TMS on this computer can read screenshots with AI.' })
+            }
+            let body = ''
+            for await (const chunk of req) {
+              body += chunk
+              if (body.length > 40_000_000) return reply(413, { error: 'The pictures are too large. Send fewer at a time.' })
+            }
+            try {
+              const request = JSON.parse(body || '{}')
+              const result = await readScreenshotLoads({ images: request.images || [], instructions: request.instructions || '', customer: request.customer || '' })
+              reply(result.status, result.body)
+            } catch (error) {
+              console.error('AI screenshot reading failed:', error.message)
+              reply(502, { error: error.message || 'The AI could not read the picture.' })
             }
           })
 

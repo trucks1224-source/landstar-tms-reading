@@ -7,7 +7,7 @@ import {
 
 test('no rules: everything as usual', () => {
   const rules = getCustomerRules({}, 'Anything');
-  assert.deepEqual(rules, { importEquipment: [], equipment2: 'auto', rateSource: 'default', laneRates: [], excelColumns: {}, capacity: 'bco' });
+  assert.deepEqual(rules, { importEquipment: [], equipment2: 'auto', rateSource: 'default', laneRates: [], excelColumns: {}, capacity: 'bco', screenshotInstructions: '' });
   assert.equal(hasCustomerRules(rules), false);
   assert.equal(ruleEquipment2(rules), undefined);
   assert.deepEqual(filterByImportEquipment([{ eCode: 'R' }], rules), { kept: [{ eCode: 'R' }], skipped: 0 });
@@ -73,4 +73,10 @@ test('capacity: BCO trucks only, or BCO trucks and carriers', () => {
   assert.equal(normalizeCustomerRules({ capacity: 'both' }).capacity, 'both');
   assert.equal(normalizeCustomerRules({ capacity: 'x' }).capacity, 'bco');
   assert.equal(hasCustomerRules({ capacity: 'both' }), true);
+});
+
+test('screenshot instructions: kept as written (trimmed, at most 3000 characters)', () => {
+  assert.equal(normalizeCustomerRules({ screenshotInstructions: '  Red load # = on hold.  ' }).screenshotInstructions, 'Red load # = on hold.');
+  assert.equal(normalizeCustomerRules({ screenshotInstructions: 'x'.repeat(4000) }).screenshotInstructions.length, 3000);
+  assert.equal(hasCustomerRules({ screenshotInstructions: 'Rate is the last column' }), true);
 });

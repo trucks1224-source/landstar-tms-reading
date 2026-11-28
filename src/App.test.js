@@ -22,6 +22,7 @@ import * as undoLib from './lib/undo.js';
 import * as accountAliases from './lib/accountAliases.js';
 import * as capacityBook from './lib/capacityBook.js';
 import * as bigListSplit from './lib/bigListSplit.js';
+import * as aiScreenshot from './lib/aiScreenshot.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
 
@@ -142,6 +143,7 @@ const context = {
       if (name === './lib/accountAliases.js') return accountAliases;
       if (name === './lib/capacityBook.js') return capacityBook;
       if (name === './lib/bigListSplit.js') return bigListSplit;
+      if (name === './lib/aiScreenshot.js') return aiScreenshot;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
     if (name.startsWith('./app/')) return loadAppModule(name, context);
@@ -1632,6 +1634,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/accountAliases.js') return accountAliases;
       if (name === './lib/capacityBook.js') return capacityBook;
       if (name === './lib/bigListSplit.js') return bigListSplit;
+      if (name === './lib/aiScreenshot.js') return aiScreenshot;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
       if (name === 'react') return react;
@@ -1855,6 +1858,7 @@ function createSyncContext(storage) {
       if (name === './lib/accountAliases.js') return accountAliases;
       if (name === './lib/capacityBook.js') return capacityBook;
       if (name === './lib/bigListSplit.js') return bigListSplit;
+      if (name === './lib/aiScreenshot.js') return aiScreenshot;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
       if (name.startsWith('./app/')) return loadAppModule(name, ctx);
@@ -5138,8 +5142,8 @@ test('loads turn Posted only when the bot confirms the upload; unconfirmed after
     { ...load, id: '9203', status: 'OPEN', destCity: 'Reno', landstarExportedAt: new Date(now - 4 * 3600000).toISOString(), landstarPosting: posting('60603', 40000) }
   ];
   const calls = [];
-  const fetch = async url => {
-    calls.push(String(url));
+  const fetch = async (url, options) => {
+    calls.push(String(url) + (options?.body ? ` ${options.body}` : ''));
     if (String(url).includes('/posted')) return { ok: true, status: 200, json: async () => ({ signatures: [['60601|75201|12/01/26 16:00|42000', now]] }) };
     return { ok: true, status: 200, json: async () => ({}) };
   };
@@ -5168,6 +5172,8 @@ test('loads turn Posted only when the bot confirms the upload; unconfirmed after
   assert.equal(stateOf('9201'), 'posted', 'the ledger confirms it');
   assert.equal(stateOf('9202'), 'sent', 'exported a minute ago, not confirmed yet');
   assert.equal(stateOf('9203'), 'error', 'sent 4 hours ago, never confirmed');
+  const report = calls.find(call => call.includes('/unconfirmed'));
+  assert.ok(report && report.includes('"id":"9203"') && !report.includes('"id":"9202"'), 'the never-confirmed load is reported to the bot for the alert email');
   app.effects.filter(effect => /previousOrdersRef|persistAppData\(\)/.test(effect.toString())).forEach(effect => effect());
   const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[0]];
   assert.ok(saved.find(order => order.id === '9201').landstarConfirmedAt, 'the confirmation is saved on the load');
@@ -5205,4 +5211,35 @@ test('Google Chat: a question on screen does not hold up lists with a known name
   assert.equal(calls.some(call => call.includes('POST /api/chat-inbox/done') && call.includes('chat-3-new.xlsx')), false, 'a list with a new name waits for you');
   assert.ok(app.alerts.some(message => /"big list" list from Google Chat .* imported into R X O 2429200 - VAN/.test(message))
     || calls.some(call => call.includes('chat-2-big.xlsx')));
+});
+
+test('customer screenshot with ⚙ Rules instructions is read by the AI reader', async () => {
+  const customer = 'Acme Freight 7788';
+  const profile = { phone: '4845756486', postingCode: 'ANQ', visibilityGroup: 'ANQ',
+    customerRules: { [customer]: { screenshotInstructions: 'First column is the load #. Red = on hold.' } } };
+  const sent = [];
+  const fetch = async (url, options) => {
+    if (url === '/api/read-screenshot') {
+      sent.push(JSON.parse(options.body));
+      return { ok: true, status: 200, json: async () => ({ unreadable: '', loads: [
+        { loadId: 'AC-1', equipment: 'Van', origCity: 'Dallas', origState: 'TX', origZip: '75201', destCity: 'Tulsa', destState: 'OK', destZip: '74103',
+          pickupFrom: '12/02/2026 0800', pickupTo: '12/02/2026 1400', deliveryFrom: '12/03/2026 0800', deliveryTo: '', weight: '40000', miles: '257', rate: '1450', onHold: false, hazmat: false, notes: '' }
+      ] }) };
+    }
+    if (url === '/api/road-miles') return { ok: false, status: 503, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ rate: 2000 }) };
+  };
+  const app = createAppHarness(customer, [], null, {}, { fetch, File, Blob, btoa, initialStorage: { landstar_profile: JSON.stringify(profile) } });
+  app.render();
+  const input = app.find(node => node.type === 'input' && node.props.accept === 'image/*');
+  const picture = new File([new Uint8Array([137, 80, 78, 71])], 'acme.png', { type: 'image/png' });
+  await input.props.onChange({ target: { files: [picture], value: '' } });
+  for (let i = 0; i < 10; i += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sent.length, 1, 'the picture went to the AI reader');
+  assert.equal(sent[0].instructions, 'First column is the load #. Red = on hold.');
+  assert.equal(sent[0].images[0].mediaType, 'image/png');
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap') || '{}')[customer] || [];
+  assert.deepEqual(saved.map(order => order.id), ['AC-1']);
+  assert.equal(saved[0].origCity, 'DALLAS');
+  assert.equal(saved[0].rateInput, '1450');
 });

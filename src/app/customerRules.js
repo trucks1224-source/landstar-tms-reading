@@ -8,6 +8,8 @@
 //   laneRates         [{ origCity, origSt, destCity, destSt, rate }]: always wins (city optional)
 //   excelColumns      { field: 'Header name in the file' } for files in this customer's layout
 //   capacity          'bco' (Landstar BCO trucks only) | 'both' (BCO trucks and outside carriers)
+//   screenshotInstructions  plain words on how to read this customer's screenshots; when set,
+//                     Customer Screenshot imports are read by Claude (needs an API key)
 import { getLandstarEquipmentCode } from './equipment.js';
 
 export const EQUIPMENT_FAMILIES = [
@@ -32,7 +34,7 @@ export const EXCEL_FIELDS = [
   ['deliveryLate', 'Delivery late time'], ['weight', 'Weight'], ['miles', 'Miles'], ['rate', 'Rate']
 ];
 
-const EMPTY = { importEquipment: [], equipment2: 'auto', rateSource: 'default', laneRates: [], excelColumns: {}, capacity: 'bco' };
+const EMPTY = { importEquipment: [], equipment2: 'auto', rateSource: 'default', laneRates: [], excelColumns: {}, capacity: 'bco', screenshotInstructions: '' };
 const key = name => String(name || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 // The rules for one customer (all rules default to "as usual").
@@ -60,7 +62,8 @@ export function normalizeCustomerRules(raw) {
     excelColumns: Object.fromEntries(Object.entries(rules.excelColumns && typeof rules.excelColumns === 'object' ? rules.excelColumns : {})
       .filter(([field, header]) => EXCEL_FIELDS.some(([id]) => id === field) && String(header || '').trim())
       .map(([field, header]) => [field, String(header).trim()])),
-    capacity: CAPACITY_CHOICES.some(([id]) => id === rules.capacity) ? rules.capacity : 'bco'
+    capacity: CAPACITY_CHOICES.some(([id]) => id === rules.capacity) ? rules.capacity : 'bco',
+    screenshotInstructions: String(rules.screenshotInstructions || '').trim().slice(0, 3000)
   };
 }
 
@@ -68,7 +71,7 @@ export function normalizeCustomerRules(raw) {
 export function hasCustomerRules(rules) {
   const normal = normalizeCustomerRules(rules);
   return Boolean(normal.importEquipment.length || normal.equipment2 !== EMPTY.equipment2 || normal.rateSource !== EMPTY.rateSource
-    || normal.laneRates.length || Object.keys(normal.excelColumns).length || normal.capacity !== EMPTY.capacity);
+    || normal.laneRates.length || Object.keys(normal.excelColumns).length || normal.capacity !== EMPTY.capacity || Boolean(normal.screenshotInstructions));
 }
 
 // van / reefer / flatbed / stepdeck / other, from a TMS equipment code.

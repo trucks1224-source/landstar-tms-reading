@@ -10,6 +10,9 @@ const { signature, serialToBoardTime } = require('./bot-postings');
 
 const STATE_FILE = process.env.POSTING_REFRESH_STATE_FILE || path.join(__dirname, 'posting-refresh-state.json');
 const WORK_DIR = path.join(__dirname, 'refresh-exports');
+// Two board copies of an important load: the duplicate check removes the older one within
+// minutes, so the refresh waits this long before it warns.
+const MULTIPLE_WAIT_MS = 20 * 60 * 1000;
 
 function readState(file = STATE_FILE) {
   try {
@@ -159,7 +162,18 @@ async function processRefresh(context, { uploadedFolder, reviewFolder, openUploa
         || JSON.stringify(item.posting.refreshDetails) !== JSON.stringify(item.revision)) {
         throw new Error('Export this important load once with its current details before automatic refresh. An outdated export will not be reposted.');
       }
-      if (matches.length !== 1) throw new Error('Multiple board postings match this important load. Review duplicates before refreshing.');
+      // Two postings right after the load was exported again (2026-11-28 9:53 AM: the CH ATZ H
+      // export reposted two important loads; the duplicate check removed the older copies at
+      // 9:58): wait a few minutes for that clean-up, and warn only if it stays doubled.
+      if (matches.length !== 1) {
+        const since = previous.multipleSince || Date.now();
+        if (Date.now() - since < MULTIPLE_WAIT_MS) {
+          save({ multipleSince: since, retryAt: Date.now() + 5 * 60 * 1000, error: '' });
+          return false;
+        }
+        throw new Error('Multiple board postings match this important load. Review duplicates before refreshing.');
+      }
+      if (previous.multipleSince) save({ multipleSince: null });
       const postedAt = Number(String(matches[0].OrderDate || '').match(/-?\d+/)?.[0]);
       if (!Number.isFinite(postedAt) || postedAt <= 0) throw new Error('The posting age cannot be verified.');
       if (Date.now() - postedAt < REFRESH_INTERVAL_MS) {

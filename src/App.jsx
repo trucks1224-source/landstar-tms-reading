@@ -438,7 +438,7 @@ function findKnownDriver(directory, name) {
 function markLoadsExported(loads, exportedIds, exportedAt) {
   return loads.map(load => {
     if (!exportedIds.has(String(load.id))) return load;
-    const { exportError, ...rest } = load;
+    const { exportError, landstarConfirmedAt, ...rest } = load;
     return { ...rest, landstarExportedAt: exportedAt };
   });
 }
@@ -2885,17 +2885,36 @@ function applyLandstarError(load, draft) {
 // Where a load stands on Landstar (Daniel 2026-11-27: posted loads now stay OPEN, so which ones
 // have errors and which were never posted must show at a glance): 'error' (Landstar rejected
 // it, or the export failed and it has not exported since), 'posted', 'unposted', or '' (booked).
-function getPostingState(load) {
-  if (!load || load.status === 'BOOKED') return '';
+// Posted only once the bot confirms Landstar took the upload (Daniel 2026-11-27): until then
+// 'sent' (with the bot), and 'error' when no confirmation comes within 3 hours. Only the TMS
+// on the bot computer gets confirmations; elsewhere (or with an older bot) exported = posted.
+const POSTING_CONFIRM_LIMIT_MS = 3 * 60 * 60 * 1000;
+const postedConfirmations = { supported: true, since: 0, keys: new Map() };
+const usesPostingConfirmations = () => canStartBotHere() && postedConfirmations.supported;
+
+// The bot's ledger key for a posting: origin ZIP | destination ZIP | pickup thru | weight.
+function landstarPostingKey(posting) {
+  const zip = value => {
+    const text = String(value ?? '').trim().toUpperCase();
+    return /^\d{1,5}$/.test(text) ? text.padStart(5, '0') : text;
+  };
+  return [zip(posting?.originZip), zip(posting?.destZip), String(posting?.pickupThru || '').trim(), Number(posting?.weight) || 0].join('|');
+}
+
+function getPostingState(load, now = Date.now()) {
+  if (!load || load.status === 'BOOKED' || load.coveredAt) return '';
   const exportedAt = Date.parse(load.landstarExportedAt || '');
   const exportErrorOpen = load.exportError && !(Number.isFinite(exportedAt) && exportedAt > Date.parse(load.exportError.at));
   if (hasOpenLandstarError(load) || exportErrorOpen) return 'error';
-  return Number.isFinite(exportedAt) ? 'posted' : 'unposted';
+  if (!Number.isFinite(exportedAt)) return 'unposted';
+  if (load.landstarConfirmedAt || !usesPostingConfirmations()) return 'posted';
+  return now - exportedAt > POSTING_CONFIRM_LIMIT_MS ? 'error' : 'sent';
 }
 
 function getPostingErrorText(load) {
   if (hasOpenLandstarError(load)) return `Landstar rejected this posting: ${(load.landstarError.reasons || []).join('; ') || 'no reason given'}. Fix the load and export it again.`;
   if (load?.exportError) return `Not exported: ${load.exportError.message}`;
+  if (load?.landstarExportedAt && !load.landstarConfirmedAt) return `Sent to the bot ${new Date(load.landstarExportedAt).toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}, but Landstar never confirmed it. Check Bulk Postings, or export it again.`;
   return '';
 }
 
@@ -6529,42 +6548,65 @@ export default function App({ sharing = null, userId = null } = {}) {
     pushNotice(`🚀 Exporting the new ${autoExportFor} list to Landstar automatically${selectedIds.length ? ` (${selectedIds.length} load${selectedIds.length === 1 ? '' : 's'})` : ''}...`, 'auto');
     void handleAutoExport();
   }, [autoExportFor, selectedBroker, selectedIds, customerOrdersMap]);
-  // Checks the Google Chat inbox every 30 seconds while nothing else is on screen.
+  // Checks the Google Chat inbox every 30 seconds. A file that needs you (a picture, a list with
+  // a new name) opens a question; while one is open, files that run by themselves keep going
+  // (single loads, lists with a known name, other agents' booking exports) and the others wait
+  // (Daniel 2026-11-27: "known lists keep importing" while he is away).
   useEffect(() => {
-    if (pastedImage || chatItem || chatSheet || pendingChatSheet || isImportingScreenshot) return undefined;
+    if (pendingChatSheet || isImportingScreenshot) return undefined;
+    const asking = Boolean(pastedImage || chatItem || chatSheet);
     let cancelled = false;
+    const knownAccount = item => {
+      const account = findListedAccount(getChatSheetAccount(paramountLatest.profile?.chatSheetAccounts, item.label), brokers);
+      return account && brokers.includes(account) ? account : '';
+    };
+    const openName = chatItem?.name || chatSheet?.item?.name || '';
     const check = async () => {
       try {
         const response = await fetch('/api/chat-inbox');
         if (!response.ok) return;
         const { items = [] } = await response.json();
-        const item = items[0];
-        if (!item || cancelled) return;
-        const fileResponse = await fetch(`/api/chat-inbox/file?name=${encodeURIComponent(item.name)}`);
-        if (!fileResponse.ok || cancelled) return;
-        const blob = await fileResponse.blob();
-        const file = new File([blob], item.fileName || item.name, { type: blob.type });
-        const from = [item.chat, item.sender].filter(Boolean).join(' · ');
-        if (item.type === 'load') {
-          finishChatItem(item.name);
-          await addChatSingleLoad(await blob.text(), item);
-        } else if (item.type === 'spreadsheet' && await readOrderExportRows(file).catch(() => null)) {
-          // Other agents' bookings (an order export): hot lanes, never loads, no account to pick.
-          finishChatItem(item.name);
-          importHotLanes(await readOrderExportRows(file), file);
-        } else if (item.type === 'spreadsheet') {
-          const known = findListedAccount(getChatSheetAccount(paramountLatest.profile?.chatSheetAccounts, item.label), brokers);
-          if (known && brokers.includes(known)) {
+        if (cancelled) return;
+        // Files that need an answer from you, besides the one on screen.
+        setChatWaitingCount(items.filter(item => item.name !== openName
+          && (item.type === 'picture' || item.type === 'image' || (item.type === 'spreadsheet' && !knownAccount(item)))
+          && item.type !== 'load').length);
+        for (const item of items) {
+          if (cancelled || item.name === openName) continue;
+          const needsYou = item.type !== 'load' && item.type !== 'spreadsheet';
+          if (asking && needsYou) continue;
+          const known = item.type === 'spreadsheet' ? knownAccount(item) : '';
+          const fileResponse = await fetch(`/api/chat-inbox/file?name=${encodeURIComponent(item.name)}`);
+          if (!fileResponse.ok || cancelled) return;
+          const blob = await fileResponse.blob();
+          const file = new File([blob], item.fileName || item.name, { type: blob.type });
+          const from = [item.chat, item.sender].filter(Boolean).join(' · ');
+          if (item.type === 'load') {
+            finishChatItem(item.name);
+            await addChatSingleLoad(await blob.text(), item);
+            return;
+          }
+          if (item.type === 'spreadsheet' && !known && await readOrderExportRows(file).catch(() => null)) {
+            // Other agents' bookings (an order export): hot lanes, never loads, no account to pick.
+            finishChatItem(item.name);
+            importHotLanes(await readOrderExportRows(file), file);
+            return;
+          }
+          if (item.type === 'spreadsheet' && known) {
             finishChatItem(item.name);
             pushNotice(`💬 "${item.label}" list from Google Chat${item.chat ? ` (${item.chat})` : ''} imported into ${known}.`, 'auto');
             if (known !== selectedBroker) handleSelectBroker(known);
             setPendingChatSheet({ file, customer: known });
-          } else {
-            setChatSheet({ item: { ...item, from }, file });
+            return;
           }
-        } else {
-          setChatItem({ ...item, from });
-          setPastedImage(file);
+          // Needs you: ask, unless a question is already open (then it waits its turn).
+          if (asking) continue;
+          if (item.type === 'spreadsheet') setChatSheet({ item: { ...item, from }, file });
+          else {
+            setChatItem({ ...item, from });
+            setPastedImage(file);
+          }
+          return;
         }
       } catch {
         // The TMS server has no chat inbox (or it is not reachable): try again later.
@@ -6845,6 +6887,34 @@ export default function App({ sharing = null, userId = null } = {}) {
     };
     void syncPostingMaintenance();
     const maintenanceTimer = setInterval(syncPostingMaintenance, 10000);
+    // Uploads Landstar confirmed (the bot's upload ledger): loads sent to the bot turn Posted.
+    const syncPostedConfirmations = async () => {
+      if (!canStartBotHere()) return;
+      try {
+        const response = await fetch(`http://127.0.0.1:47615/posted?since=${postedConfirmations.since}`, { signal: AbortSignal.timeout(15000) });
+        if (response.status === 404) { postedConfirmations.supported = false; return; }
+        if (!response.ok) return;
+        const { signatures = [] } = await response.json();
+        postedConfirmations.supported = true;
+        for (const [key, at] of signatures) {
+          postedConfirmations.keys.set(key, at);
+          if (Number(at) > postedConfirmations.since) postedConfirmations.since = Number(at);
+        }
+        const confirmedAt = new Date().toISOString();
+        for (const [customer, loads] of Object.entries(paramountLatest.map || {})) {
+          for (const load of loads || []) {
+            if (!load.landstarExportedAt || load.landstarConfirmedAt || !load.landstarPosting) continue;
+            if (postedConfirmations.keys.has(landstarPostingKey(load.landstarPosting))) {
+              patchParamountLoad(customer, load.id, current => (current.landstarConfirmedAt ? current : { ...current, landstarConfirmedAt: confirmedAt }));
+            }
+          }
+        }
+      } catch {
+        // The bot is not answering: try again next time.
+      }
+    };
+    void syncPostedConfirmations();
+    const confirmationsTimer = setInterval(syncPostedConfirmations, 20000);
     const onRefreshIssue = event => {
       if (event.detail?.message) pushNotice(event.detail.message);
     };
@@ -7425,6 +7495,7 @@ export default function App({ sharing = null, userId = null } = {}) {
       cancelled = true;
       emailWorker?.stop();
       clearInterval(maintenanceTimer);
+      clearInterval(confirmationsTimer);
       window.removeEventListener('landstar-refresh-issue', onRefreshIssue);
       window.removeEventListener('landstar-tracking-result', onTrackingResult);
     };
@@ -8449,7 +8520,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     );
     return (descending ? -comparison : comparison) || String(left.id).localeCompare(String(right.id));
   });
-  const postingCounts = { posted: 0, unposted: 0, error: 0 };
+  const postingCounts = { posted: 0, sent: 0, unposted: 0, error: 0 };
   rateCountOrders.forEach(order => { const state = getPostingState(order); if (state) postingCounts[state] += 1; });
   return { rateCountOrders, withRateCount, noRateCount, visibleOrderEntries, postingCounts };
   }, [customerOrdersMap, selectedBroker, searchQuery, filter, loadFilters, laneSort, isGlobalSearch, hotLanes]);
@@ -8463,7 +8534,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     (loadFilters.pickupState || loadFilters.deliveryState) && { key: 'states', label: `${loadFilters.pickupState || 'Any'} → ${loadFilters.deliveryState || 'Any'}`, clear: () => setLoadFilters(prev => ({ ...prev, pickupState: '', deliveryState: '' })) },
     loadFilters.rate && { key: 'rate', label: loadFilters.rate === 'with' ? 'With rate' : 'No rate', clear: () => setLoadFilters(prev => ({ ...prev, rate: '' })) },
     (loadFilters.minMiles || loadFilters.maxMiles) && { key: 'miles', label: `${loadFilters.minMiles || 0}–${loadFilters.maxMiles || '∞'} mi`, clear: () => setLoadFilters(prev => ({ ...prev, minMiles: '', maxMiles: '' })) },
-    loadFilters.posting && { key: 'posting', label: { posted: 'Posted', unposted: 'Not posted', error: 'Errors' }[loadFilters.posting], clear: () => setLoadFilters(prev => ({ ...prev, posting: '' })) },
+    loadFilters.posting && { key: 'posting', label: { posted: 'Posted', sent: 'Sent to bot', unposted: 'Not posted', error: 'Errors' }[loadFilters.posting], clear: () => setLoadFilters(prev => ({ ...prev, posting: '' })) },
     laneSort && laneSort !== 'pickup-asc' && { key: 'sort', label: (LANE_SORT_CHOICES.find(([value]) => value === laneSort) || [, 'Sorted'])[1], clear: () => setLaneSort('') }
   ].filter(Boolean);
   const selectedCardIndex = selectedOrder
@@ -8549,6 +8620,7 @@ export default function App({ sharing = null, userId = null } = {}) {
   const [showFilters, setShowFilters] = useState(false);
   const [showPostingDetails, setShowPostingDetails] = useState(false);
   const [openSchedulePickers, setOpenSchedulePickers] = useState({});
+  const [chatWaitingCount, setChatWaitingCount] = useState(0);
   const shortcutActions = useRef({});
   shortcutActions.current = {
     move(step) {
@@ -9216,6 +9288,7 @@ export default function App({ sharing = null, userId = null } = {}) {
             {[
               ['', 'All', 'slate'],
               ['posted', `Posted (${postingCounts.posted})`, 'emerald'],
+              ...(postingCounts.sent ? [['sent', `Sent to bot (${postingCounts.sent})`, 'violet']] : []),
               ['unposted', `Not posted (${postingCounts.unposted})`, 'blue'],
               ['error', `Errors (${postingCounts.error})`, 'red']
             ].map(([value, label, tone]) => (
@@ -9506,7 +9579,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                           <span className="bg-blue-900/60 text-blue-300 text-[9px] px-1 py-px rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{getDisplayEquipmentCode(ord.eCode)}</span>
                           {(getPostingState(ord) === 'error' || (customer === selectedBroker && exportErrorIds.includes(String(ord.id)))) && (
                             <span title={getPostingErrorText(ord) || 'This load could not be exported. Open it to see what to fix.'} className="tms-post-badge" data-state="error">
-                              ⚠ {hasOpenLandstarError(ord) ? 'LANDSTAR ERROR' : 'EXPORT ERROR'}
+                              ⚠ {hasOpenLandstarError(ord) ? 'LANDSTAR ERROR' : ord.exportError ? 'EXPORT ERROR' : 'NOT CONFIRMED'}
                             </span>
                           )}
                           {getRemovalBadge(ord) && (
@@ -9532,6 +9605,9 @@ export default function App({ sharing = null, userId = null } = {}) {
                           )}
                           {getPostingState(ord) === 'posted' && (
                             <span title={`Posted on Landstar ${new Date(ord.landstarExportedAt).toLocaleString()}`} className="tms-post-badge" data-state="posted">✓ Posted{facts.exported ? ` ${facts.exported}` : ''}</span>
+                          )}
+                          {getPostingState(ord) === 'sent' && (
+                            <span title="Exported: the bot is uploading it. It turns ✓ Posted when Landstar confirms." className="tms-post-badge" data-state="sent">⏳ Sent to bot</span>
                           )}
                           {getPostingState(ord) === 'unposted' && ord.status === 'OPEN' && (
                             <span title="Not on Landstar yet: Export sends it" className="tms-post-badge" data-state="unposted">Not posted</span>
@@ -9627,6 +9703,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                 <div className="bg-[#121829] border border-purple-500 rounded-lg shadow-2xl p-4 w-[24rem] max-w-full">
                   <h2 className="text-sm font-bold text-purple-200 mb-1">{chatItem ? '💬 New list picture from Google Chat' : '📋 Which list did you paste?'}</h2>
                   {chatItem?.from && <p className="text-xs text-purple-200 mb-1">From {chatItem.from}</p>}
+                  {chatItem && chatWaitingCount > 0 && <p className="text-xs text-amber-200 mb-1">{chatWaitingCount} more waiting for you after this one. Lists with a known name keep importing meanwhile.</p>}
                   <p className="text-xs text-gray-300 mb-3">The picture is imported into the account you pick.</p>
                   <div className="flex flex-col gap-2">
                     {(chatItem ? getChatInboxChoices(chatItem, brokers) : getPasteImportChoices(brokers)).map(choice => (
@@ -9651,6 +9728,7 @@ export default function App({ sharing = null, userId = null } = {}) {
                   <p className="text-sm text-white font-bold mb-1">{chatSheet.item.label ? `"${chatSheet.item.label}"` : 'No list name above the file'}</p>
                   <p className="text-[11px] text-gray-400 font-mono break-all mb-1">{chatSheet.item.fileName || chatSheet.item.name}</p>
                   {chatSheet.item.from && <p className="text-xs text-emerald-200 mb-1">From {chatSheet.item.from}</p>}
+                  {chatWaitingCount > 0 && <p className="text-xs text-amber-200 mb-1">{chatWaitingCount} more waiting for you after this one. Lists with a known name keep importing meanwhile.</p>}
                   {getSnbChatSheetAccount(chatSheet.item.label) && (
                     <p className="text-xs text-amber-300 mb-1">This is Ivan's list: it goes to {SNB_CHAT_ACCOUNT}, which is not in your customer list yet. Add that customer and share it with Ivan; after that these lists import there by themselves.</p>
                   )}

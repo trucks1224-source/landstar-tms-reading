@@ -640,6 +640,7 @@ async function main() {
   const seen = readSeen();
   rememberSavedPictures(seen);
   let lastReload = Date.now();
+  let failingSince = 0;
   for (;;) {
     try {
       if (!readChatConfig().enabled) {
@@ -649,6 +650,7 @@ async function main() {
         return;
       }
       const reload = Date.now() - lastReload > RELOAD_MS;
+      let chatFailed = '';
       for (const tab of tabs) {
         if (tab.page.isClosed()) {
           log(`${tab.chat.name}: its tab was closed; opening it again.`);
@@ -666,15 +668,24 @@ async function main() {
           await checkChat(context, tab, seen);
         } catch (error) {
           log(`${tab.chat.name}: check failed: ${error.message}`);
+          chatFailed = `${tab.chat.name}: ${error.message}`;
         }
       }
       if (reload) lastReload = Date.now();
+      if (chatFailed) {
+        if (!failingSince) failingSince = Date.now();
+        writeChatStatus('running', `Last check failed: ${chatFailed}`, Date.now(), { failingSince });
+        await new Promise(resolve => setTimeout(resolve, CHECK_MS));
+        continue;
+      }
+      failingSince = 0;
       writeChatStatus('running', `Watching ${tabs.map(tab => tab.chat.name).join(' and ')} · last check ${new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`);
     } catch (error) {
       // Signed out: close; the watchdog starts the bot again and it asks for the sign-in.
       if (/signed the Chat bot out/.test(error.message)) throw error;
       log(`Check failed: ${error.message}`);
-      writeChatStatus('running', `Last check failed: ${error.message}`);
+      if (!failingSince) failingSince = Date.now();
+      writeChatStatus('running', `Last check failed: ${error.message}`, Date.now(), { failingSince });
     }
     await new Promise(resolve => setTimeout(resolve, CHECK_MS));
   }

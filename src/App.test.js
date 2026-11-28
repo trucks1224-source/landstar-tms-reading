@@ -5128,3 +5128,81 @@ test("bookings report: Ivan's SNB bookings count in the totals but have their ow
   assert.deepEqual(Array.from(weeks[0].customers, row => row.customer), ['R X O 2429200', 'Ivan (SNB)'], 'SNB on its own line, last');
   assert.equal(months[0].snb.loads, 2);
 });
+
+test('loads turn Posted only when the bot confirms the upload; unconfirmed after 3 hours is an error', async () => {
+  const now = TestDate.now();
+  const posting = (originZip, weight) => ({ originZip, destZip: '75201', pickupThru: '12/01/26 16:00', deliveryThru: '12/02/26 16:00', weight });
+  const loads = [
+    { ...load, id: '9201', status: 'OPEN', landstarExportedAt: new Date(now - 60000).toISOString(), landstarPosting: posting('60601', 42000) },
+    { ...load, id: '9202', status: 'OPEN', destCity: 'Austin', landstarExportedAt: new Date(now - 60000).toISOString(), landstarPosting: posting('60602', 41000) },
+    { ...load, id: '9203', status: 'OPEN', destCity: 'Reno', landstarExportedAt: new Date(now - 4 * 3600000).toISOString(), landstarPosting: posting('60603', 40000) }
+  ];
+  const calls = [];
+  const fetch = async url => {
+    calls.push(String(url));
+    if (String(url).includes('/posted')) return { ok: true, status: 200, json: async () => ({ signatures: [['60601|75201|12/01/26 16:00|42000', now]] }) };
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  const app = createAppHarness(customers[0], loads, null, {}, {
+    fetch, AbortSignal, setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {},
+    window: { location: { hostname: '127.0.0.1' }, addEventListener() {}, removeEventListener() {}, dispatchEvent() {} },
+    navigator: { locks: {} },
+    emailWorkerModule: { ...emailWorker, createEmailWorker: () => ({ start() {}, stop() {}, isOwner: () => false, request() {} }) }
+  });
+  app.render();
+  app.effects.findLast(effect => String(effect).includes('syncPostedConfirmations'))();
+  for (let i = 0; i < 10; i += 1) await new Promise(resolve => setImmediate(resolve));
+  app.render();
+  assert.ok(calls.some(url => url.includes('/posted?since=0')), 'asked the bot for confirmed uploads');
+  const stateOf = id => {
+    const card = app.find(node => node.props?.id === `load-card-${id}`);
+    const found = [];
+    const walk = node => {
+      if (!node || typeof node !== 'object') return;
+      if (node.props?.['data-state']) found.push(node.props['data-state']);
+      (Array.isArray(node) ? node : [node.props?.children]).flat(Infinity).forEach(walk);
+    };
+    walk(card);
+    return found[0];
+  };
+  assert.equal(stateOf('9201'), 'posted', 'the ledger confirms it');
+  assert.equal(stateOf('9202'), 'sent', 'exported a minute ago, not confirmed yet');
+  assert.equal(stateOf('9203'), 'error', 'sent 4 hours ago, never confirmed');
+  app.effects.filter(effect => /previousOrdersRef|persistAppData\(\)/.test(effect.toString())).forEach(effect => effect());
+  const saved = JSON.parse(app.storage.get('landstar_customerOrdersMap'))[customers[0]];
+  assert.ok(saved.find(order => order.id === '9201').landstarConfirmedAt, 'the confirmation is saved on the load');
+});
+
+test('Google Chat: a question on screen does not hold up lists with a known name', async () => {
+  const van = 'R X O 2429200 - VAN';
+  const items = [
+    { name: 'chat-1-para.png', type: 'picture', chat: 'Para lists', label: '' },
+    { name: 'chat-2-big.xlsx', type: 'spreadsheet', chat: 'LANDJA18 (RXO)', label: 'big list', fileName: 'allLoadsSearch_Export.xlsx' },
+    { name: 'chat-3-new.xlsx', type: 'spreadsheet', chat: 'LANDJA18 (RXO)', label: 'brand new list', fileName: 'x.xlsx' }
+  ];
+  const calls = [];
+  const fetch = async (url, options) => {
+    calls.push(`${options?.method || 'GET'} ${url}${options?.body ? ` ${options.body}` : ''}`);
+    if (url === '/api/chat-inbox') return { ok: true, json: async () => ({ items }) };
+    if (String(url).startsWith('/api/chat-inbox/file')) return { ok: true, blob: async () => new Blob(['not an order export']) };
+    return { ok: true, json: async () => ({}) };
+  };
+  const app = createAppHarness(van, [], null, {}, {
+    fetch, Blob, File, setInterval: () => 1, clearInterval() {},
+    initialStorage: { landstar_brokers: JSON.stringify([van, 'Para 1522166 - HAZ']) }
+  });
+  app.render();
+  const runInboxCheck = async () => {
+    app.effects.findLast(effect => String(effect).includes('/api/chat-inbox')
+      && String(effect).includes('setChatWaitingCount'))();
+    for (let i = 0; i < 20; i += 1) await new Promise(resolve => setImmediate(resolve));
+    app.render();
+  };
+  await runInboxCheck();
+  assert.ok(app.find(node => node.props?.role === 'dialog'), 'the Para picture asks which account');
+  await runInboxCheck();
+  assert.ok(calls.some(call => call.includes('POST /api/chat-inbox/done') && call.includes('chat-2-big.xlsx')), 'the big list imported while the question was open');
+  assert.equal(calls.some(call => call.includes('POST /api/chat-inbox/done') && call.includes('chat-3-new.xlsx')), false, 'a list with a new name waits for you');
+  assert.ok(app.alerts.some(message => /"big list" list from Google Chat .* imported into R X O 2429200 - VAN/.test(message))
+    || calls.some(call => call.includes('chat-2-big.xlsx')));
+});

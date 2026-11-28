@@ -82,3 +82,14 @@ test('rate-check log: loads checked, raised and skipped per account', () => {
   assert.deepEqual([atzH.checked, atzH.raised, atzH.skippedAtz], [3, 1, 1]);
   assert.deepEqual({ ...atzH.raises[0] }, { lane: 'Sauk City, WI -> Midland, TX', from: 4168, to: 5525, agency: 'DYB' });
 });
+
+test('a Chat bot whose checks keep failing shows as stuck after 10 minutes, even while "running"', () => {
+  const now = Date.parse('2026-11-27T16:50:00');
+  const stuck = { state: 'running', message: 'Last check failed: Target page, context or browser has been closed', failingSince: now - 11 * 60 * 1000 };
+  const problems = findProblems({ chatBot: stuck, now });
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].level, 'bad');
+  assert.match(problems[0].title, /can't read the chats \(failing for 11 min\)/);
+  assert.equal(findProblems({ chatBot: { ...stuck, failingSince: now - 5 * 60 * 1000 }, now }).length, 0, 'a short hiccup is not shown');
+  assert.equal(findProblems({ chatBot: { state: 'running', message: 'Watching', failingSince: 0 }, now }).length, 0);
+});

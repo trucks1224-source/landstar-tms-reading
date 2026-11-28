@@ -34,7 +34,7 @@ function readQueue() {
 }
 
 function writeQueue(queue) {
-  fs.writeFileSync(QUEUE_FILE, JSON.stringify(queue, null, 1));
+  saveJsonFile(QUEUE_FILE, queue);
 }
 
 // Adds postings to the queue (one entry per customer + load), returns the queue size.
@@ -90,7 +90,7 @@ const RATES_STATUS_FILE = process.env.RATES_STATUS_FILE || path.join(__dirname, 
 
 function readRatesStatus() {
   try {
-    const parsed = JSON.parse(fs.readFileSync(RATES_STATUS_FILE, 'utf8'));
+    const parsed = readJsonSettled(RATES_STATUS_FILE);
     return Date.now() - Number(parsed.at) < 90000 ? parsed : { state: 'off', message: 'Rate worker is not running' };
   } catch (error) {
     if (error.code !== 'ENOENT') console.error('Could not read rate worker status:', error.message);
@@ -98,9 +98,21 @@ function readRatesStatus() {
   }
 }
 
+// A status file caught while another bot replaces it can read as half a file: try once more
+// (2026-11-27: "Could not read removal bot status: Unexpected end of JSON input" all day).
+function readJsonSettled(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    pause(80);
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  }
+}
+
 function readRemovalStatus() {
   try {
-    const parsed = JSON.parse(fs.readFileSync(REMOVAL_STATUS_FILE, 'utf8'));
+    const parsed = readJsonSettled(REMOVAL_STATUS_FILE);
     return Date.now() - Number(parsed.at) < 90000 ? parsed : { state: 'off', message: 'Removal bot is not running' };
   } catch (error) {
     if (error.code !== 'ENOENT') console.error('Could not read removal bot status:', error.message);
@@ -152,7 +164,7 @@ function updateResults(change) {
 // The helper bot's light: { state, message, at } written by helper.js every few seconds.
 function readHelperStatus() {
   try {
-    const parsed = JSON.parse(fs.readFileSync(HELPER_STATUS_FILE, 'utf8'));
+    const parsed = readJsonSettled(HELPER_STATUS_FILE);
     return Date.now() - Number(parsed.at) < 90000 ? parsed : { state: 'off', message: 'Helper bot is not running' };
   } catch {
     return { state: 'off', message: 'Helper bot is not running' };
@@ -175,7 +187,7 @@ function readAssignQueue() {
 }
 
 function writeAssignQueue(queue) {
-  fs.writeFileSync(ASSIGN_QUEUE_FILE, JSON.stringify(queue, null, 1));
+  saveJsonFile(ASSIGN_QUEUE_FILE, queue);
 }
 
 // One entry per customer + load; a newer request for the same load (another truck) replaces it.
@@ -243,7 +255,7 @@ function readDuplicateBills() {
 }
 
 function reportDuplicateBills(bills) {
-  try { fs.writeFileSync(DUPLICATE_BILLS_FILE, JSON.stringify(bills || [], null, 1)); } catch { /* reported next round */ }
+  try { saveJsonFile(DUPLICATE_BILLS_FILE, bills || []); } catch { /* reported next round */ }
 }
 
 function readTrackingWatch() {
@@ -266,7 +278,7 @@ function setTrackingWatch(loads) {
       billTo: ['rxo', 'any'].includes(item.billTo) ? item.billTo : 'paramount',
       ...(/^\d{5,}$/.test(String(item.freightBill || '')) ? { freightBill: String(item.freightBill) } : {})
     }));
-  fs.writeFileSync(TRACKING_WATCH_FILE, JSON.stringify(list, null, 1));
+  saveJsonFile(TRACKING_WATCH_FILE, list);
   const keys = new Set(list.map(item => item.key));
   updateResults(results => ({ ...results, tracking: Object.fromEntries(Object.entries(results.tracking).filter(([key]) => keys.has(key))) }));
   return list.length;
@@ -414,6 +426,20 @@ function start() {
         })() }));
       return;
     }
+    // Which postings are confirmed on Landstar (the upload ledger: every file Landstar took),
+    // so the TMS marks a load Posted only once its upload went through (Daniel 2026-11-27).
+    if (req.method === 'GET' && route === '/posted') {
+      const since = Number(new URL(req.url, 'http://x').searchParams.get('since')) || 0;
+      let ledger = {};
+      try {
+        require('./bot-postings').uploadedSignatures();
+        ledger = JSON.parse(fs.readFileSync(path.join(__dirname, 'uploaded-ledger.json'), 'utf8')) || {};
+      } catch { /* none yet */ }
+      const signatures = Object.entries(ledger).filter(([, at]) => Number(at) > since);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ signatures }));
+      return;
+    }
     if (req.method === 'GET' && route.startsWith('/shots/')) {
       const name = path.basename(decodeURIComponent(route.slice('/shots/'.length)));
       const file = path.join(SHOTS_DIR, name);
@@ -556,7 +582,7 @@ function setStatus(state, message = '') {
     return;
   }
   if (IS_REMOVAL) {
-    fs.writeFileSync(REMOVAL_STATUS_FILE, JSON.stringify({ state, message, at: Date.now(), pid: process.pid }));
+    saveJsonFile(REMOVAL_STATUS_FILE, { state, message, at: Date.now(), pid: process.pid });
     return;
   }
   if (IS_REFRESH) {
@@ -569,9 +595,9 @@ function setStatus(state, message = '') {
   }
   if (IS_HELPER) {
     // openBoard() etc. report "signing-in"/"logged-in": that is the helper's own light.
-    try { fs.writeFileSync(HELPER_STATUS_FILE, JSON.stringify({
+    try { saveJsonFile(HELPER_STATUS_FILE, {
       state, message, at: Date.now(), pid: process.pid, dedicatedRates: process.argv.includes('--dedicated-rates')
-    })); } catch { /* next time */ }
+    }); } catch { /* next time */ }
     return;
   }
   start();

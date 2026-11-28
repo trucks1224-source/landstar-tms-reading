@@ -107,6 +107,8 @@ const GO_FOR_HEALTH_ROW = { upload: 'upload', helper: 'helper', removal: 'remova
 
 // What needs Daniel now, from the parsed day. health = the system check report (rows).
 // [{ key, level: 'bad'|'warn', title, detail, go }]
+const CHAT_STUCK_AFTER_MS = 10 * 60 * 1000;
+
 function findProblems({ uploads = [], reviews = [], health = null, chatBot = null, now = Date.now() }) {
   const problems = [];
   // Uploads failing: the newest upload event is a failure and nothing got through since.
@@ -141,6 +143,15 @@ function findProblems({ uploads = [], reviews = [], health = null, chatBot = nul
   }
   if (chatBot && chatBot.state === 'signing-in') {
     problems.push({ key: `chat-signin-${chatBot.pid}`, level: 'warn', title: 'Google Chat bot needs the Google sign-in', detail: chatBot.message || 'Sign in in the Chrome window it opened, then close that window.', go: 'chatbot' });
+  } else if (chatBot && Number(chatBot.failingSince) && now - Number(chatBot.failingSince) >= CHAT_STUCK_AFTER_MS) {
+    // Still "running", but every check fails (2026-11-27: 16 RXO lists missed in 1.5 hours).
+    const minutes = Math.round((now - Number(chatBot.failingSince)) / 60000);
+    problems.push({
+      key: `chat-stuck-${chatBot.failingSince}`, level: 'bad',
+      title: `Google Chat bot can't read the chats (failing for ${minutes} min)`,
+      detail: `${chatBot.message || ''} New lists are not coming in. Look at the Chat bot window; if it stays stuck, close it and the watchdog starts it again.`.trim(),
+      go: 'chatbot'
+    });
   } else if (chatBot && chatBot.state === 'blocked') {
     problems.push({ key: `chat-blocked-${chatBot.message}`, level: 'bad', title: 'Google Chat bot stopped', detail: chatBot.message || '', go: 'chatbot' });
   }

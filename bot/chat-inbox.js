@@ -70,8 +70,10 @@ function readChatConfig(file = CONFIG_FILE) {
 }
 
 // The bot's heartbeat, written every check. Older than 90 s = not running.
-function writeChatStatus(state, message, now = Date.now()) {
-  writeJson(STATUS_FILE, { state, message, at: now, pid: process.pid });
+// failingSince: when the checks started failing (cleared by the next good check), so the TMS
+// can say the bot is stuck even while it still says "running" (2026-11-27: 16 lists missed).
+function writeChatStatus(state, message, now = Date.now(), extra = {}) {
+  writeJson(STATUS_FILE, { state, message, at: now, pid: process.pid, ...extra });
 }
 
 function readChatStatus(now = Date.now()) {

@@ -40,7 +40,7 @@ async function main() {
     process.once('SIGINT', () => { closed = true; void context.close(); });
     process.once('SIGTERM', () => { closed = true; void context.close(); });
     await openBoard(context);
-    console.log('Refresh bot signed in. Pausing and unpausing AMERI (5 min) and hazmat (30 min) postings.');
+    console.log('Refresh bot signed in. Pausing and unpausing AMERI postings (every 5 min).');
     while (!closed) {
       try {
         if (!readBotControl()) {

@@ -1995,3 +1995,4 @@ body.tms-drawer-open .tms-sidebar {
 .tms-shell .tms-post-badge[data-state='posted'] { color: #6ee7b7; background: rgba(16, 185, 129, 0.15); border-color: rgba(52, 211, 153, 0.5); }
 .tms-shell .tms-post-badge[data-state='unposted'] { color: #cbd5e1; background: rgba(51, 65, 85, 0.6); border-color: rgba(148, 163, 184, 0.5); border-style: dashed; }
 .tms-shell .tms-post-badge[data-state='error'] { color: #fff; background: #dc2626; border-color: #fca5a5; box-shadow: 0 0 10px rgba(248, 113, 113, 0.5); }
+.tms-shell .tms-post-badge[data-state='sent'] { color: #ddd6fe; background: rgba(124, 58, 237, 0.2); border-color: rgba(167, 139, 250, 0.6); }

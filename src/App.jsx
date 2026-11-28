@@ -241,6 +241,104 @@ import {
   sendAssignQueueToBot,
   sendUnpostQueueToBot
 } from './app/botQueues.jsx';
+import {
+  getLoadCardRoute,
+  getLoadCardDates,
+  hasLoadRate,
+  getLoadCardFacts,
+  getLoadUrgency,
+  getRatePerMile,
+  getDisplayEquipmentCode,
+  getRxoAtzDatVanDiscount,
+  getPickupSortValue,
+  CARRIER_PAY_LOW,
+  CARRIER_PAY_HIGH,
+  getTruckPay,
+  formatDollars,
+  buildLoadTableRow,
+  hasOpenLandstarError
+} from './app/loadCards.js';
+import {
+  defaultFuelSurchargeRates,
+  normalizeFuelSurchargeRates,
+  parseFuelSurchargeEmail
+} from './app/fuelSurcharge.js';
+import {
+  datStateTimezones,
+  excelSerialToZonedIso,
+  getDatEquipment,
+  buildDatPosting
+} from './app/datPosting.js';
+import {
+  sameZip,
+  loadMatchesRateRaise,
+  applyRateRaise,
+  formatRaiseMoney,
+  applyLandstarError,
+  markRemovalQueued,
+  applyRemovalResult,
+  getRemovalBadge,
+  applyAssignResult
+} from './app/botResults.js';
+import {
+  MERCURYGATE_FROM,
+  getMercuryGateSearchNumber,
+  getDueMercuryGateStep,
+  applyMercuryGateResult
+} from './app/mercuryGate.js';
+import {
+  pasteImportChoices,
+  defaultChatSheetAccounts,
+  chatAutoExportAccounts,
+  isChatAutoExportAccount,
+  SNB_CHAT_ACCOUNT,
+  getSnbChatSheetAccount,
+  getChatSheetKey,
+  getChatSheetAccount,
+  rememberChatSheetAccount,
+  getChatInboxChoices,
+  getPasteImportChoices
+} from './app/chatAccounts.js';
+import {
+  decodeGmailBody,
+  getGmailMessageText,
+  loadGoogleIdentityScript,
+  getGmailApiError
+} from './app/gmailHelpers.jsx';
+import {
+  logCheckCall,
+  toUsPhoneE164,
+  getGoogleVoiceUrl,
+  openDriverText,
+  isBookedLoadComplete,
+  getPaperworkStatus
+} from './app/driverContact.jsx';
+import {
+  parseDatRateText,
+  formatExcelDateTime,
+  formatRxoBusinessHours,
+  applyRxoPayerBusinessHours,
+  getEarliestPickupSerial,
+  loadIdHeaders,
+  originCityHeaders,
+  phalanxColumns,
+  addMissingPhalanxHeader,
+  getLoadSheetNames,
+  adjustPickupWindow
+} from './app/excelHelpers.js';
+import {
+  addToUnpostQueue,
+  assignSeenKey,
+  rateRaiseSeenKey,
+  takeNewRateRaises,
+  errorDraftSeenKey,
+  takeNewErrorDrafts,
+  removalSeenKey,
+  readRemovalSeenAt,
+  takeNewRemovalResults,
+  addToAssignQueue,
+  takeNewAssignResults
+} from './app/botQueuesTake.jsx';
 
 // Landstar's bulk upload accepts at most 25 loads per spreadsheet.
 const landstarExportChunkSize = 25;
@@ -302,24 +400,6 @@ function applyLocationInput(load, field, value, zipData) {
     delete next.milesSource;
   }
   return next;
-}
-
-// What a load card shows on the left. Loads added by hand start with no route and the
-// "PU: Today" / "DFL: Upcoming" placeholders, so the card builds them from the cities and
-// pickup/delivery times typed on the load. Imported loads keep their own route and dates.
-function getLoadCardRoute(load) {
-  if (String(load?.route || '').trim()) return load.route;
-  const place = (city, state) => [String(city || '').trim(), String(state || '').trim().toUpperCase()].filter(Boolean).join(', ');
-  const origin = place(load?.origCity, load?.origSt);
-  const destination = place(load?.destCity, load?.destSt);
-  return origin || destination ? `${origin || '?'} → ${destination || '?'}` : '';
-}
-
-function getLoadCardDates(load) {
-  const dateOf = value => String(value || '').match(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/)?.[0] || '';
-  const pickup = !load?.puDate || load.puDate === 'PU: Today' ? (dateOf(load?.pickupTime) ? `PU: ${dateOf(load.pickupTime)}` : load?.puDate || '') : load.puDate;
-  const delivery = !load?.delDate || load.delDate === 'DFL: Upcoming' ? (dateOf(load?.deliveryTime) ? `DFL: ${dateOf(load.deliveryTime)}` : load?.delDate || '') : load.delDate;
-  return `${pickup} ${delivery}`.trim();
 }
 
 // "📄 Copy Load" in the order editor: a new load in the same customer carrying the route,
@@ -477,265 +557,6 @@ function getCountryForRegion(region) {
   return canadianProvinceCodes.has(String(region || '').trim().toUpperCase()) ? 'CA' : 'US';
 }
 
-function parseDatRateText(text) {
-  const lines = String(text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-  for (const line of lines) {
-    if (/\/\s*mi\b/i.test(line)) continue;
-    const match = line.match(/^\$?\s*(\d{1,3}(?:,\d{3})+|\d{3,5})(?:\.00)?\s*$/);
-    if (match) {
-      const rate = Number(match[1].replace(/,/g, ''));
-      if (rate >= 100 && rate < 100000) return rate;
-    }
-  }
-  return 0;
-}
-
-function formatExcelDateTime(val) {
-  if (val == null || val === '') return '10/18/2026 0800 - 1200';
-  if (typeof val === 'number' && Number.isFinite(val) && val >= 0) {
-    return formatRxoExcelDateTime(val);
-  }
-  const str = String(val).trim();
-  if (/^\d+(?:\.\d+)?$/.test(str) && Number(str) >= 10000) {
-    return formatRxoExcelDateTime(Number(str));
-  }
-  return str;
-}
-
-function formatRxoBusinessHours(dateTime, endTime) {
-  const dateMatch = String(dateTime || '').match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/);
-  if (!dateMatch) return dateTime;
-  const [, month, day, yearText] = dateMatch;
-  const year = yearText.length === 2 ? `20${yearText}` : yearText;
-  const date = `${month.padStart(2, '0')}/${day.padStart(2, '0')}/${year}`;
-  return `${date} 0800 - ${endTime}`;
-}
-
-function applyRxoPayerBusinessHours(loads, customer) {
-  if (normalizeCustomerName(customer) !== rxoPayerCustomerName) return loads;
-  return loads.map(load => ({
-    ...load,
-    pickupTime: formatRxoBusinessHours(load.pickupTime || load.puDate, '2000'),
-    deliveryTime: formatRxoBusinessHours(load.deliveryTime || load.delDate, '1200')
-  }));
-}
-
-function decodeGmailBody(data) {
-  const base64 = String(data || '').replace(/-/g, '+').replace(/_/g, '/');
-  const binary = atob(base64);
-  const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
-}
-
-function getGmailMessageText(payload, selectedBroker) {
-  const plainParts = [];
-  const htmlParts = [];
-  const collectParts = part => {
-    if (part.body?.data) {
-      if (part.mimeType === 'text/plain') plainParts.push(decodeGmailBody(part.body.data));
-      if (part.mimeType === 'text/html') htmlParts.push(decodeGmailBody(part.body.data));
-    }
-    (part.parts || []).forEach(collectParts);
-  };
-  collectParts(payload);
-  if (isCh593772Customer(selectedBroker) && htmlParts.length) {
-    const document = new DOMParser().parseFromString(
-      htmlParts.join('\n').replace(/<br\s*\/?>|<\/(?:p|div|li|h[1-6])\s*>/gi, '\n'), 'text/html'
-    );
-    const rows = [...document.querySelectorAll('tr')];
-    if (rows.some(row => [...row.cells].some(cell => /^bin\b/i.test(cell.textContent.trim())))) {
-      rows.forEach(row => row.replaceWith(document.createTextNode(`\n${[...row.cells]
-        .map(cell => cell.textContent.replace(/\s+/g, ' ').trim()).join('\t')}\n`)));
-      return document.body.textContent || '';
-    }
-  }
-  if (plainParts.length) return plainParts.join('\n');
-  if (!htmlParts.length) return '';
-
-  const htmlAsText = htmlParts.join('\n')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(?:tr|p|div|li|h[1-6])\s*>/gi, '\n')
-    .replace(/<\/t[dh]\s*>/gi, '\n');
-  const document = new DOMParser().parseFromString(htmlAsText, 'text/html');
-  return (document.body.textContent || '').replace(/[ \t]+\n/g, '\n');
-}
-
-function loadGoogleIdentityScript() {
-  if (window.google?.accounts?.oauth2) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    script.onload = () => {
-      if (window.google?.accounts?.oauth2) resolve();
-      else reject(new Error('Google authorization did not initialize.'));
-    };
-    script.onerror = () => reject(new Error('Could not load Google authorization. Check your internet connection.'));
-    document.head.appendChild(script);
-  });
-}
-
-async function getGmailApiError(response, action) {
-  let details = '';
-  try {
-    const body = await response.json();
-    const apiError = body.error;
-    details = apiError?.message || apiError?.errors?.[0]?.reason || '';
-  } catch (error) {
-    console.error(`Could not read Gmail ${action} error details:`, error);
-  }
-  return new Error(`Gmail ${action} failed (${response.status})${details ? `: ${details}` : '.'}`);
-}
-
-// Earliest pickup start Landstar will accept, as an Excel serial on the local clock:
-// now plus a lead time (for the upload bot's rate check and upload), rounded up to
-// the next quarter hour. Landstar rejects "Pickup Start Date cannot be in the past".
-function getEarliestPickupSerial(now = new Date(), leadMinutes = 30) {
-  const quarterHour = 15 * 60 * 1000;
-  const wallClock = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes() + leadMinutes);
-  return (Math.ceil(wallClock / quarterHour) * quarterHour - Date.UTC(1899, 11, 30)) / 86400000;
-}
-
-// Tabs of an Excel workbook that hold loads: the first tab always (as before), plus any
-// other tab whose header row names a load number and an origin city column, so a
-// customer's list split across tabs imports as one list and summary tabs are ignored.
-const loadIdHeaders = ['order #', 'load id', 'order number', 'load posting code'];
-const originCityHeaders = ['origin city', 'orig city', 'origin', 'origin - city'];
-// The Phalanx list's columns (Pha 882255 - ATZ, 2026-11-25), from "Load ID" to "Rate".
-const phalanxColumns = ['Load ID', 'Brokerage status', 'Equip type', 'Stops', 'Order type', 'Origin city', 'Origin state',
-  'Early P/U dt', 'Late P/U dt', 'Dest city', 'Dest state', 'Early del dt', 'Late del dt', 'Commodity', 'Weight', 'Distance', 'Rate'];
-
-// A Phalanx list copied without its header row ("Phalanx Flatbed.ods", agent AAQ, 2026-11-27):
-// the first row is already a load, often with a row number in front:
-//   [9, 170159, 'AVAIL', 'F', 0, 'FTL', 'GRAND PRAIRIE', 'TX', '11/30/2026 0730', ...]
-// Found by "FTL"/"LTL" with the origin and a pickup date and time after it; the Phalanx column
-// names are put on top so the rate and every other column are read from the right place and
-// the first load is kept. Other sheets are returned as they are.
-function addMissingPhalanxHeader(rows) {
-  const first = rows?.[0] || [];
-  if (first.some(cell => /^(load id|order #|origin city|early p\/u dt|rate)$/i.test(String(cell ?? '').trim()))) return rows;
-  const orderTypeAt = first.findIndex(cell => /^(FTL|LTL)$/i.test(String(cell ?? '').trim()));
-  const loadIdAt = orderTypeAt - 4;
-  if (loadIdAt < 0
-    || !/^[A-Z]{2}$/i.test(String(first[orderTypeAt + 2] ?? '').trim())
-    || !/^\d{1,2}\/\d{1,2}\/\d{4}\s+\d{3,4}$/.test(String(first[orderTypeAt + 3] ?? '').trim())
-    || !/^\d{4,}$/.test(String(first[loadIdAt] ?? '').trim())) return rows;
-  const width = Math.max(...rows.map(row => row.length), loadIdAt + phalanxColumns.length);
-  const header = Array.from({ length: width }, (_, index) => {
-    const name = phalanxColumns[index - loadIdAt];
-    return index < loadIdAt ? `#${index + 1}` : name || '';
-  });
-  return [header, ...rows];
-}
-
-function getLoadSheetNames(workbook, xlsx) {
-  const names = workbook?.SheetNames || [];
-  return names.filter((name, index) => {
-    if (index === 0) return true;
-    const header = (xlsx.utils.sheet_to_json(workbook.Sheets[name], { header: 1 })[0] || [])
-      .map(cell => String(cell || '').trim().toLowerCase());
-    return header.some(cell => loadIdHeaders.includes(cell)) && header.some(cell => originCityHeaders.includes(cell));
-  });
-}
-
-// A pickup window that already started but is still open is posted from the earliest
-// allowed start (its end stays the same); a window that is over can't be posted.
-function adjustPickupWindow(pickupFrom, pickupThru, earliestStart) {
-  if (pickupFrom === null || pickupThru === null) return { from: pickupFrom, ended: false, moved: false };
-  if (pickupThru < earliestStart) return { from: pickupFrom, ended: true, moved: false };
-  if (pickupFrom < earliestStart) return { from: earliestStart, ended: false, moved: true };
-  return { from: pickupFrom, ended: false, moved: false };
-}
-
-function hasLoadRate(load) {
-  return Number(String(load?.rateInput || '').replace(/[$,]/g, '')) > 0;
-}
-
-// The numbers on a load card (Daniel 2026-11-27, clearer cards): the rate as "$9,351" (or no
-// rate), miles, $/mile, and when it went to Landstar ("↑ 10:42 AM" today, "↑ 11/26" before).
-function getLoadCardFacts(load, now = new Date()) {
-  const rate = Number(String(load?.rateInput || '').replace(/[$,]/g, '')) || 0;
-  const miles = Number(String(load?.miles || '').replace(/,/g, '').match(/\d+(?:\.\d+)?/)?.[0]) || 0;
-  const perMile = getRatePerMile(rate, miles);
-  const exportedAt = Date.parse(load?.landstarExportedAt || '');
-  let exported = '';
-  if (Number.isFinite(exportedAt)) {
-    const when = new Date(exportedAt);
-    exported = when.toDateString() === now.toDateString()
-      ? when.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-      : `${when.getMonth() + 1}/${when.getDate()}`;
-  }
-  return {
-    rateText: rate > 0 ? `$${rate.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : '',
-    milesText: miles > 0 ? `${Math.round(miles).toLocaleString('en-US')} mi` : '',
-    perMileText: perMile ? `$${perMile}/mi` : '',
-    exported
-  };
-}
-
-// How urgent a load is, for its color (Daniel 2026-11-27): 'past' = pickup day already gone,
-// 'today' = picks up today, 'unsent' = open and never exported to Landstar, '' = nothing.
-// Booked loads are never colored (past pickup just means the truck is on the road).
-function getLoadUrgency(load, now = new Date()) {
-  if (!load || load.status === 'BOOKED') return '';
-  const pickup = getPickupSortValue(load);
-  if (pickup !== Number.MAX_SAFE_INTEGER) {
-    const day = new Date(pickup);
-    const pickupDay = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate());
-    const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-    if (pickupDay < today) return 'past';
-    if (pickupDay === today) return 'today';
-  }
-  if (load.status === 'OPEN' && !load.landstarExportedAt) return 'unsent';
-  return '';
-}
-
-function getRatePerMile(rate, miles) {
-  const rateValue = Number(String(rate || '').replace(/[$,]/g, ''));
-  // Miles can arrive with a unit suffix from broker exports, e.g. '396.3 miles'.
-  const mileValue = Number(String(miles || '').replace(/,/g, '').match(/\d+(?:\.\d+)?/)?.[0]);
-  if (!(rateValue > 0) || !(mileValue > 0)) return '';
-  return (rateValue / mileValue).toFixed(2);
-}
-
-const defaultFuelSurchargeRates = { east: '0.86', midwest: '0.88', west: '1.03', newEngland: '0.89' };
-
-function normalizeFuelSurchargeRates(value) {
-  const rates = { ...defaultFuelSurchargeRates };
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return rates;
-  // Settings saved before the four email regions: National -> East and Midwest, West Coast -> West.
-  if (!['east', 'midwest', 'west'].some(key => key in value) && ('national' in value || 'westCoast' in value)) {
-    value = { east: value.national, midwest: value.national, west: value.westCoast, newEngland: value.newEngland };
-  }
-  Object.keys(rates).forEach(key => {
-    const parsed = Number(String(value[key] ?? '').replace(/[$,]/g, ''));
-    rates[key] = parsed > 0 ? String(Math.round(parsed * 100) / 100) : '';
-  });
-  return rates;
-}
-
-// The weekly fuel email: "11/3/2026   East .86  Midwest .88   West 1.03 New England .89".
-// Returns { date, rates } or null (all four rates must be there and look like $/mile).
-function parseFuelSurchargeEmail(text) {
-  const value = String(text || '');
-  const rate = name => {
-    const match = value.match(new RegExp(`${name}\\s*[:=]?\\s*\\$?(\\d*\\.\\d+|\\d+(?:\\.\\d+)?)`, 'i'));
-    const number = match ? Number(match[1]) : NaN;
-    return number >= 0.3 && number <= 2.5 ? String(Math.round(number * 100) / 100) : '';
-  };
-  const rates = { east: rate('(?<!north)east'), midwest: rate('midwest'), west: rate('(?<!mid)west'), newEngland: rate('new\\s*england') };
-  if (Object.values(rates).some(item => !item)) return null;
-  const date = value.match(/\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/)?.[1] || '';
-  return { date, rates };
-}
-
-function getDisplayEquipmentCode(value) {
-  const code = String(value || '').trim().toUpperCase();
-  if (code === 'VE') return 'VAN';
-  return isTeamEquipment(code) ? 'V' : value;
-}
-
 // AMERI 18347- ATZ (exact account; Daniel 2026-11-27): one posting offers both trailers,
 // Equipment 1 VAN and Equipment 2 REFR, at the same contract rate. A REFR or other
 // alternate picked by hand on the load (equipment2) still wins.
@@ -842,22 +663,6 @@ function getImportedLoadSelection(customer, importedLoads) {
   return isNolanCustomer(customer)
     ? Array.from(new Set(importedLoads.map(load => load.id)))
     : [];
-}
-
-// R X O 2429200 - ATZ only (not ATZ P): van loads priced from DAT post under the DAT rate.
-// Under $1,000: $50 less; $1,000 to under $1,600: $100 less; $1,600 to $3,500: $200 less;
-// over $3,500: $300 less. Hazmat and tanker loads keep the full rate (hazmat must stay highest).
-// When another agent has the load on the board, the bot posts their rate + $25 instead.
-function getRxoAtzDatVanDiscount(customer, load, rate) {
-  if (normalizeCustomerName(customer) !== rxoCustomerName) return 0;
-  if (!['dat-api', 'dat-screenshot'].includes(load?.rateSource)) return 0;
-  if (!vanEquipmentCodes.has(getLandstarEquipmentCode(load?.eCode))) return 0;
-  if (isHazmatLoad(load) || isTankerLoad(load)) return 0;
-  if (!(rate > 0)) return 0;
-  if (rate < 1000) return 50;
-  if (rate < 1600) return 100;
-  if (rate <= 3500) return 200;
-  return 300;
 }
 
 // R X O 2429200 - ATZ only: a load that picks up and delivers in the same city is never exported.
@@ -1069,17 +874,6 @@ function getPickupDay(order) {
   return value === Number.MAX_SAFE_INTEGER ? '' : new Date(value).toISOString().slice(0, 10);
 }
 
-function getPickupSortValue(order) {
-  const text = String(order.pickupTime || order.puDate || '');
-  const us = text.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b(?:\s+(\d{2})(\d{2}))?/);
-  if (us) {
-    const year = us[3].length === 2 ? Number(`20${us[3]}`) : Number(us[3]);
-    return Date.UTC(year, Number(us[1]) - 1, Number(us[2]), Number(us[4] || 0), Number(us[5] || 0));
-  }
-  const iso = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
-  return iso ? Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3])) : Number.MAX_SAFE_INTEGER;
-}
-
 function removeDuplicateLoadImports(loads) {
   const seenLoadSchedules = new Set();
   let duplicateCount = 0;
@@ -1236,101 +1030,6 @@ function getLandstarCarrierAmount(customer, rate) {
 // Edit Posting form, 2026-11-25); a blank cell left a validation error, so AMERI sends N.
 function getLandstarCarrierLoadAlerts(customer) {
   return isAmeriCustomer(customer) ? 'N' : '';
-}
-
-// What a truck gets paid on a load (Daniel, 2026-11-25): a Landstar driver (BCO) gets the full
-// posted rate; an approved carrier gets 78% to 85% of it. The posted rate is the rate the
-// Landstar export sends (the RXO ATZ DAT van discount already taken off).
-// Shown for AMERI 18347- ATZ loads only (Daniel, 2026-11-25).
-const CARRIER_PAY_LOW = 0.78;
-const CARRIER_PAY_HIGH = 0.85;
-
-function getTruckPay(customer, load) {
-  if (!isAmeriCustomer(customer)) return null;
-  const quoted = Number(String(load?.rateInput || '').replace(/[$,]/g, ''));
-  if (!(quoted > 0)) return null;
-  const posted = quoted - getRxoAtzDatVanDiscount(customer, load, quoted);
-  return {
-    posted,
-    carrierLow: Math.round(posted * CARRIER_PAY_LOW),
-    carrierHigh: Math.round(posted * CARRIER_PAY_HIGH)
-  };
-}
-
-const formatDollars = value => `$${Math.round(value).toLocaleString('en-US')}`;
-
-// ==========================================
-// DAT LOAD BOARD POSTING
-// ==========================================
-// The local TMS server posts to DAT and reposts every load every 5 minutes (new posting,
-// then the old one deleted, so its age starts over)
-// (api/_lib/datPosting.js). Pickup times on the list are the shipper's local time; the
-// state picks the time zone (most of a state's area; Eastern when not listed).
-const datStateTimezones = {
-  AL: 'America/Chicago', AR: 'America/Chicago', IA: 'America/Chicago', IL: 'America/Chicago', KS: 'America/Chicago',
-  LA: 'America/Chicago', MN: 'America/Chicago', MO: 'America/Chicago', MS: 'America/Chicago', ND: 'America/Chicago',
-  NE: 'America/Chicago', OK: 'America/Chicago', SD: 'America/Chicago', TN: 'America/Chicago', TX: 'America/Chicago',
-  WI: 'America/Chicago', MB: 'America/Winnipeg',
-  CO: 'America/Denver', MT: 'America/Denver', NM: 'America/Denver', UT: 'America/Denver', WY: 'America/Denver',
-  ID: 'America/Boise', AB: 'America/Edmonton', AZ: 'America/Phoenix',
-  CA: 'America/Los_Angeles', NV: 'America/Los_Angeles', OR: 'America/Los_Angeles', WA: 'America/Los_Angeles',
-  BC: 'America/Vancouver'
-};
-
-// Excel serial date (wall-clock time) in an IANA time zone -> ISO instant.
-function excelSerialToZonedIso(serial, timeZone) {
-  const wall = Math.round(serial * 86400000) + Date.UTC(1899, 11, 30);
-  try {
-    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
-      timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
-    }).formatToParts(new Date(wall)).map(part => [part.type, part.value]));
-    const shown = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour) % 24, Number(parts.minute));
-    return new Date(wall - (shown - wall)).toISOString();
-  } catch {
-    return new Date(wall).toISOString();
-  }
-}
-
-// TMS equipment -> DAT equipment type and trailer length. Straight trucks and other
-// equipment DAT has no plain type for are not posted.
-function getDatEquipment(eCode) {
-  const raw = String(eCode || '').trim().toUpperCase().replace(/\s/g, '');
-  if (raw === 'VR' || raw === 'V,R') return { equipmentType: 'VR', lengthFeet: 53 };
-  const code = getLandstarEquipmentCode(eCode);
-  const length = Number(code.match(/^(\d{2})/)?.[1]) || 0;
-  if (['VAN', '24VN', '28VN', '48VN', '53VN'].includes(code)) return { equipmentType: 'V', lengthFeet: length || 53 };
-  if (code === 'REFR') return { equipmentType: 'R', lengthFeet: 53 };
-  if (['FLAT', '48FL', '53FL', 'FH', 'FLCS'].includes(code)) return { equipmentType: 'F', lengthFeet: length || 48 };
-  if (['STEP', '53SD', 'SD'].includes(code)) return { equipmentType: 'SD', lengthFeet: length || 48 };
-  return null;
-}
-
-// Builds what the local server sends to DAT for one load: { posting } or { error }.
-// The posted rate is the load's rate (like the Landstar Carrier Amt); AMERI 18347- ATZ
-// posts with no rate, the same as its $0 Carrier Amt.
-function buildDatPosting(customer, ord) {
-  const equipment = getDatEquipment(ord.eCode);
-  if (!equipment) return { error: `DAT posting needs van, reefer, flatbed or step deck equipment (this load is "${ord.eCode || 'blank'}")` };
-  const puParts = splitScheduleRange(ord.pickupTime);
-  const from = toExcelDateTime(puParts[0]);
-  const thru = toExcelDateTime(puParts[1] || puParts[0], puParts[0]);
-  if (from === null || thru === null) return { error: 'pickup date/time' };
-  const timeZone = datStateTimezones[String(ord.origSt || '').trim().toUpperCase()] || 'America/New_York';
-  const quotedRate = Number(String(ord.rateInput || '').replace(/[$,]/g, ''));
-  const rate = quotedRate - getRxoAtzDatVanDiscount(customer, ord, quotedRate);
-  const comments = [isHazmatLoad(ord) && 'HAZMAT', isTeamLoad(ord) && 'TEAM REQUIRED'].filter(Boolean);
-  return { posting: {
-    customer: String(customer || ''),
-    referenceId: String(ord.id || ''),
-    origin: { city: ord.origCity, state: ord.origSt, zip: ord.origZip },
-    destination: { city: ord.destCity, state: ord.destSt, zip: ord.destZip },
-    ...equipment,
-    weightPounds: parseWeightPounds(ord.weight) || 0,
-    earliestAvailabilityWhen: excelSerialToZonedIso(from, timeZone),
-    latestAvailabilityWhen: excelSerialToZonedIso(Math.max(thru, from), timeZone),
-    rateUsd: isAmeriCustomer(customer) || !(rate > 0) ? 0 : Math.round(rate),
-    comments: comments.length ? [comments.join(' - ')] : []
-  } };
 }
 
 // ==========================================
@@ -1792,66 +1491,6 @@ async function readClipboardImage(clipboard) {
   throw new Error('No screenshot is on the clipboard. Take a snip with Win+Shift+S, then return here and paste it.');
 }
 
-// Records a check call (and the stage it reports) on the load; keeps the last 20.
-function logCheckCall(load, { stage, note = '' }, at = new Date().toISOString()) {
-  const nextStage = trackingStages.includes(stage) ? stage : (load.trackingStage || 'Booked');
-  const calls = Array.isArray(load.checkCalls) ? load.checkCalls : [];
-  return {
-    ...load,
-    trackingStage: nextStage,
-    checkCalls: [...calls, { at, stage: nextStage, note: String(note).trim() }].slice(-20)
-  };
-}
-
-// ---------- Driver texts through Google Voice (free; Daniel presses send) ----------
-// A US phone number as +1XXXXXXXXXX, or '' if it isn't one.
-function toUsPhoneE164(phone) {
-  const digits = String(phone || '').replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  return '';
-}
-
-// Opens (or starts) the text conversation with that number in Google Voice on the web.
-function getGoogleVoiceUrl(phone) {
-  const number = toUsPhoneE164(phone);
-  return number ? `https://voice.google.com/u/0/messages?itemId=t.${encodeURIComponent(number)}` : 'https://voice.google.com/u/0/messages';
-}
-
-// Text button: copy the message, open the Google Voice conversation; Daniel pastes and sends.
-async function openDriverText(event, load, customer) {
-  const button = event?.currentTarget;
-  const text = buildDriverText(load, customer);
-  let copied = false;
-  try { await navigator.clipboard.writeText(text); copied = true; } catch { /* shown below */ }
-  window.open(getGoogleVoiceUrl(load.driverPhone), 'google-voice');
-  if (!copied) { window.prompt('Copy this text, then paste it in Google Voice:', text); return; }
-  if (button) {
-    const label = button.textContent;
-    button.textContent = '✅ Copied: paste in Google Voice (Ctrl+V, Enter)';
-    setTimeout(() => { button.textContent = label; }, 6000);
-  }
-}
-
-// Delivered, the paperwork is in, and it went to the customer (or didn't need to): the load
-// leaves the main Booked Loads list. Older loads marked by hand count as done.
-const isBookedLoadComplete = load => load.trackingStage === 'Delivered' && Boolean(load.paperworkReceivedAt)
-  && load.paperworkDone !== false;
-
-// The paperwork line on a delivered load's card.
-function getPaperworkStatus(load, now = Date.now()) {
-  if (load.paperworkReceivedAt) {
-    return { level: 'ok', text: `Paperwork received ${formatCheckTime(load.paperworkReceivedAt)}${load.paperworkSentAt ? ' · sent to the customer' : load.paperworkDone ? '' : ' · waiting for you to send it to the customer'}` };
-  }
-  const deliveredAt = getDeliveredAt(load);
-  if (!deliveredAt) return { level: 'waiting', text: 'Waiting on paperwork from the driver' };
-  const hours = Math.floor((now - deliveredAt) / 3600000);
-  const left = PAPERWORK_DUE_HOURS - hours;
-  return left > 0
-    ? { level: hours >= 24 ? 'due' : 'waiting', text: `Waiting on paperwork · delivered ${hours}h ago · due in ${left}h` }
-    : { level: 'late', text: `Paperwork LATE · delivered ${hours}h ago (due within ${PAPERWORK_DUE_HOURS}h, customer can charge back)` };
-}
-
 function BookedLoadsPage({ entries: allEntries, now, onBack, onOpen, onUpdate, onRemoveCapacity, emails = null, searchQuery = '', onSearch = null }) {
   const query = String(searchQuery || '').trim();
   const isMatch = load => Boolean(query) && loadMatchesSearch(load, query);
@@ -2161,42 +1800,6 @@ function readListView() {
   try { return localStorage.getItem(listViewKey) === 'table' ? 'table' : 'cards'; } catch { return 'cards'; }
 }
 
-// One table row per load (src/LoadTable.jsx).
-function buildLoadTableRow(customer, order, { checked, checkDisabled, isHotLane }) {
-  const facts = getLoadCardFacts(order);
-  const place = (city, state) => [String(city || '').trim(), String(state || '').trim().toUpperCase()].filter(Boolean).join(', ');
-  const dateOf = value => String(value || '').match(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?(?:\s+\d{4})?/)?.[0] || '';
-  const raise = order.rateRaise;
-  const exportedAt = Date.parse(order.landstarExportedAt || '');
-  return {
-    key: JSON.stringify([customer, order.id]),
-    customer, order, id: String(order.id),
-    pickupAt: getPickupSortValue(order) === Number.MAX_SAFE_INTEGER ? 0 : getPickupSortValue(order),
-    pickup: dateOf(order.pickupTime) || String(order.puDate || '').replace(/^PU:\s*/, ''),
-    origin: place(order.origCity, order.origSt),
-    destination: place(order.destCity, order.destSt),
-    delivery: dateOf(order.deliveryTime) || String(order.delDate || '').replace(/^DFL:\s*/, ''),
-    equipment: getDisplayEquipmentCode(order.eCode),
-    miles: Number(String(order.miles || '').replace(/,/g, '').match(/\d+(?:\.\d+)?/)?.[0]) || 0,
-    rate: Number(String(order.rateInput || '').replace(/[$,]/g, '')) || 0,
-    perMile: Number(facts.perMileText.replace(/[^\d.]/g, '')) || 0,
-    status: order.status,
-    hazmat: isHazmatLoad(order),
-    exportedAt: Number.isFinite(exportedAt) ? exportedAt : 0,
-    exported: facts.exported,
-    urgency: getLoadUrgency(order),
-    checked, checkDisabled,
-    flags: [
-      isHazmatLoad(order) && '☢',
-      isTankerLoad(order) && '🛢',
-      String(order.needsCapacity || '').trim() && '⭐',
-      isHotLane && '🔥',
-      raise && '⬆',
-      hasOpenLandstarError(order) && '⚠'
-    ].filter(Boolean)
-  };
-}
-
 function ListFocusToggle() {
   const [focus, setFocus] = useState(() => {
     try { return localStorage.getItem(listFocusKey) === 'true'; } catch { return false; }
@@ -2225,81 +1828,10 @@ const BOT_STATUS_URL = 'http://127.0.0.1:47615/status';
 // More removals than this from one import, and over half the customer's posted loads, needs a yes.
 const LARGE_DROP_MIN = 10;
 
-function addToUnpostQueue(droppedPostings) {
-  const queue = readUnpostQueue();
-  const seen = new Set(queue.map(item => `${item.customer}|${item.loadId}`));
-  droppedPostings.forEach(item => {
-    if (item?.posting && !seen.has(`${item.customer}|${item.loadId}`)) {
-      queue.push({ ...item, queuedAt: new Date().toISOString() });
-      seen.add(`${item.customer}|${item.loadId}`);
-    }
-  });
-  writeUnpostQueue(queue);
-  return queue.length;
-}
-
-const assignSeenKey = 'landstar_assignSeenAt';
-
-// ---------- Rate raises from the bot's board-rate watch (bot/hazmat-watch.js) ----------
-const rateRaiseSeenKey = 'landstar_rateRaiseSeenAt';
 // One export at a time (see handleExportToLandstar). Outside the App so it never shifts App state.
 const exportGuard = { running: false, finishedAt: 0 };
 const EXPORT_REPEAT_MS = 15 * 1000;
-const sameZip = (a, b) => String(a || '').trim().padStart(5, '0') === String(b || '').trim().padStart(5, '0');
-// The TMS load a raise belongs to: its saved Landstar posting has the same origin ZIP,
-// destination ZIP, pickup end and weight as the raised posting.
-function loadMatchesRateRaise(load, raise) {
-  const mine = load?.landstarPosting;
-  const theirs = raise?.posting;
-  if (!mine || !theirs) return false;
-  return sameZip(mine.originZip, theirs.originZip) && sameZip(mine.destZip, theirs.destZip)
-    && String(mine.pickupThru || '').trim() === String(theirs.pickupThru || '').trim()
-    && (!theirs.weight || !mine.weight || Number(mine.weight) === Number(theirs.weight));
-}
-// The load after the bot raised it on Landstar: its rate is the new board rate and it remembers
-// the raise (the ⬆ RAISED badge). It counts as a set rate ('user-entered'): the rate box and the
-// export only accept user-entered/DAT rates, a re-export then posts this exact rate with no RXO
-// DAT discount, and re-imports and DAT refreshes keep it. It is not saved as a lane rate.
-function applyRateRaise(load, raise) {
-  return {
-    ...load,
-    rateInput: String(raise.to),
-    rateSource: 'user-entered',
-    rateRaise: {
-      from: Number(raise.from) || 0, to: Number(raise.to) || 0,
-      competitor: raise.competitor || '', competitorRate: Number(raise.competitorRate) || 0,
-      landstarLoadId: raise.landstarLoadId || '', at: Number(raise.at) || Date.now()
-    }
-  };
-}
-function takeNewRateRaises(raises) {
-  if (!Array.isArray(raises) || !raises.length) return [];
-  let seenAt = 0;
-  try { seenAt = Number(localStorage.getItem(rateRaiseSeenKey)) || 0; } catch { /* first time */ }
-  const fresh = raises.filter(raise => Number(raise?.at) > seenAt);
-  if (fresh.length) {
-    try { localStorage.setItem(rateRaiseSeenKey, String(Math.max(...fresh.map(raise => Number(raise.at))))); } catch { /* shown again next time */ }
-  }
-  return fresh;
-}
-const formatRaiseMoney = value => `$${Number(value || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 
-// ---------- Bulk Postings error drafts the bot deleted (bot/error-drafts.js) ----------
-const errorDraftSeenKey = 'landstar_errorDraftSeenAt';
-function takeNewErrorDrafts(drafts) {
-  if (!Array.isArray(drafts) || !drafts.length) return [];
-  let seenAt = 0;
-  try { seenAt = Number(localStorage.getItem(errorDraftSeenKey)) || 0; } catch { /* first time */ }
-  const fresh = drafts.filter(draft => Number(draft?.at) > seenAt);
-  if (fresh.length) {
-    try { localStorage.setItem(errorDraftSeenKey, String(Math.max(...fresh.map(draft => Number(draft.at))))); } catch { /* shown again next time */ }
-  }
-  return fresh;
-}
-// The load after Landstar rejected its posting and the bot deleted the error draft.
-function applyLandstarError(load, draft) {
-  return { ...load, landstarError: { reasons: draft.reasons || [], draftId: draft.draftId || '', at: Number(draft.at) || Date.now() } };
-}
 // The LANDSTAR ERROR badge shows until the load is exported again after the error.
 // Where a load stands on Landstar (Daniel 2026-11-27: posted loads now stay OPEN, so which ones
 // have errors and which were never posted must show at a glance): 'error' (Landstar rejected
@@ -2335,83 +1867,6 @@ function getPostingErrorText(load) {
   if (load?.exportError) return `Not exported: ${load.exportError.message}`;
   if (load?.landstarExportedAt && !load.landstarConfirmedAt) return `Sent to the bot ${new Date(load.landstarExportedAt).toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}, but Landstar never confirmed it. Check Bulk Postings, or export it again.`;
   return '';
-}
-
-function hasOpenLandstarError(load) {
-  const error = load?.landstarError;
-  if (!error) return false;
-  const exportedAt = Date.parse(load.landstarExportedAt || '');
-  return !(Number.isFinite(exportedAt) && exportedAt > Number(error.at));
-}
-
-// ---------- Landstar removals (bot/unpost.js) ----------
-// A load sent to the removal bot shows "⏳ SENT TO REMOVAL BOT"; when the bot reports back it
-// shows RMOV (removed, or no longer on the board) or "NOT REMOVED" (remove it by hand).
-const removalSeenKey = 'landstar_removalSeenAt';
-function readRemovalSeenAt() {
-  try { return Number(localStorage.getItem(removalSeenKey)) || 0; } catch { return 0; }
-}
-function takeNewRemovalResults(results) {
-  if (!Array.isArray(results) || !results.length) return [];
-  const seenAt = readRemovalSeenAt();
-  const fresh = results.filter(result => Number(result?.at) > seenAt);
-  if (fresh.length) {
-    try { localStorage.setItem(removalSeenKey, String(Math.max(...fresh.map(result => Number(result.at))))); } catch { /* shown again next time */ }
-  }
-  return fresh;
-}
-function markRemovalQueued(load, reason = '') {
-  return { ...load, landstarRemoval: { state: 'queued', at: new Date().toISOString(), ...(reason ? { reason } : {}) } };
-}
-function applyRemovalResult(load, result) {
-  return { ...load, landstarRemoval: { ...(load.landstarRemoval || {}), state: result.state, at: new Date(Number(result.at) || Date.now()).toISOString() } };
-}
-// Badge text, style and tooltip for a load's removal state (null when it has none).
-function getRemovalBadge(load) {
-  const removal = load?.landstarRemoval;
-  if (!removal?.state) return null;
-  const when = formatCheckTime(removal.at) || '';
-  if (removal.state === 'queued') return { text: '⏳ SENT TO REMOVAL BOT', className: 'bg-amber-500 text-black', title: `Sent to the removal bot ${when}. It takes the posting off the Landstar board.` };
-  if (removal.state === 'removed') return { text: 'RMOV', className: 'bg-slate-500 text-white', title: `Removed from Landstar ${when}.` };
-  if (removal.state === 'gone') return { text: 'RMOV', className: 'bg-slate-500 text-white', title: `No longer on the Landstar board (checked ${when}).` };
-  return { text: '⚠ NOT REMOVED', className: 'bg-red-600 text-white', title: `Still on Landstar after 3 tries (${when}): posted by hand or Landstar refused. Remove it on LandstarOnline.` };
-}
-
-function addToAssignQueue(item) {
-  const key = `${item.customer}|${item.loadId}`;
-  const queue = readAssignQueue().filter(existing => `${existing.customer}|${existing.loadId}` !== key);
-  try {
-    localStorage.setItem(assignQueueKey, JSON.stringify([...queue, { ...item, queuedAt: new Date().toISOString() }]));
-  } catch (error) {
-    console.error('Could not save the Landstar assign queue:', error);
-  }
-}
-
-// Results the bot reports that this browser hasn't shown yet.
-function takeNewAssignResults(results) {
-  if (!Array.isArray(results) || !results.length) return [];
-  let seenAt = 0;
-  try { seenAt = Number(localStorage.getItem(assignSeenKey)) || 0; } catch { /* first time */ }
-  const fresh = results.filter(result => Number(result?.at) > seenAt);
-  if (fresh.length) {
-    try { localStorage.setItem(assignSeenKey, String(Math.max(...fresh.map(result => Number(result.at))))); } catch { /* shown again next time */ }
-  }
-  return fresh;
-}
-// The load's note after the bot's assignment: "Landstar: Assigned 420371 - LDWY ..." or why not.
-function applyAssignResult(load, result) {
-  const capacity = result.carrierMc ? `carrier MC ${result.carrierMc}` : `truck ${result.truck}`;
-  const line = result.ok
-    ? `Landstar: ${result.message}`
-    : result.unconfirmed
-      ? `Landstar: ${capacity} NOT CONFIRMED - check Landstar before assigning again. ${result.message}`
-      : `Landstar: ${capacity} NOT assigned - ${result.message}. Assign it by hand.`;
-  return {
-    ...load,
-    ...(result.ok && result.posting ? { landstarPosting: result.posting } : {}),
-    landstarAssignment: { ok: Boolean(result.ok), truck: result.truck, ...(result.carrierMc ? { carrierMc: result.carrierMc } : {}), landstarLoadId: result.landstarLoadId || '', message: result.message, at: result.at },
-    notes: load.notes ? `${load.notes}\n${line}` : line
-  };
 }
 
 // ---------- Paramount tracking emails ----------
@@ -2539,14 +1994,6 @@ async function checkBeforePodRequest(load, tracking, readPaperwork = callParamou
   return { received: result.files.length > 0, files: result.files };
 }
 
-// Ctrl+V of a picture: which list it is. Para lists come from Heather in Google Chat:
-// the account ending in H is hazmat, the other one non-hazmat.
-const pasteImportChoices = [
-  { label: 'Para 1522166 - ATZ · non-hazmat list', customer: 'Para 1522166 - ATZ', className: 'bg-sky-700 hover:bg-sky-600' },
-  { label: 'Para 1522166 - ATZ H · hazmat list', customer: 'Para 1522166 - ATZ H', className: 'bg-red-700 hover:bg-red-600' },
-  { label: 'NTG load cards', customer: '', className: 'bg-slate-700 hover:bg-slate-600' }
-];
-
 // ---------- Notices (instead of alert() pop-ups) ----------
 const NOTICE_INFO_MS = 45 * 1000;
 const UNDO_OFFER_MS = 10 * 60 * 1000;
@@ -2568,83 +2015,6 @@ function noticeLevel(message) {
 // account; after that that label imports into that account by itself. Rules live in My
 // Settings (profile.chatSheetAccounts), so they sync to the new laptop.
 const chatInboxPollMs = 30 * 1000;
-// Labels Daniel told us (2026-11-27); a label he picks in the TMS is saved on top of these.
-const defaultChatSheetAccounts = {
-  'big list': 'R X O 2429200 - ATZ V',
-  fbs: 'R X O 2429200 - ATZ F', fb: 'R X O 2429200 - ATZ F', flatbed: 'R X O 2429200 - ATZ F', flatbeds: 'R X O 2429200 - ATZ F',
-  reefer: 'R X O 2429200 - ATZ R', reefers: 'R X O 2429200 - ATZ R',
-  haz: 'R X O 2429200 - ATZ H', hazmat: 'R X O 2429200 - ATZ H',
-  // Solar panels: Tyler labels this list "panels" or "solar".
-  panels: 'R X O 2429200 - ATZ P', panel: 'R X O 2429200 - ATZ P',
-  solar: 'R X O 2429200 - ATZ P', 'solar panels': 'R X O 2429200 - ATZ P', 'solar panel': 'R X O 2429200 - ATZ P'
-};
-
-// Accounts whose Google Chat lists export to Landstar by themselves right after the import
-// (Daniel 2026-11-27: "only RXO"). Never R X O 2429200 - SNB: those are Ivan's loads and must
-// post under his own code, from his TMS.
-const chatAutoExportAccounts = new Set([
-  'R X O 2429200 - ATZ V', 'R X O 2429200 - ATZ F', 'R X O 2429200 - ATZ R',
-  'R X O 2429200 - ATZ H', 'R X O 2429200 - ATZ P'
-].map(name => name.toUpperCase().replace(/[^A-Z0-9]/g, '')));
-function isChatAutoExportAccount(customer) {
-  return chatAutoExportAccounts.has(accountKey(normalizeCustomerName(customer)));
-}
-
-// Lists in LANDJA18 for agent SNB (Ivan): "LOWES" and the one marked "$$" import into
-// R X O 2429200 - SNB, an account Daniel shares with Ivan, so they show up in Ivan's TMS and
-// post under Ivan's own code (Daniel 2026-11-27). "$$" has no letters, so it is matched here.
-const SNB_CHAT_ACCOUNT = 'R X O 2429200 - SNB';
-function getSnbChatSheetAccount(label) {
-  const text = String(label || '');
-  return /lowe'?s/i.test(text) || /\$\s*\$/.test(text) ? SNB_CHAT_ACCOUNT : '';
-}
-
-// A list label without what changes from day to day: case, numbers/dates, punctuation.
-// "Big List 11/27!" -> "big list".
-function getChatSheetKey(label) {
-  return String(label || '').toLowerCase()
-    .replace(/\d+/g, ' ')
-    .replace(/[^a-z]+/g, ' ')
-    .trim();
-}
-
-function getChatSheetAccount(rules, label) {
-  const snb = getSnbChatSheetAccount(label);
-  if (snb) return snb;
-  const key = getChatSheetKey(label);
-  if (!key) return '';
-  const saved = rules && typeof rules === 'object' ? rules[key] : '';
-  return String(saved || defaultChatSheetAccounts[key] || '');
-}
-
-function rememberChatSheetAccount(rules, label, customer) {
-  const key = getChatSheetKey(label);
-  if (!key || !customer) return { ...(rules || {}) };
-  return { ...(rules || {}), [key]: customer };
-}
-
-// The accounts offered for a chat item: RXO's chat offers the RXO accounts, Para's chat
-// the Para accounts and NTG cards (pictures only: NTG cards are never spreadsheets).
-function getChatInboxChoices(item, brokers = []) {
-  const colors = ['bg-sky-700 hover:bg-sky-600', 'bg-red-700 hover:bg-red-600', 'bg-amber-700 hover:bg-amber-600', 'bg-emerald-700 hover:bg-emerald-600', 'bg-indigo-700 hover:bg-indigo-600'];
-  const isSheet = item?.type === 'spreadsheet';
-  if (item?.kind === 'rxo') {
-    // Every RXO account (R X O 2429200 - ATZ, ATZ H, ATZ P, ATZ R...), not just the main one.
-    return brokers.filter(name => /^\s*R\s*X\s*O\b/i.test(normalizeCustomerName(name)))
-      .map((customer, index) => ({ label: customer, customer, className: colors[index % colors.length] }));
-  }
-  const choices = getPasteImportChoices(brokers);
-  return isSheet ? choices.filter(choice => choice.customer) : choices;
-}
-
-// The Para choices under the names in the customer list ("Para 1522166 - N HAZ" for the old
-// "Para 1522166 - ATZ"), so a renamed account still gets its pictures.
-function getPasteImportChoices(brokers = []) {
-  return pasteImportChoices.map(choice => {
-    const customer = choice.customer ? findListedAccount(choice.customer, brokers) || choice.customer : '';
-    return customer === choice.customer ? choice : { ...choice, customer, label: `${customer} Â· ${choice.label.split(' Â· ').pop()}` };
-  });
-}
 
 // ---------- MercuryGate (Landstar's TMS) for booked Paramount loads ----------
 // The helper bot fills MercuryGate the way Daniel does by hand (bot/mercurygate-job.js):
@@ -2652,37 +2022,8 @@ function getPasteImportChoices(brokers = []) {
 // instructions; "pickedUp": upload the PDF as a Customer Confirmation Sheet. Loads booked before
 // the bot started doing this (MERCURYGATE_FROM) were entered by hand and are left alone.
 const BOT_MERCURYGATE_URL = 'http://127.0.0.1:47615/mercurygate';
-const MERCURYGATE_FROM = Date.parse('2026-11-06T16:55:00Z');
+
 const mercurygateSeenKey = 'landstar_mercurygateSeenAt';
-
-// The MercuryGate step due for a booked Paramount load, or ''.
-// The number MercuryGate is searched by: the Landstar freight bill (from Clarity / the BCO email)
-// or, right after booking, the Landstar load number from Assign Capacity (also a reference there).
-function getMercuryGateSearchNumber(load, tracking = {}) {
-  return String(tracking.freightBill || (load.landstarAssignment?.ok ? load.landstarAssignment.landstarLoadId : '') || '');
-}
-
-function getDueMercuryGateStep(load, tracking = {}) {
-  if (!automationPolicy.automaticDispatchEnabled) return '';
-  if (load.status !== 'BOOKED' || !getMercuryGateSearchNumber(load, tracking)) return '';
-  if (!(Date.parse(load.bookedAt) >= MERCURYGATE_FROM)) return '';
-  const done = load.mercurygate || {};
-  if (!done.booked) return 'booked';
-  if (tracking.leftShipperAt && !done.pickedUp) return 'pickedUp';
-  return '';
-}
-
-// The load's notes after the bot's MercuryGate run.
-function applyMercuryGateResult(load, result) {
-  const lines = (result.results || []).map(item => `MercuryGate: ${item.message}`);
-  if (!result.ok && result.retrying) lines.push(`MercuryGate: not finished yet, trying again - ${String(result.message || '').split('\n')[0]}`);
-  else if (!result.ok) lines.push(`MercuryGate: NOT finished - ${String(result.message || '').split('\n')[0]}. Finish it by hand.`);
-  return {
-    ...load,
-    mercurygate: { ...(load.mercurygate || {}), [`${result.step}Result`]: { ok: Boolean(result.ok), at: result.at } },
-    notes: [load.notes, ...lines].filter(Boolean).join('\n')
-  };
-}
 
 const rxoHandledKey = 'landstar_rxoHandledRequests';
 
@@ -4950,8 +4291,14 @@ export default function App({ sharing = null, userId = null } = {}) {
       if (aiInstructions) {
         setScreenshotImportProgress(files.length > 1 ? `Reading ${files.length} pictures with AI...` : 'Reading the picture with AI...');
         const images = await Promise.all(files.map(imageForAi));
+        // On the website (teammates) the reader checks the TMS sign-in; the local TMS ignores it.
+        let authorization = {};
+        try {
+          const token = (await supabase?.auth?.getSession?.())?.data?.session?.access_token;
+          if (token) authorization = { Authorization: `Bearer ${token}` };
+        } catch { /* local TMS: no sign-in needed */ }
         const response = await fetch('/api/read-screenshot', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', ...authorization },
           body: JSON.stringify({ images, instructions: aiInstructions, customer: brokerName })
         });
         const result = await response.json().catch(() => ({}));

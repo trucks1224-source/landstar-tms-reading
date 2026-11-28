@@ -6,6 +6,14 @@
     }
   ],
   "rewrites": [
-    { "source": "/i/:token", "destination": "/inquire.html" }
-  ]
+    {
+      "source": "/i/:token",
+      "destination": "/inquire.html"
+    }
+  ],
+  "functions": {
+    "api/read-screenshot.js": {
+      "maxDuration": 60
+    }
+  }
 }

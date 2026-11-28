@@ -299,6 +299,17 @@ function newAfterLastSeen(items, isSeen) {
 
 const contentKeyByAddress = new Map();
 
+// Recently saved spreadsheets by content: hash -> { fileName, at } (catches a repeated download).
+const recentSheetBytes = new Map();
+const sheetHash = bytes => require('crypto').createHash('sha1').update(bytes).digest('hex');
+function sameAsEarlierSheet(bytes, fileName, now = Date.now()) {
+  const seen = recentSheetBytes.get(sheetHash(bytes));
+  return seen && seen.fileName !== fileName && now - seen.at < 60 * 60 * 1000 ? seen.fileName : '';
+}
+function rememberSheetBytes(bytes, fileName, now = Date.now()) {
+  recentSheetBytes.set(sheetHash(bytes), { fileName, at: now });
+}
+
 // Spreadsheets that could not be saved yet: key -> tries so far.
 const sheetFailures = new Map();
 const SHEET_TRIES = 5;
@@ -527,7 +538,16 @@ async function checkChat(context, tab, seen) {
     const names = group.sheets.map(sheet => sheet.fileName).join(' + ');
     try {
       const parts = [];
-      for (const sheet of group.sheets) parts.push(await downloadSpreadsheet(context, sheet, page));
+      for (const sheet of group.sheets) {
+        const bytes = await downloadSpreadsheet(context, sheet, page);
+        // 2026-11-27 6:18 PM: the "fbs" download came back as the big list again (same bytes), so
+        // the flatbed list was never imported. A file identical to a different list saved in the
+        // last hour is the wrong download: tried again on the next check.
+        const repeat = sameAsEarlierSheet(bytes, sheet.fileName);
+        if (repeat) throw new Error(`the download gave the earlier list again (${repeat}), not ${sheet.fileName}`);
+        parts.push(bytes);
+      }
+      group.sheets.forEach((sheet, index) => rememberSheetBytes(parts[index], sheet.fileName));
       const bytes = parts.length > 1 ? mergeSheetParts(parts) : parts[0];
       const meta = parts.length > 1
         ? { ...first, label: group.label, fileName: `${first.fileName.replace(/\.xlsx?$/i, '')} (${parts.length} parts).xlsx` }
@@ -591,6 +611,9 @@ async function main() {
     for (const sheet of wanted) {
       try {
         const bytes = await downloadSpreadsheet(context, sheet, firstPage);
+        const repeat = sameAsEarlierSheet(bytes, sheet.fileName);
+        if (repeat) throw new Error(`the download gave ${repeat} again`);
+        rememberSheetBytes(bytes, sheet.fileName);
         const name = addToInbox(bytes, '', { ...sheet, chat: chat.name, kind: chat.kind });
         log(`Recover: "${sheet.label || '(no name above)'}" (${sheet.fileName}) saved for the TMS (${name}).`);
       } catch (error) {
@@ -699,4 +722,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { pickListImages, imageKey, fullSizeUrl, pickSpreadsheets, attachmentId, spreadsheetDownloadUrl, pickListLabel, isSignedInUrl, newAfterLastSeen, groupSheetParts, mergeSheetParts };
+module.exports = { sameAsEarlierSheet, rememberSheetBytes, pickListImages, imageKey, fullSizeUrl, pickSpreadsheets, attachmentId, spreadsheetDownloadUrl, pickListLabel, isSignedInUrl, newAfterLastSeen, groupSheetParts, mergeSheetParts };

@@ -124,3 +124,13 @@ test('a file with no name right below a named list is its next part, merged into
   const rows = XLSX.utils.sheet_to_json(XLSX.read(merged).Sheets.Sheet1, { header: 1 });
   assert.deepEqual(rows.map(row => String(row[0])), ['Order', '1', '2', '3']);
 });
+
+test('a download identical to a different list saved within the hour is caught', () => {
+  const { sameAsEarlierSheet, rememberSheetBytes } = require('./chat-bot');
+  const big = Buffer.from('big list bytes');
+  rememberSheetBytes(big, 'export-181729.xlsx', 1000);
+  assert.equal(sameAsEarlierSheet(big, 'export-181742.xlsx', 2000), 'export-181729.xlsx', 'the fbs download came back as the big list');
+  assert.equal(sameAsEarlierSheet(big, 'export-181729.xlsx', 2000), '', 'the same file again is fine');
+  assert.equal(sameAsEarlierSheet(Buffer.from('fbs bytes'), 'export-181742.xlsx', 2000), '');
+  assert.equal(sameAsEarlierSheet(big, 'export-181742.xlsx', 1000 + 61 * 60 * 1000), '', 'older than an hour: not compared');
+});

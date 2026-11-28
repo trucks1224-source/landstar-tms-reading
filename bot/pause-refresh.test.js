@@ -15,7 +15,7 @@ const posting = (id, extra = {}) => ({
   OrderDate: `/Date(${NOW - 60 * 60 * 1000})/`, ...extra
 });
 
-test('AMERI postings are due every 5 minutes, hazmat every 30, others never', () => {
+test('only AMERI postings are paused and unpaused, every 5 minutes (hazmat no longer, 2026-11-27)', () => {
   assert.equal(AMERI_REFRESH_MS, 5 * 60 * 1000);
   assert.equal(HAZMAT_REFRESH_MS, 30 * 60 * 1000);
   const ameri = posting('1');
@@ -26,7 +26,7 @@ test('AMERI postings are due every 5 minutes, hazmat every 30, others never', ()
   const ownCodes = ['ANQ', 'SNB', 'QNX'];
   assert.deepEqual(selectDue([ameri, hazmat, plain], { ameriSignatures, ownCodes, state, now: NOW }), [], 'not yet');
   const later = selectDue([ameri, hazmat, plain], { ameriSignatures, ownCodes, state, now: NOW + 60 * 1000 });
-  assert.deepEqual(later.map(d => [d.loadId, d.group]), [['1', 'AMERI'], ['2', 'HAZMAT']], 'AMERI first, even though the hazmat load waited longer');
+  assert.deepEqual(later.map(d => [d.loadId, d.group]), [['1', 'AMERI']], 'hazmat loads are not paused any more');
   // A fresh posting counts from when it was posted.
   const fresh = posting('4', { OrderDate: `/Date(${NOW - 2 * 60 * 1000})/` });
   assert.deepEqual(selectDue([fresh], { ameriSignatures: new Set([postingSignature(fresh)]), ownCodes, now: NOW }), []);
@@ -35,7 +35,8 @@ test('AMERI postings are due every 5 minutes, hazmat every 30, others never', ()
   assert.equal(selectDue([ameriHazmat], { ameriSignatures, ownCodes, now: NOW })[0].group, 'AMERI');
   // Other agencies' postings and test mode.
   assert.deepEqual(selectDue([posting('6', { Agency: 'ATZ', CommodityCode: 'HAZMAT' })], { ameriSignatures, ownCodes, now: NOW }), []);
-  assert.deepEqual(selectDue([ameri, hazmat], { ameriSignatures, ownCodes, now: NOW, onlyLoadId: '2' }).map(d => d.loadId), ['2']);
+  assert.deepEqual(selectDue([ameri, hazmat], { ameriSignatures, ownCodes, now: NOW, onlyLoadId: '1' }).map(d => d.loadId), ['1']);
+  assert.deepEqual(selectDue([ameri, hazmat], { ameriSignatures, ownCodes, now: NOW, onlyLoadId: '2' }), [], 'a hazmat load, even in test mode');
 });
 
 test('AMERI exports are recognized by file name (exact account); PAUSE never matches UNPAUSE', () => {

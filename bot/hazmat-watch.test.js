@@ -6,7 +6,7 @@ const path = require('path');
 // The tests' own posting codes, so this PC's bot/agent-config.json never changes the result.
 process.env.AGENT_CONFIG_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hazmat-watch-')), 'agent-config.json');
 fs.writeFileSync(process.env.AGENT_CONFIG_FILE, JSON.stringify({ postingCodes: ['ANQ', 'QNX'] }));
-const { findCompetitors, planRaise, isHazmatPosting, raisePostingRate, selectRateWatchPostings, eligibleExport } = require('./hazmat-watch');
+const { findCompetitors, planRaise, isHazmatPosting, raisePostingRate, selectRateWatchPostings, eligibleExport, fixedRateExport } = require('./hazmat-watch');
 const { postingSignature } = require('./bot-postings');
 
 const trailerGroup = code => ({ VAN: 'VAN', '53VN': 'VAN', REFR: 'REEFER' }[String(code).trim().toUpperCase()] || String(code).trim().toUpperCase());
@@ -189,4 +189,17 @@ test('a saved raise is reported to the TMS with the posting details it matches l
     posting: { originZip: '07102', destZip: '45801', pickupThru: '11/27/26 08:00', weight: 42000 },
     lane: 'NEWARK, NJ -> LIMA, OH', from: 1760, to: 1945, competitor: 'GGL', competitorRate: 1920, hazmat: true
   });
+});
+
+test('every hazmat load is rate-checked, any customer, except fixed-rate AMERI and CH (2026-11-27)', () => {
+  const nolanHazmat = posting(11, { Weight: 11 });
+  const chHazmat = posting(12, { Weight: 12 });
+  const nolanVan = posting(13, { CommodityCode: 'CGAPP', Weight: 13 });
+  const hazmatEligible = new Set([nolanHazmat, chHazmat, nolanVan].map(postingSignature));
+  const fixedRate = new Set([postingSignature(chHazmat)]);
+  const picked = selectRateWatchPostings([nolanVan, chHazmat, nolanHazmat], new Set(), new Set(), hazmatEligible, fixedRate);
+  assert.deepEqual(picked.map(p => p.LoadId), [11], 'the Nolan hazmat load; not CH (its own rate) and not a non-hazmat Nolan load');
+  assert.equal(fixedRateExport('Landstar_Bulk_CH_593772__ATZ_H__.xlsx'), true);
+  assert.equal(fixedRateExport('Landstar_Bulk_AMERI_18347__ATZ.xlsx'), true);
+  assert.equal(fixedRateExport('Landstar_Bulk_Nolan_965974___HAZ.xlsx'), false);
 });

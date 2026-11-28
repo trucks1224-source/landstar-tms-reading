@@ -436,9 +436,11 @@ function findKnownDriver(directory, name) {
 // Exported loads stay in their folder (OPEN stays OPEN, Daniel 2026-11-27) and remember when they
 // were posted; they move to ENT only when a new list no longer has them (covered).
 function markLoadsExported(loads, exportedIds, exportedAt) {
-  return loads.map(load => exportedIds.has(String(load.id))
-    ? { ...load, landstarExportedAt: exportedAt }
-    : load);
+  return loads.map(load => {
+    if (!exportedIds.has(String(load.id))) return load;
+    const { exportError, ...rest } = load;
+    return { ...rest, landstarExportedAt: exportedAt };
+  });
 }
 
 const canadianProvinceCodes = new Set('AB BC MB NB NL NS NT NU ON PE QC SK YT'.split(' '));
@@ -2880,6 +2882,23 @@ function applyLandstarError(load, draft) {
   return { ...load, landstarError: { reasons: draft.reasons || [], draftId: draft.draftId || '', at: Number(draft.at) || Date.now() } };
 }
 // The LANDSTAR ERROR badge shows until the load is exported again after the error.
+// Where a load stands on Landstar (Daniel 2026-11-27: posted loads now stay OPEN, so which ones
+// have errors and which were never posted must show at a glance): 'error' (Landstar rejected
+// it, or the export failed and it has not exported since), 'posted', 'unposted', or '' (booked).
+function getPostingState(load) {
+  if (!load || load.status === 'BOOKED') return '';
+  const exportedAt = Date.parse(load.landstarExportedAt || '');
+  const exportErrorOpen = load.exportError && !(Number.isFinite(exportedAt) && exportedAt > Date.parse(load.exportError.at));
+  if (hasOpenLandstarError(load) || exportErrorOpen) return 'error';
+  return Number.isFinite(exportedAt) ? 'posted' : 'unposted';
+}
+
+function getPostingErrorText(load) {
+  if (hasOpenLandstarError(load)) return `Landstar rejected this posting: ${(load.landstarError.reasons || []).join('; ') || 'no reason given'}. Fix the load and export it again.`;
+  if (load?.exportError) return `Not exported: ${load.exportError.message}`;
+  return '';
+}
+
 function hasOpenLandstarError(load) {
   const error = load?.landstarError;
   if (!error) return false;
@@ -3824,7 +3843,7 @@ export default function App({ sharing = null, userId = null } = {}) {
 
   const [filter, setFilter] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [loadFilters, setLoadFilters] = useState({ rate: '', minMiles: '', maxMiles: '', pickupState: '', deliveryState: '', pickupDate: '' });
+  const [loadFilters, setLoadFilters] = useState({ rate: '', minMiles: '', maxMiles: '', pickupState: '', deliveryState: '', pickupDate: '', posting: '' });
   const [laneSort, setLaneSort] = useState('');
   // An RXO order export (loads other agents booked: it has the carrier's line haul pay) is not a
   // load list. 📂 Import Excel sends it here and it becomes the 🔥 hot lanes instead.
@@ -4504,7 +4523,7 @@ export default function App({ sharing = null, userId = null } = {}) {
 
   const handleClearAllFilters = () => {
     setSearchQuery('');
-    setLoadFilters({ rate: '', minMiles: '', maxMiles: '', pickupState: '', deliveryState: '', pickupDate: '' });
+    setLoadFilters({ rate: '', minMiles: '', maxMiles: '', pickupState: '', deliveryState: '', pickupDate: '', posting: '' });
     setLaneSort('');
   };
 
@@ -4513,6 +4532,11 @@ export default function App({ sharing = null, userId = null } = {}) {
   const showImportedList = () => {
     handleClearAllFilters();
     setView('loads');
+    // The import is done: close the Tools & Customers drawer (even when kept open) so the
+    // imported loads are right there (Daniel 2026-11-27).
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
+      window.dispatchEvent(new Event('tms-close-drawer'));
+    }
   };
 
   // Paste Text List: a load list written as text (Ryan's Square 2570577 messages) into the
@@ -7988,6 +8012,17 @@ export default function App({ sharing = null, userId = null } = {}) {
     const hasAllZips = record => Boolean(record['Origin Zipcode(Required)'] && record['Destination Zipcode(Required)']);
     const missingZipEntries = exportEntries.filter(({ record }) => !hasAllZips(record));
     const readyEntries = exportEntries.filter(({ record }) => hasAllZips(record));
+    // Export errors stay on the load until it exports (they used to vanish on reload).
+    const exportErrorsById = new Map();
+    validationErrors.forEach(error => {
+      const id = error.match(/^Order\s+([^:]+):/)?.[1];
+      if (id) exportErrorsById.set(String(id).trim(), error.replace(/^Order\s+[^:]+:\s*/, ''));
+    });
+    missingZipEntries.forEach(({ ord }) => exportErrorsById.set(String(ord.id), 'No ZIP code found. Enter the origin or destination ZIP.'));
+    const exportErrorAt = new Date().toISOString();
+    const withExportErrors = loads => loads.map(load => (exportErrorsById.has(String(load.id))
+      ? { ...load, exportError: { message: exportErrorsById.get(String(load.id)), at: exportErrorAt } }
+      : load));
 
     if (!readyEntries.length) {
       const problems = [];
@@ -8000,6 +8035,11 @@ export default function App({ sharing = null, userId = null } = {}) {
         problems.push(`No ZIP code could be found for ${missingZipEntries.length} load${missingZipEntries.length === 1 ? '' : 's'}, and Landstar needs a ZIP to fill in the state. Enter the ZIP in the load's Origin or Destination ZIP field, then export again:\n\n${missingZipEntries.slice(0, 10).map(({ record }) => `${record['Origin City'] || ''} → ${record['Destination City'] || ''}`).join('\n')}`);
       }
       say(`No loads could be exported.\n\n${problems.join('\n\n')}`);
+      if (exportErrorsById.size) {
+        const withErrors = { ...customerOrdersMap, [selectedBroker]: withExportErrors(orders) };
+        persistAppData(brokers, withErrors);
+        setCustomerOrdersMap(withErrors);
+      }
       return;
     }
 
@@ -8287,7 +8327,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     const postingsById = new Map(readyEntries.map(({ ord, record }) => [String(ord.id), buildLandstarPosting(record)]));
     const nextOrders = {
       ...customerOrdersMap,
-      [selectedBroker]: markLoadsExported(orders, exportedIds, exportedAt).map(load => {
+      [selectedBroker]: withExportErrors(markLoadsExported(orders, exportedIds, exportedAt)).map(load => {
         const posting = postingsById.get(String(load.id));
         const withPosting = posting ? {
           ...load, landstarPosting: { ...posting, refreshDetails: getPostingRefreshDetails(load) }
@@ -8349,7 +8389,7 @@ export default function App({ sharing = null, userId = null } = {}) {
   };
   // The load list is filtered and sorted only when the loads or the filters change, not on
   // every screen update (bot status, timers, typing in other boxes).
-  const { rateCountOrders, withRateCount, noRateCount, visibleOrderEntries } = useMemo(() => {
+  const { rateCountOrders, withRateCount, noRateCount, visibleOrderEntries, postingCounts } = useMemo(() => {
   const statusOrderEntries = getLoadSearchEntries(customerOrdersMap, selectedBroker, searchQuery, filter === 'OFFER')
     .filter(({ order: ord }) => isGlobalSearch || filter === 'ALL' || ord.status === filter);
   const rateCountOrders = statusOrderEntries.filter(({ customer }) => isAllCustomersView || customer === selectedBroker).map(({ order }) => order);
@@ -8361,6 +8401,7 @@ export default function App({ sharing = null, userId = null } = {}) {
   const hasMaxMiles = loadFilters.maxMiles !== '' && Number.isFinite(maxMilesFilter);
   const visibleOrderEntries = statusOrderEntries.filter(({ order: ord }) => {
     if (loadFilters.pickupDate && getPickupDay(ord) !== loadFilters.pickupDate) return false;
+    if (loadFilters.posting && getPostingState(ord) !== loadFilters.posting) return false;
     // Searching all customers still honors the state, rate and miles filters (Daniel 2026-11-27:
     // "searching Chicago, the Texas drop-down doesn't work").
     if (loadFilters.pickupState && String(ord.origSt || '').trim().toUpperCase() !== loadFilters.pickupState) return false;
@@ -8408,7 +8449,9 @@ export default function App({ sharing = null, userId = null } = {}) {
     );
     return (descending ? -comparison : comparison) || String(left.id).localeCompare(String(right.id));
   });
-  return { rateCountOrders, withRateCount, noRateCount, visibleOrderEntries };
+  const postingCounts = { posted: 0, unposted: 0, error: 0 };
+  rateCountOrders.forEach(order => { const state = getPostingState(order); if (state) postingCounts[state] += 1; });
+  return { rateCountOrders, withRateCount, noRateCount, visibleOrderEntries, postingCounts };
   }, [customerOrdersMap, selectedBroker, searchQuery, filter, loadFilters, laneSort, isGlobalSearch, hotLanes]);
   // Load cards are drawn a page at a time; more appear as you scroll to the bottom.
   const [listLimit, setListLimit] = useState(LOAD_LIST_PAGE);
@@ -8420,6 +8463,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     (loadFilters.pickupState || loadFilters.deliveryState) && { key: 'states', label: `${loadFilters.pickupState || 'Any'} → ${loadFilters.deliveryState || 'Any'}`, clear: () => setLoadFilters(prev => ({ ...prev, pickupState: '', deliveryState: '' })) },
     loadFilters.rate && { key: 'rate', label: loadFilters.rate === 'with' ? 'With rate' : 'No rate', clear: () => setLoadFilters(prev => ({ ...prev, rate: '' })) },
     (loadFilters.minMiles || loadFilters.maxMiles) && { key: 'miles', label: `${loadFilters.minMiles || 0}–${loadFilters.maxMiles || '∞'} mi`, clear: () => setLoadFilters(prev => ({ ...prev, minMiles: '', maxMiles: '' })) },
+    loadFilters.posting && { key: 'posting', label: { posted: 'Posted', unposted: 'Not posted', error: 'Errors' }[loadFilters.posting], clear: () => setLoadFilters(prev => ({ ...prev, posting: '' })) },
     laneSort && laneSort !== 'pickup-asc' && { key: 'sort', label: (LANE_SORT_CHOICES.find(([value]) => value === laneSort) || [, 'Sorted'])[1], clear: () => setLaneSort('') }
   ].filter(Boolean);
   const selectedCardIndex = selectedOrder
@@ -8448,6 +8492,8 @@ export default function App({ sharing = null, userId = null } = {}) {
       setExportErrorIds([]);
     }
     setSelectedOrder(order);
+    // From Billing (Booked loads / Bookings report): clicking a load opens it (Daniel 2026-11-27).
+    if (view !== 'loads') setView('loads');
     // Phone: the load details sit under the list, so jump down to them.
     if (isPhoneScreen()) {
       setTimeout(() => document.querySelector('.tms-workspace')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
@@ -9164,6 +9210,28 @@ export default function App({ sharing = null, userId = null } = {}) {
             </button>
           </div>
 
+          {/* Landstar posting (Daniel 2026-11-27): posted, not posted yet, and errors. */}
+          <div className="tms-day-row" role="group" aria-label="Landstar posting">
+            <span className="tms-filter-label">Landstar</span>
+            {[
+              ['', 'All', 'slate'],
+              ['posted', `Posted (${postingCounts.posted})`, 'emerald'],
+              ['unposted', `Not posted (${postingCounts.unposted})`, 'blue'],
+              ['error', `Errors (${postingCounts.error})`, 'red']
+            ].map(([value, label, tone]) => (
+              <button
+                key={value || 'all'}
+                type="button"
+                aria-pressed={(loadFilters.posting || '') === value}
+                onClick={() => { setLoadFilters(prev => ({ ...prev, posting: value })); setSelectedIds([]); }}
+                className="tms-slim-btn"
+                data-tone={tone}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           <div className={`tms-filter-panel${showFilters ? '' : ' hidden'}`}>
             <div className="tms-filter-line">
               <span className="tms-filter-label">Rate</span>
@@ -9247,7 +9315,7 @@ export default function App({ sharing = null, userId = null } = {}) {
               <button
                 type="button"
                 onClick={handleClearAllFilters}
-                disabled={!searchQuery.trim() && !loadFilters.rate && !loadFilters.minMiles && !loadFilters.maxMiles && !loadFilters.pickupState && !loadFilters.deliveryState && !loadFilters.pickupDate && !laneSort}
+                disabled={!searchQuery.trim() && !loadFilters.rate && !loadFilters.minMiles && !loadFilters.maxMiles && !loadFilters.pickupState && !loadFilters.deliveryState && !loadFilters.pickupDate && !loadFilters.posting && !laneSort}
                 title="Clear the search box and all lane filters and sorting"
                 className="tms-slim-btn"
                 data-tone="amber"
@@ -9436,14 +9504,10 @@ export default function App({ sharing = null, userId = null } = {}) {
                         <div className="tms-card-badges flex items-center gap-1 flex-wrap mt-0.5 min-w-0">
                           <span className="font-mono text-[10px] text-blue-300" title="Order number">#{ord.id}</span>
                           <span className="bg-blue-900/60 text-blue-300 text-[9px] px-1 py-px rounded font-mono" title={getEquipmentDescription(ord.eCode)}>{getDisplayEquipmentCode(ord.eCode)}</span>
-                          {customer === selectedBroker && exportErrorIds.includes(String(ord.id)) && (
-                            <span className={`bg-red-700 text-white ${badge}`}>EXPORT ERROR</span>
-                          )}
-                          {hasOpenLandstarError(ord) && (
-                            <span
-                              title={`Landstar rejected this posting and the bot deleted it from Bulk Postings: ${ord.landstarError.reasons.join('; ')}. Fix the load and export it again.`}
-                              className={`bg-red-600 text-white ${badge}`}
-                            >⚠ LANDSTAR ERROR</span>
+                          {(getPostingState(ord) === 'error' || (customer === selectedBroker && exportErrorIds.includes(String(ord.id)))) && (
+                            <span title={getPostingErrorText(ord) || 'This load could not be exported. Open it to see what to fix.'} className="tms-post-badge" data-state="error">
+                              ⚠ {hasOpenLandstarError(ord) ? 'LANDSTAR ERROR' : 'EXPORT ERROR'}
+                            </span>
                           )}
                           {getRemovalBadge(ord) && (
                             <span title={getRemovalBadge(ord).title} className={`${getRemovalBadge(ord).className} ${badge}`}>{getRemovalBadge(ord).text}</span>
@@ -9466,8 +9530,11 @@ export default function App({ sharing = null, userId = null } = {}) {
                               className={`bg-amber-400 text-black ${badge}`}
                             >⬆ RAISED {formatRaiseMoney(raise.to)}</span>
                           )}
-                          {facts.exported && (
-                            <span title={`Exported to Landstar ${new Date(ord.landstarExportedAt).toLocaleString()}`} className="text-[9px] text-emerald-300/80 whitespace-nowrap">↑ {facts.exported}</span>
+                          {getPostingState(ord) === 'posted' && (
+                            <span title={`Posted on Landstar ${new Date(ord.landstarExportedAt).toLocaleString()}`} className="tms-post-badge" data-state="posted">✓ Posted{facts.exported ? ` ${facts.exported}` : ''}</span>
+                          )}
+                          {getPostingState(ord) === 'unposted' && ord.status === 'OPEN' && (
+                            <span title="Not on Landstar yet: Export sends it" className="tms-post-badge" data-state="unposted">Not posted</span>
                           )}
                           {pay && (
                             <span aria-label={`Truck pay for load ${ord.id}`} title="Landstar driver (BCO) gets the full posted rate; an approved carrier gets 78%–85% of it" className="tms-card-pay text-[9px] text-sky-300 font-semibold whitespace-nowrap">
@@ -9671,12 +9738,17 @@ export default function App({ sharing = null, userId = null } = {}) {
                   // Already on Booked Loads (or right after the switch): jump to the first waiting email.
                   setTimeout(() => document.querySelector('[data-email-draft]')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
                 }}
-                title="Tracking emails waiting for you on Booked Loads"
+                title={[
+                  paramountDrafts.length ? 'Tracking emails (check calls, ETAs) are ready for you to send.' : '',
+                  paramountReplies.length ? `New replies to your tracking emails: ${paramountReplies.map(reply => `${reply.driver ? 'driver on ' : ''}${reply.customer || ''} #${reply.loadId || ''}`.trim()).join(', ')}.` : '',
+                  'Click to open them on Booked loads.'
+                ].filter(Boolean).join(' ')}
                 className="bg-amber-400 hover:bg-amber-300 text-black text-xs px-2.5 py-1 rounded font-bold cursor-pointer normal-case tracking-normal"
               >
-                ⚠ {[
-                  paramountDrafts.length ? `${paramountDrafts.length} email${paramountDrafts.length === 1 ? '' : 's'} to send` : '',
-                  paramountReplies.length ? `${paramountReplies.length} repl${paramountReplies.length === 1 ? 'y' : 'ies'}` : ''
+                {/* Daniel 2026-11-27: "⚠ 1 reply" did not say what it was. */}
+                {[
+                  paramountDrafts.length ? `✉ ${paramountDrafts.length} tracking email${paramountDrafts.length === 1 ? '' : 's'} to send` : '',
+                  paramountReplies.length ? `💬 ${paramountReplies.length} ${paramountReplies.every(reply => reply.driver) ? 'driver' : paramountReplies.some(reply => reply.driver) ? '' : 'customer'} repl${paramountReplies.length === 1 ? 'y' : 'ies'} to read`.replace('  ', ' ') : ''
                 ].filter(Boolean).join(' · ')}
               </button>
             )}

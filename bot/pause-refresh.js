@@ -4,7 +4,8 @@
 // page) and unpausing it (UNPAUSE) makes it show as fresh there, with the same Landstar load #:
 // nothing is reposted or cancelled.
 //   - AMERI 18347- ATZ postings: every 5 minutes
-//   - hazmat postings (any customer): every 30 minutes
+//   (Hazmat postings were refreshed every 30 minutes too until 2026-11-27: Daniel wants it for
+//   AMERI only. Hazmat loads instead get the top-rate check in hazmat-watch.js.)
 // Run by the rate worker between export checks (new exports always go first).
 //
 // Landstar's warning: "All paused loads will be immediately removed from the load board and
@@ -58,7 +59,7 @@ function selectDue(postings, { ameriSignatures, ownCodes, state = {}, now = Date
     const loadId = String(posting.LoadId || '').trim();
     if (!loadId || clean(posting.SourceSystemID) !== 'PORTAL' || !own.has(clean(posting.Agency))) continue;
     if (onlyLoadId && loadId !== String(onlyLoadId).trim()) continue;
-    const group = ameriSignatures.has(postingSignature(posting)) ? 'AMERI' : isHazmat(posting) ? 'HAZMAT' : '';
+    const group = ameriSignatures.has(postingSignature(posting)) ? 'AMERI' : '';
     if (!group) continue;
     const every = group === 'AMERI' ? AMERI_REFRESH_MS : HAZMAT_REFRESH_MS;
     const last = Math.max(postedAt(posting), Number(state[loadId]?.refreshedAt) || 0);

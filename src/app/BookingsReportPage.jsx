@@ -60,7 +60,7 @@ function BookingsReportPage({ onBack, fuelRates = null }) {
               </thead>
               <tbody>
                 {week.customers.map(entry => (
-                  <tr key={entry.customer} className="border-t border-[#1c2541]">
+                  <tr key={entry.customer} className={`border-t border-[#1c2541]${entry.snb ? ' text-amber-200 italic' : ''}`} title={entry.snb ? "Ivan's bookings (R X O 2429200 - SNB); included in the week total" : undefined}>
                     <td className="py-1">{entry.customer}</td>
                     <td className="py-1 text-right">{entry.loads}</td>
                     <td className="py-1 text-right">{money(entry.lineHaul)}</td>
@@ -75,6 +75,15 @@ function BookingsReportPage({ onBack, fuelRates = null }) {
                   <td className="py-1 text-right">{money(week.total)}</td>
                   <td className="py-1 text-right">{money(week.potential)}</td>
                 </tr>
+                {week.snb.loads > 0 && (
+                  <tr className="text-[11px] text-gray-400">
+                    <td className="py-1">Yours without Ivan</td>
+                    <td className="py-1 text-right">{week.loads - week.snb.loads}</td>
+                    <td className="py-1 text-right">{money(week.lineHaul - week.snb.lineHaul)}</td>
+                    <td className="py-1 text-right">{money(week.total - week.snb.total)}</td>
+                    <td className="py-1 text-right">{money(week.potential - week.snb.potential)}</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -90,7 +99,7 @@ function BookingsReportPage({ onBack, fuelRates = null }) {
             <tbody>
               {months.map(month => (
                 <tr key={month.month} className="border-t border-[#1c2541]">
-                  <td className="py-1">{monthLabel(month.month)}</td>
+                  <td className="py-1">{monthLabel(month.month)}{month.snb.loads > 0 && <span className="block text-[10px] text-amber-200">Ivan (SNB): {month.snb.loads} load{month.snb.loads === 1 ? '' : 's'} · {money(month.snb.lineHaul)}</span>}</td>
                   <td className="py-1 text-right">{month.loads}</td>
                   <td className="py-1 text-right">{money(month.lineHaul)}</td>
                   <td className="py-1 text-right">{money(month.total)}</td>

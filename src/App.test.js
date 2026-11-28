@@ -1757,7 +1757,7 @@ test('tracking events enqueue broker emails in the owning worker instead of send
     await tasks.find(task => task.id === 'tracking-emails').run();
     assert.deepEqual(calls.map(call => call.action), ['thread'], 'first-send approval remains required');
     app.render();
-    assert.ok(app.find(node => node.type === 'button' && /1 email to send/.test(String(node.props.children))),
+    assert.ok(app.find(node => node.type === 'button' && /1 tracking email to send/.test(textOf(node))),
       'the event still produces a draft after storing tracking without the transient ok flag');
     owner = false;
     listeners.get('landstar-tracking-result')({ detail: info });
@@ -1809,7 +1809,7 @@ test('every send carries its email record key; an email the record says was sent
     app.render();
     await tasks.find(task => task.id === 'tracking-emails').run();
     app.render();
-    app.find(node => node.type === 'button' && /1 email to send/.test(String(node.props.children))).props.onClick();
+    app.find(node => node.type === 'button' && /1 tracking email to send/.test(textOf(node))).props.onClick();
     app.render();
     const emails = () => app.find(node => node.props?.emails?.onSend).props.emails;
     const [draft] = emails().drafts;
@@ -5054,4 +5054,77 @@ test('RXO big list: Texas pickups and 500+ miles stay in VAN, the rest goes to S
   assert.deepEqual(map[van].map(order => order.id).sort(), ['900001', '900003'], 'Texas pickup and 1,400 miles stay');
   assert.deepEqual(map[snb].map(order => order.id).sort(), ['900002', '900004', 'OLD-1'], 'short non-Texas loads go to SNB; its own loads stay');
   assert.ok(app.alerts.some(message => /Sent to R X O 2429200 - snb .*: 2 new/.test(message)));
+});
+
+test('clicking a load in the list while on Billing opens that load', () => {
+  const app = createAppHarness(customers[0], [{ ...load, id: '7001' }, { ...load, id: '7002', destCity: 'Austin' }]);
+  app.render();
+  app.find(node => node.type === 'button' && /^BOOKED \(/.test(textOf(node))).props.onClick();
+  app.render();
+  assert.ok(app.find(node => node.props?.role === 'tablist' && node.props?.['aria-label'] === 'Billing'), 'on Billing');
+  app.find(node => node.props?.id === 'load-card-7002').props.onClick();
+  app.render();
+  assert.equal(app.find(node => node.props?.role === 'tablist' && node.props?.['aria-label'] === 'Billing'), null, 'left Billing');
+  assert.ok(app.find(node => node.props?.['aria-label'] === 'Load summary'), 'the load details show');
+  assert.match(textOf(app.find(node => node.props?.['aria-label'] === 'Load summary')), /AUSTIN|Austin/);
+});
+
+test('bookings report: a renamed account does not count its loads twice, and sub-accounts share one row', () => {
+  const at = '2026-11-25T15:00:00.000Z';
+  const log = [
+    { customer: 'R X O 2429200 - ATZ V', loadId: '24780975', at, bookedAt: at, lineHaul: 4585, miles: 1200, origSt: 'AZ' },
+    { customer: 'R X O 2429200 - VAN', loadId: '24780975', at, bookedAt: at, lineHaul: 4585, miles: 1200, origSt: 'AZ' },
+    { customer: 'R X O 2429200 - Haz', loadId: '24808328', at, bookedAt: at, lineHaul: 6200, miles: 0, origSt: 'TX' },
+    { customer: 'Para 1522166 - ATZ', loadId: '2291338', at, bookedAt: at, lineHaul: 783, miles: 0, origSt: 'KY' },
+    { customer: 'Para 1522166 - N HAZ', loadId: '2291338', at, bookedAt: at, lineHaul: 783, miles: 0, origSt: 'KY',
+      removed: true, removedAt: '2026-11-26T10:00:00.000Z' }
+  ];
+  const week = policy.summarizeBookings(log).weeks[0];
+  assert.equal(week.loads, 2, 'the VAN copy and the removed Para load are not counted again');
+  assert.equal(week.lineHaul, 4585 + 6200);
+  assert.deepEqual(Array.from(week.customers, row => row.customer), ['R X O 2429200']);
+});
+
+test('Landstar posting filter: posted, not posted and errors, with counts and card badges', () => {
+  const at = new Date().toISOString();
+  const app = createAppHarness(customers[0], [
+    { ...load, id: '8101', status: 'OPEN', landstarExportedAt: at },
+    { ...load, id: '8102', status: 'OPEN', destCity: 'Austin' },
+    { ...load, id: '8103', status: 'OPEN', destCity: 'Reno', exportError: { message: 'Weight is missing', at } }
+  ]);
+  app.render();
+  const button = label => app.find(node => node.type === 'button' && textOf(node) === label);
+  assert.ok(button('Posted (1)') && button('Not posted (1)') && button('Errors (1)'));
+  const cards = () => {
+    const found = [];
+    app.find(node => { if (node.props?.className?.includes?.('tms-load-card')) found.push(node.props.id); return false; });
+    return found.sort();
+  };
+  button('Errors (1)').props.onClick();
+  app.render();
+  assert.deepEqual(cards(), ['load-card-8103']);
+  const errorBadge = app.find(node => node.props?.['data-state'] === 'error');
+  assert.match(errorBadge.props.title, /Weight is missing/);
+  button('Not posted (1)').props.onClick();
+  app.render();
+  assert.deepEqual(cards(), ['load-card-8102']);
+  button('All').props.onClick();
+  app.render();
+  assert.equal(cards().length, 3);
+  assert.equal(policy.markLoadsExported([{ id: '8103', exportError: { message: 'x', at } }], new Set(['8103']), at)[0].exportError, undefined, 'a good export clears the error');
+});
+
+test("bookings report: Ivan's SNB bookings count in the totals but have their own line", () => {
+  const at = '2026-11-25T15:00:00.000Z';
+  const log = [
+    { customer: 'R X O 2429200 - VAN', loadId: '1', at, lineHaul: 3000, miles: 0, origSt: 'TX' },
+    { customer: 'R X O 2429200 - snb', loadId: '2', at, lineHaul: 1000, miles: 0, origSt: 'GA' },
+    { customer: 'R X O 2429200 - SNB', loadId: '3', at, lineHaul: 500, miles: 0, origSt: 'GA' }
+  ];
+  const { weeks, months } = policy.summarizeBookings(log);
+  assert.equal(weeks[0].loads, 3);
+  assert.equal(weeks[0].lineHaul, 4500);
+  assert.deepEqual({ ...weeks[0].snb }, { loads: 2, lineHaul: 1500, total: 1500, potential: 75 });
+  assert.deepEqual(Array.from(weeks[0].customers, row => row.customer), ['R X O 2429200', 'Ivan (SNB)'], 'SNB on its own line, last');
+  assert.equal(months[0].snb.loads, 2);
 });

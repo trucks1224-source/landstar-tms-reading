@@ -265,6 +265,8 @@ async function removeDuplicatePostings(context, { apply = true, log = console.lo
   // Pass the log through so "ACTION NEEDED: log in" is shown if the session expired.
   const boardPage = await openBoard(context, log);
   const postings = await listPostings(boardPage, OWN_POSTING_CODES, log);
+  // Uploads Landstar never confirmed: cleared from the review folder once they are on the board.
+  try { require('./review-settle').settleReviewFiles(postings, { log }); } catch (error) { log(`  ! Review folder check failed: ${error.message}`); }
   const { keep, remove } = planDuplicateRemoval(postings);
   if (!remove.length) {
     log(`  No duplicates (${postings.length} postings checked).`);

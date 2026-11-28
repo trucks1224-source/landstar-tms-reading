@@ -1,6 +1,7 @@
 // Moved out of App.jsx (Daniel 2026-11-27: splitting the TMS's main file). App.jsx imports
 // everything here, so it is used exactly as before.
 import { normalizeMilesValue } from './screenshotParsers.js';
+import { splitCustomerName } from './customerGroups.js';
 
 // The amount at the start of the rate box; words typed after it ("5500 killing it today")
 // don't zero the line haul.
@@ -55,10 +56,35 @@ function getBookingPotential(entry) {
   return (Number(entry?.lineHaul) || 0) * (straight ? 0.11 : 0.05);
 }
 
-// One report row per customer: the ATZ sub-accounts (R X O 2429200 - ATZ V/R/P/F...,
-// Para 1522166 - ATZ/ATZ H) roll up into one line each.
+// One report row per customer: the sub-accounts (R X O 2429200 - VAN / Haz / Panels / ATZ V...,
+// Para 1522166 - HAZ / N HAZ / ATZ H...) roll up into one line each, whatever they are named.
+// Ivan's bookings (agent SNB, in the shared R X O 2429200 - SNB) count in the totals but show on
+// their own line, so Daniel sees how much Ivan books (2026-11-27).
+const SNB_GROUP = 'Ivan (SNB)';
+function isSnbBooking(name) {
+  return /\bSNB\b/i.test(splitCustomerName(String(name || '')).tag);
+}
+
 function getBookingCustomerGroup(name) {
-  return String(name || '').replace(/\s*-\s*ATZ\b.*$/i, '').trim() || 'Unknown';
+  const text = String(name || '').trim();
+  if (isSnbBooking(text)) return SNB_GROUP;
+  const { base, tag } = splitCustomerName(text);
+  return (tag ? base : text.replace(/\s*-\s*ATZ\b.*$/i, '').trim()) || 'Unknown';
+}
+
+// One entry per booked load. Renaming an account (2026-11-27: ATZ V -> VAN, ATZ H -> Haz...)
+// logged its booked loads again under the new name, so they counted twice. The same load
+// number in the same customer (any sub-account name) is one booking: the newest entry wins
+// (so a removal made after the rename still takes it off).
+function dedupeBookingEntries(log) {
+  const newest = entry => Math.max(Date.parse(entry.removedAt || '') || 0, Date.parse(entry.bookedAt || entry.at || '') || 0);
+  const byLoad = new Map();
+  for (const entry of Array.isArray(log) ? log : []) {
+    const key = `${getBookingCustomerGroup(entry.customer).toUpperCase().replace(/[^A-Z0-9]/g, '')}|${String(entry.loadId).trim()}`;
+    const kept = byLoad.get(key);
+    if (!kept || newest(entry) >= newest(kept)) byLoad.set(key, entry);
+  }
+  return [...byLoad.values()];
 }
 
 // The booking fell through (capacity removed): the entry is kept but marked removed, so a
@@ -83,7 +109,7 @@ function getBookingWeekStart(at) {
 function summarizeBookings(log, fuelRates = null) {
   const weeks = new Map();
   const months = new Map();
-  for (const entry of Array.isArray(log) ? log : []) {
+  for (const entry of dedupeBookingEntries(log)) {
     if (entry.removed) continue;
     const at = Date.parse(entry.at);
     if (!Number.isFinite(at)) continue;
@@ -93,11 +119,18 @@ function summarizeBookings(log, fuelRates = null) {
     const fscRate = getFuelSurchargeRate(fuelRates, origSt);
     const total = lineHaul + (Number(entry.miles) || 0) * (fscRate || 0);
     const weekStart = getBookingWeekStart(at);
-    const week = weeks.get(weekStart) || { start: weekStart, loads: 0, lineHaul: 0, total: 0, potential: 0, customers: new Map() };
+    const week = weeks.get(weekStart) || { start: weekStart, loads: 0, lineHaul: 0, total: 0, potential: 0, customers: new Map(), snb: { loads: 0, lineHaul: 0, total: 0, potential: 0 } };
     week.loads += 1;
     week.lineHaul += lineHaul;
     week.total += total;
     week.potential += potential;
+    const snb = isSnbBooking(entry.customer);
+    if (snb) {
+      week.snb.loads += 1;
+      week.snb.lineHaul += lineHaul;
+      week.snb.total += total;
+      week.snb.potential += potential;
+    }
     const name = getBookingCustomerGroup(entry.customer);
     const customer = week.customers.get(name) || { loads: 0, lineHaul: 0, total: 0, potential: 0 };
     customer.loads += 1;
@@ -108,19 +141,25 @@ function summarizeBookings(log, fuelRates = null) {
     weeks.set(weekStart, week);
     const date = new Date(at);
     const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-    const month = months.get(monthKey) || { month: monthKey, loads: 0, lineHaul: 0, total: 0, potential: 0 };
+    const month = months.get(monthKey) || { month: monthKey, loads: 0, lineHaul: 0, total: 0, potential: 0, snb: { loads: 0, lineHaul: 0, total: 0, potential: 0 } };
     month.loads += 1;
     month.lineHaul += lineHaul;
     month.total += total;
     month.potential += potential;
+    if (snb) {
+      month.snb.loads += 1;
+      month.snb.lineHaul += lineHaul;
+      month.snb.total += total;
+      month.snb.potential += potential;
+    }
     months.set(monthKey, month);
   }
   return {
     weeks: [...weeks.values()].sort((a, b) => b.start - a.start).map(week => ({
       ...week,
       customers: [...week.customers.entries()]
-        .map(([name, totals]) => ({ customer: name, ...totals }))
-        .sort((a, b) => b.loads - a.loads || b.lineHaul - a.lineHaul)
+        .map(([name, totals]) => ({ customer: name, ...totals, ...(name === SNB_GROUP ? { snb: true } : {}) }))
+        .sort((a, b) => Number(Boolean(a.snb)) - Number(Boolean(b.snb)) || b.loads - a.loads || b.lineHaul - a.lineHaul)
     })),
     months: [...months.values()].sort((a, b) => b.month.localeCompare(a.month))
   };

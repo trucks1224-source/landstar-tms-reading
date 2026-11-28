@@ -25,6 +25,13 @@ function ToolsDrawer({ selected, count, children }) {
     try { localStorage.setItem(toolsPinnedKey, String(next)); } catch { /* this visit only */ }
     return next;
   });
+  // After an import the TMS asks the drawer to close, so the imported loads show.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const close = () => setOpen(false);
+    window.addEventListener('tms-close-drawer', close);
+    return () => window.removeEventListener('tms-close-drawer', close);
+  }, []);
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
     // The sidebar's blur would trap the fixed drawer inside it, so drop it while open.

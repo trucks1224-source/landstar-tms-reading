@@ -96,4 +96,4 @@ function isBotPosting(posting, signatures = uploadedSignatures()) {
   return signatures.has(postingSignature(posting));
 }
 
-module.exports = { isBotPosting, uploadedSignatures, mergeLedger, postingSignature, signature, serialToBoardTime, UPLOADED_FOLDER };
+module.exports = { isBotPosting, uploadedSignatures, mergeLedger, postingSignature, signature, serialToBoardTime, fileSignatures, UPLOADED_FOLDER };

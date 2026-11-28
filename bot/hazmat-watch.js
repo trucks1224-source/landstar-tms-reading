@@ -43,12 +43,17 @@ const isHazmatPosting = load => clean(load.CommodityCode) === 'HAZMAT'
   && clean(load.SourceSystemID) === 'PORTAL'
   && OWN_POSTING_CODES.includes(clean(load.Agency));
 
-function selectRateWatchPostings(postings, eligible, other) {
+// Daniel 2026-11-27: "make sure I'm the highest paid on the board for hazmat loads" - every
+// hazmat posting the bot uploaded is checked, whatever the customer, except accounts whose rate
+// is fixed by the customer (AMERI's contract rates, CH's own rate).
+const fixedRateExport = name => /^Landstar_Bulk_(?:AMERI_18347|CH_593772)(?:_|\.xlsx$)/i.test(name);
+
+function selectRateWatchPostings(postings, eligible, other, hazmatEligible = new Set(), fixedRate = new Set()) {
   return postings.filter(posting => {
     const signature = postingSignature(posting);
-    return clean(posting.SourceSystemID) === 'PORTAL'
-      && OWN_POSTING_CODES.includes(clean(posting.Agency))
-      && eligible.has(signature) && !other.has(signature);
+    if (clean(posting.SourceSystemID) !== 'PORTAL' || !OWN_POSTING_CODES.includes(clean(posting.Agency))) return false;
+    if (eligible.has(signature) && !other.has(signature)) return true;
+    return isHazmatPosting(posting) && hazmatEligible.has(signature) && !fixedRate.has(signature);
   }).sort((a, b) => Number(isHazmatPosting(b)) - Number(isHazmatPosting(a)));
 }
 
@@ -175,11 +180,13 @@ async function raisePostingRate(context, loadId, rate, log) {
 // shouldYield: checked before each posting; when it returns true the pass stops early and the
 // result is marked yielded (raises already saved stay saved; the next pass picks up the rest).
 async function checkHazmatRates(context, { apply = true, log = console.log, shouldYield } = {}) {
-  setStatus('logged-in', 'Checking PARA and RXO board rates (hazmat first)');
+  setStatus('logged-in', 'Checking board rates: every hazmat load, plus PARA and RXO');
   const board = await openBoard(context, log);
   const eligible = uploadedSignatures(undefined, undefined, { test: eligibleExport });
   const other = uploadedSignatures(undefined, undefined, { test: name => !eligibleExport(name) });
-  const mine = selectRateWatchPostings(await listPostings(board, OWN_POSTING_CODES, log), eligible, other);
+  const hazmatEligible = uploadedSignatures(undefined, undefined, { test: name => !fixedRateExport(name) });
+  const fixedRate = uploadedSignatures(undefined, undefined, { test: fixedRateExport });
+  const mine = selectRateWatchPostings(await listPostings(board, OWN_POSTING_CODES, log), eligible, other, hazmatEligible, fixedRate);
   if (!mine.length) {
     log('  No verified PARA or RXO postings to check; unmatched or ambiguous postings are left unchanged.');
     return [];
@@ -215,11 +222,11 @@ async function checkHazmatRates(context, { apply = true, log = console.log, shou
   }
   const saved = raises.filter(r => r.saved).length;
   const failed = raises.filter(r => r.error).length;
-  log(`  PARA/RXO rate check (hazmat first): ${mine.length} posting(s), ${raises.length} outbid${apply ? `, ${saved} raised${failed ? `, ${failed} could not be saved` : ''}` : ' (report only)'}.`);
+  log(`  Rate check (every hazmat load, plus PARA/RXO): ${mine.length} posting(s) (${mine.filter(isHazmatPosting).length} hazmat), ${raises.length} outbid${apply ? `, ${saved} raised${failed ? `, ${failed} could not be saved` : ''}` : ' (report only)'}.`);
   return raises;
 }
 
-module.exports = { checkHazmatRates, findCompetitors, planRaise, isHazmatPosting, raisePostingRate, selectRateWatchPostings, eligibleExport, rateRaiseReport };
+module.exports = { checkHazmatRates, findCompetitors, planRaise, isHazmatPosting, raisePostingRate, selectRateWatchPostings, eligibleExport, fixedRateExport, rateRaiseReport };
 
 if (require.main === module) {
   const { chromium } = require('playwright');

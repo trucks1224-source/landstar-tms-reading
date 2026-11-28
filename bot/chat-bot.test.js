@@ -134,3 +134,16 @@ test('a download identical to a different list saved within the hour is caught',
   assert.equal(sameAsEarlierSheet(Buffer.from('fbs bytes'), 'export-181742.xlsx', 2000), '');
   assert.equal(sameAsEarlierSheet(big, 'export-181742.xlsx', 1000 + 61 * 60 * 1000), '', 'older than an hour: not compared');
 });
+
+test('reply thread buttons and recent RXO export names', () => {
+  const { replyCountOf, isRecentExportName } = require('./chat-bot');
+  assert.equal(replyCountOf('1 reply'), 1);
+  assert.equal(replyCountOf('3 replies  Last reply 5 min'), 3);
+  assert.equal(replyCountOf('2 unread replies'), 2);
+  assert.equal(replyCountOf('Reply'), 0, 'the plain Reply button is not a thread');
+  const now = new Date(2026, 10, 27, 21, 40).getTime();
+  assert.equal(isRecentExportName('allLoadsSearch_Export - 2026-11-27T210512.123.xlsx', now), true);
+  assert.equal(isRecentExportName('allLoadsSearch_Export - 2026-11-27T091512.123.xlsx', now), false, 'more than 12 hours old');
+  assert.equal(isRecentExportName('allLoadsSearch_Export - 2026-11-20T210512.123.xlsx', now), false, 'old history');
+  assert.equal(isRecentExportName('panels.xlsx', now), false, 'no time in the name: left for Daniel');
+});

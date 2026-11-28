@@ -105,7 +105,7 @@ export {
   getStatusTag, bookLoad, addBookingEntry, removeBookingEntry, summarizeBookings, getBookingWeekStart, buildDriverDirectory, findKnownDriver, getPostingMaintenanceLoads, getPostingRefreshDetails,
   getBookedLoads, getTrackingAlert, logCheckCall, parseScheduleStart, loadMatchesSearch, isBookedLoadComplete, getPaperworkStatus, getDeliveredAt, buildPaperworkEmail, getPaperworkTarget, getPaperworkSince, checkBeforePodRequest, isDailyCustomerUpdateDue, getLoadedTimeWarning, getNearStopWarning, getTrackingEmailWarning, milesBetween, createStatusStore, emailCheckRow, mergeSystemCheck, toUsPhoneE164, getGoogleVoiceUrl, buildDriverText, rememberLaneRate, fetchDatRateForImport,
   buildInquiryDetails, getInquiryUrl, getLandstarExportComment, getExportPlace, addRateHistoryEntries,
-  getEarliestPickupSerial, adjustPickupWindow, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, copyLoadDetails, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, getTrackingEmailBroker, getCustomerRequestOrders, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
+  getEarliestPickupSerial, adjustPickupWindow, adjustDeliveryEnd, removeCapacity, formatDriverInfo, formatOrderCopy, describeBotProgress, isNolanCustomer, isParaCustomer, createManualLoad, copyLoadDetails, estimateRoadMilesFromZips, getGoogleRoadMiles, getRoadMilesLaneKey, buildAssignRequest, applyAssignResult, getRxoAtzDatVanDiscount, isRxoSameCityLoad, getParamountWatchList, buildParamountEmail, getDueParamountEmails, markParamountEmail, applyParamountTrackingInfo, greetingNameFrom, isParamountTrackingCustomer, formatParamountTime, getRxoWatchList, findRxoLoadForRequest, getTrackingEmailBroker, getCustomerRequestOrders, buildRxoUpdateEmail, getDueDriverEmails, buildDriverEmail, markDriverEmail, findTruckerToolsStart, markTrackingStarted, isTrackingReminderDue, getTruckerToolsStatus, getTrackingWatchList, findDriverEta, buildParamountEtaEmail, getDueMercuryGateStep, applyMercuryGateResult, paramountMaySendItself,
   buildLandstarPosting, markRemovalQueued, applyRemovalResult, getRemovalBadge, takeNewRemovalResults, excelSerialToBoardTime, findDroppedPostings, getLoadSheetNames, loadMatchesRateRaise, applyRateRaise, applyLandstarError, hasOpenLandstarError, isRxoSkippedVanLoad, isMexicoLoad, getImportedHazmatTanker, describeLoadListSummary, moveCustomer, getEquipmentListCategory
 };`, { loader: 'jsx', format: 'cjs' });
 // Test loads are dated October 2026, so "today" inside the TMS code is 10/1/2026:
@@ -3539,6 +3539,17 @@ test('a pickup window that already started is posted from now; an ended window i
 
   const over = policy.adjustPickupWindow(policy.toExcelDateTime('11/03/2026 0700'), policy.toExcelDateTime('11/04/2026 0830'), earliest);
   assert.equal(over.ended, true);
+});
+
+test('a delivery that ends no later than the pickup ends is moved to 2 hours after it', () => {
+  // Charleston, SC -> Piedmont, SC (2026-11-27): both windows end 12/04 15:00; Landstar refused it.
+  const pickupEnd = policy.toExcelDateTime('12/04/2026 1500');
+  const fixed = policy.adjustDeliveryEnd(pickupEnd, policy.toExcelDateTime('12/04/2026 1500'));
+  assert.equal(fixed.moved, true);
+  assert.ok(Math.abs(fixed.thru - policy.toExcelDateTime('12/04/2026 1700')) < 1e-6);
+  const fine = policy.toExcelDateTime('12/05/2026 0800');
+  assert.deepEqual({ ...policy.adjustDeliveryEnd(pickupEnd, fine) }, { thru: fine, moved: false });
+  assert.deepEqual({ ...policy.adjustDeliveryEnd(null, fine) }, { thru: fine, moved: false });
 });
 
 test('removing capacity clears the truck and tracking, keeps the rate, and moves the load back to OPEN', () => {

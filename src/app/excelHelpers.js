@@ -108,7 +108,17 @@ function adjustPickupWindow(pickupFrom, pickupThru, earliestStart) {
   return { from: pickupFrom, ended: false, moved: false };
 }
 
+// Landstar rejects a delivery that ends no later than the pickup ends ("Delivery End Date must
+// be later than than Pickup End Date": Charleston, SC -> Piedmont, SC, 11/27/2026, both windows
+// 12/01 - 12/04 15:00). Such a delivery end is moved to 2 hours after the pickup end.
+const DELIVERY_AFTER_PICKUP_DAYS = 2 / 24;
+function adjustDeliveryEnd(pickupThru, deliveryThru) {
+  if (pickupThru === null || deliveryThru === null || deliveryThru > pickupThru) return { thru: deliveryThru, moved: false };
+  return { thru: pickupThru + DELIVERY_AFTER_PICKUP_DAYS, moved: true };
+}
+
 export {
+  adjustDeliveryEnd,
   parseDatRateText,
   formatExcelDateTime,
   formatRxoBusinessHours,

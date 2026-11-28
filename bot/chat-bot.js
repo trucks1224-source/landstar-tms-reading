@@ -459,6 +459,126 @@ async function waitForSignIn(page) {
 
 // One look at one chat: remembers its pictures and spreadsheets the first time, saves new
 // ones after that.
+// Downloads one list (all its parts) and puts it in the TMS inbox; returns the inbox file name.
+async function saveSheetGroup(context, page, chat, group) {
+  const first = group.sheets[0];
+  const parts = [];
+  for (const sheet of group.sheets) {
+    const bytes = await downloadSpreadsheet(context, sheet, page);
+    // 2026-11-27 6:18 PM: the "fbs" download came back as the big list again (same bytes), so
+    // the flatbed list was never imported. A file identical to a different list saved in the
+    // last hour is the wrong download: tried again on the next check.
+    const repeat = sameAsEarlierSheet(bytes, sheet.fileName);
+    if (repeat) throw new Error(`the download gave the earlier list again (${repeat}), not ${sheet.fileName}`);
+    parts.push(bytes);
+  }
+  group.sheets.forEach((sheet, index) => rememberSheetBytes(parts[index], sheet.fileName));
+  const bytes = parts.length > 1 ? mergeSheetParts(parts) : parts[0];
+  const meta = parts.length > 1
+    ? { ...first, label: group.label, fileName: `${first.fileName.replace(/\.xlsx?$/i, '')} (${parts.length} parts).xlsx` }
+    : first;
+  return addToInbox(bytes, '', { ...meta, chat: chat.name, kind: chat.kind });
+}
+
+// Reply threads (Daniel 2026-11-27: lists posted as a reply were never seen, the bot only read
+// the main chat). A "N replies" button whose count is new is opened, and RXO export files in it
+// from the last 12 hours (the time is in the file name, allLoadsSearch_Export - 2026-11-27T181729)
+// go to the TMS, so older history Gmail loads never sends an old list.
+const REPLY_COUNT = /\b(\d+)\s+(?:more\s+|new\s+|unread\s+)?repl(?:y|ies)\b/i;
+function replyCountOf(label) {
+  return Number(String(label || '').match(REPLY_COUNT)?.[1]) || 0;
+}
+const THREAD_FILE_HOURS = 12;
+function isRecentExportName(fileName, now = Date.now(), hours = THREAD_FILE_HOURS) {
+  const match = String(fileName || '').match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})(\d{2})(\d{2})/);
+  if (!match) return false;
+  const at = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6])).getTime();
+  return at <= now + 10 * 60 * 1000 && now - at <= hours * 60 * 60 * 1000;
+}
+const threadKey = (chatUrl, thread) => `thread|${chatUrl}|${thread.anchor}|${thread.count}`;
+
+// The reply buttons on the page: [{ frame, index, label, count, anchor }]. anchor names the
+// message the thread hangs on (Google's topic/message id), so a new reply changes only its key.
+async function readReplyButtons(page) {
+  const found = [];
+  for (const frame of page.frames()) {
+    const items = await frame.evaluate(pattern => {
+      const re = new RegExp(pattern, 'i');
+      const labelOf = element => `${element.getAttribute('aria-label') || ''} ${element.innerText || ''}`.replace(/\s+/g, ' ').trim();
+      const out = [];
+      const all = Array.from(document.querySelectorAll('[role="button"], button, [jsaction*="click"]'));
+      for (const element of all) {
+        const label = labelOf(element);
+        if (!re.test(label) || label.length > 120) continue;
+        if (Array.from(element.querySelectorAll('[role="button"], button')).some(child => re.test(labelOf(child)))) continue;
+        let anchor = '';
+        for (let node = element; node && !anchor; node = node.parentElement) {
+          anchor = node.getAttribute?.('data-topic-id') || node.getAttribute?.('data-message-id') || node.getAttribute?.('data-id') || '';
+        }
+        if (!anchor) continue;
+        element.dataset.chatBotThread = String(out.length);
+        out.push({ index: out.length, label: label.slice(0, 80), anchor });
+      }
+      return out;
+    }, REPLY_COUNT.source).catch(() => []);
+    found.push(...items.map(item => ({ ...item, frame, count: replyCountOf(item.label) })));
+  }
+  return found;
+}
+
+const loggedThreadButtons = new Set();
+async function checkReplyThreads(context, tab, seen) {
+  const { chat, page } = tab;
+  const threads = (await readReplyButtons(page)).filter(thread => thread.count > 0);
+  const startKey = `${chat.url}|threads`;
+  if (!seen.started.has(startKey)) {
+    threads.forEach(thread => seen.keys.add(threadKey(chat.url, thread)));
+    seen.started.add(startKey);
+    writeSeen(seen);
+    log(`${chat.name}: first look at reply threads, ${threads.length} already there are skipped. New replies go to the TMS.`);
+    return;
+  }
+  for (const thread of threads) {
+    const key = threadKey(chat.url, thread);
+    if (seen.keys.has(key)) continue;
+    if (!loggedThreadButtons.has(key)) {
+      loggedThreadButtons.add(key);
+      log(`${chat.name}: reply thread "${thread.label}" has new replies; opening it.`);
+    }
+    const opened = await thread.frame.evaluate(index => {
+      const element = document.querySelector(`[data-chat-bot-thread="${index}"]`);
+      if (!element) return false;
+      element.click();
+      return true;
+    }, thread.index).catch(() => false);
+    if (!opened) continue;
+    await page.waitForTimeout(3000);
+    const sheets = pickSpreadsheets(await readPageFiles(page));
+    // Files not seen yet: recent RXO exports go to the TMS; anything older is only marked seen.
+    const unseen = sheets.filter(sheet => !seen.keys.has(sheet.key));
+    const fresh = unseen.filter(sheet => isRecentExportName(sheet.fileName));
+    unseen.filter(sheet => !fresh.includes(sheet)).forEach(sheet => seen.keys.add(sheet.key));
+    let failed = false;
+    for (const group of groupSheetParts(sheets, fresh)) {
+      const names = group.sheets.map(sheet => sheet.fileName).join(' + ');
+      try {
+        const name = await saveSheetGroup(context, page, chat, group);
+        log(`${chat.name}: new spreadsheet in a reply thread ${group.label ? `"${group.label}" ` : ''}(${names}), saved for the TMS (${name}).`);
+        group.sheets.forEach(sheet => seen.keys.add(sheet.key));
+      } catch (error) {
+        failed = true;
+        log(`${chat.name}: could not save spreadsheet ${names} from a reply thread: ${error.message}. Trying again on the next check.`);
+      }
+    }
+    if (!failed) seen.keys.add(key);
+    writeSeen(seen);
+    // Close the thread (Escape closes Gmail's thread panel; an inline thread just stays open).
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(800);
+    if (failed) break;
+  }
+}
+
 async function checkChat(context, tab, seen) {
   const { chat, page } = tab;
   // RXO's chat sends spreadsheets: its pictures are only the files' previews, never lists.
@@ -537,22 +657,7 @@ async function checkChat(context, tab, seen) {
     const first = group.sheets[0];
     const names = group.sheets.map(sheet => sheet.fileName).join(' + ');
     try {
-      const parts = [];
-      for (const sheet of group.sheets) {
-        const bytes = await downloadSpreadsheet(context, sheet, page);
-        // 2026-11-27 6:18 PM: the "fbs" download came back as the big list again (same bytes), so
-        // the flatbed list was never imported. A file identical to a different list saved in the
-        // last hour is the wrong download: tried again on the next check.
-        const repeat = sameAsEarlierSheet(bytes, sheet.fileName);
-        if (repeat) throw new Error(`the download gave the earlier list again (${repeat}), not ${sheet.fileName}`);
-        parts.push(bytes);
-      }
-      group.sheets.forEach((sheet, index) => rememberSheetBytes(parts[index], sheet.fileName));
-      const bytes = parts.length > 1 ? mergeSheetParts(parts) : parts[0];
-      const meta = parts.length > 1
-        ? { ...first, label: group.label, fileName: `${first.fileName.replace(/\.xlsx?$/i, '')} (${parts.length} parts).xlsx` }
-        : first;
-      const name = addToInbox(bytes, '', { ...meta, chat: chat.name, kind: chat.kind });
+      const name = await saveSheetGroup(context, page, chat, group);
       log(`${chat.name}: new spreadsheet ${group.label ? `"${group.label}" ` : ''}(${names})${first.sender ? ` from ${first.sender}` : ''}, saved for the TMS (${name}).`);
       sheetFailures.delete(first.key);
     } catch (error) {
@@ -691,6 +796,7 @@ async function main() {
         await tab.page.waitForTimeout(3000);
         try {
           await checkChat(context, tab, seen);
+          if (tab.chat.kind === 'rxo') await checkReplyThreads(context, tab, seen);
         } catch (error) {
           log(`${tab.chat.name}: check failed: ${error.message}`);
           chatFailed = `${tab.chat.name}: ${error.message}`;
@@ -724,4 +830,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { sameAsEarlierSheet, rememberSheetBytes, pickListImages, imageKey, fullSizeUrl, pickSpreadsheets, attachmentId, spreadsheetDownloadUrl, pickListLabel, isSignedInUrl, newAfterLastSeen, groupSheetParts, mergeSheetParts };
+module.exports = { replyCountOf, isRecentExportName, sameAsEarlierSheet, rememberSheetBytes, pickListImages, imageKey, fullSizeUrl, pickSpreadsheets, attachmentId, spreadsheetDownloadUrl, pickListLabel, isSignedInUrl, newAfterLastSeen, groupSheetParts, mergeSheetParts };

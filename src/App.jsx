@@ -327,7 +327,8 @@ import {
   phalanxColumns,
   addMissingPhalanxHeader,
   getLoadSheetNames,
-  adjustPickupWindow
+  adjustPickupWindow,
+  adjustDeliveryEnd
 } from './app/excelHelpers.js';
 import {
   addToUnpostQueue,
@@ -6428,6 +6429,7 @@ export default function App({ sharing = null, userId = null } = {}) {
     const exportEntries = [];
     const earliestPickupSerial = getEarliestPickupSerial();
     const movedPickupStarts = [];
+    const movedDeliveryEnds = [];
     loadsToExport.forEach(ord => {
       const rowErrors = [];
       const originState = String(ord.origSt || '').trim().toUpperCase();
@@ -6512,6 +6514,9 @@ export default function App({ sharing = null, userId = null } = {}) {
       if (deliveryFrom !== null && deliveryThru !== null && deliveryThru <= deliveryFrom) {
         deliveryThru = deliveryFrom + (1 / 24);
       }
+      // Landstar needs the delivery to end after the pickup ends (2026-11-27 rejected load).
+      const deliveryEnd = adjustDeliveryEnd(pickupThru, deliveryThru);
+      if (deliveryEnd.moved) { deliveryThru = deliveryEnd.thru; movedDeliveryEnds.push(ord.id); }
       const equipment = getLandstarEquipmentCode(ord.eCode);
       const commodity = getLoadCommodity(ord);
       const miles = Number(normalizeMilesValue(ord.miles));
@@ -6962,6 +6967,9 @@ export default function App({ sharing = null, userId = null } = {}) {
     }
     if (skippedEquipmentExportCount) {
       skippedNotes.push(`Left out ${skippedEquipmentExportCount} intermodal (INT) or oversized load(s) (never posted).`);
+    }
+    if (movedDeliveryEnds.length) {
+      skippedNotes.push(`Moved the delivery end to 2 hours after the pickup end for ${movedDeliveryEnds.length} load(s) whose delivery ended no later than the pickup (Landstar rejects that).`);
     }
     if (movedPickupStarts.length) {
       skippedNotes.push(`Moved the pickup start to now for ${movedPickupStarts.length} load(s) whose pickup window had already started (Landstar rejects a past pickup start). The pickup end time is unchanged.`);

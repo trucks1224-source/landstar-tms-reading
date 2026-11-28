@@ -197,6 +197,9 @@ import {
   HelperBotLight,
   EmailWorkerStatus
 } from './app/BotLights.jsx';
+import TeamChatSettings from './app/TeamChatSettings.jsx';
+import TeamStatusPanel from './app/TeamStatusPanel.jsx';
+import { TEAM_STATUS_EVERY_MS, lastExportTime, buildTeamStatusRow } from './lib/teamStatus.js';
 import {
   InquiriesPanel,
   LoadEmailBox,
@@ -4928,9 +4931,15 @@ export default function App({ sharing = null, userId = null } = {}) {
   const [chatItem, setChatItem] = useState(null);
   const [chatSheet, setChatSheet] = useState(null);
   const [pendingChatSheet, setPendingChatSheet] = useState(null);
+  // Where the chat inbox is: the local TMS server for Daniel's TMS on this computer; a teammate's
+  // own bot (bot/team-chat.js) for a teammate on the website. Daniel's TMS on the website reads
+  // none, so his lists are never imported twice (his local TMS takes them).
+  const chatInboxBase = typeof window !== 'undefined' && /^(127\.0\.0\.1|localhost)$/.test(window.location?.hostname || '')
+    ? '/api/chat-inbox'
+    : userId && !isTmsOwner(userId) ? 'http://127.0.0.1:47615/chat-inbox' : '';
   const finishChatItem = name => {
-    if (!name) return;
-    fetch('/api/chat-inbox/done', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
+    if (!name || !chatInboxBase) return;
+    fetch(`${chatInboxBase}/done`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) })
       .catch(error => console.error('Could not clear the chat inbox item:', error));
   };
   const importPastedImage = (customer) => {
@@ -5073,7 +5082,8 @@ export default function App({ sharing = null, userId = null } = {}) {
     const openName = chatItem?.name || chatSheet?.item?.name || '';
     const check = async () => {
       try {
-        const response = await fetch('/api/chat-inbox');
+        if (!chatInboxBase) return;
+        const response = await fetch(chatInboxBase);
         if (!response.ok) return;
         const { items = [] } = await response.json();
         if (cancelled) return;
@@ -5086,7 +5096,7 @@ export default function App({ sharing = null, userId = null } = {}) {
           const needsYou = item.type !== 'load' && item.type !== 'spreadsheet';
           if (asking && needsYou) continue;
           const known = item.type === 'spreadsheet' ? knownAccount(item) : '';
-          const fileResponse = await fetch(`/api/chat-inbox/file?name=${encodeURIComponent(item.name)}`);
+          const fileResponse = await fetch(`${chatInboxBase}/file?name=${encodeURIComponent(item.name)}`);
           if (!fileResponse.ok || cancelled) return;
           const blob = await fileResponse.blob();
           const file = new File([blob], item.fileName || item.name, { type: blob.type });
@@ -7258,6 +7268,45 @@ export default function App({ sharing = null, userId = null } = {}) {
     if (summary) pushNotice(`🗑 Deleted ${pastPickupCount} load${pastPickupCount === 1 ? '' : 's'} whose pickup day has passed (${summary}).`, 'auto');
   }, [pastPickupCount, pastPickupTick]);
 
+  // Teammates' TMS reports to Daniel's Team status panel every 2 minutes: their upload bot, their
+  // Google Chat bot and their last export (team_status table, src/lib/teamStatus.js).
+  const teamStatusOrders = useRef(customerOrdersMap);
+  teamStatusOrders.current = customerOrdersMap;
+  useEffect(() => {
+    if (!supabase || !userId || isTmsOwner(userId)) return undefined;
+    let cancelled = false;
+    const readLocal = async url => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2000);
+      try {
+        const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+        return response.ok ? await response.json() : null;
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const report = async () => {
+      try {
+        const bot = await readLocal(BOT_STATUS_URL);
+        const chat = (await readLocal('http://127.0.0.1:47615/chat-config'))?.bot || null;
+        const email = (await supabase.auth.getSession())?.data?.session?.user?.email || '';
+        if (cancelled) return;
+        const row = buildTeamStatusRow({
+          userId, name: email.split('@')[0], postingCode: profile.postingCode,
+          bot, chat, lastExportAt: lastExportTime(teamStatusOrders.current)
+        });
+        await supabase.from('team_status').upsert(row, { onConflict: 'user_id' });
+      } catch {
+        // No table yet or offline: tried again in 2 minutes.
+      }
+    };
+    report();
+    const timer = setInterval(report, TEAM_STATUS_EVERY_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [userId, profile.postingCode]);
+
   const handleFieldChange = (field, value) => {
     handleInputChange(field, value);
   };
@@ -8539,6 +8588,8 @@ export default function App({ sharing = null, userId = null } = {}) {
                   </button>
                 </div>
               </div>
+              {/* Teammates: the Google Chat lists their own bot watches (src/app/TeamChatSettings.jsx). */}
+              {sharing && userId && !isTmsOwner(userId) && <TeamChatSettings />}
               {/* Top-bar team logo: Eagles artwork, any NFL team, or an uploaded picture of any team. */}
               <div className="block text-xs text-gray-400">
                 Team logo (top bar)
@@ -8629,6 +8680,8 @@ export default function App({ sharing = null, userId = null } = {}) {
               </fieldset>
               {/* Only the TMS owner (Daniel) sees Add teammate; the server refuses anyone else too. */}
               {sharing && isTmsOwner(userId) && <TeamInvite sharing={sharing} />}
+              {/* Daniel: each teammate's TMS, upload bot and chat bot (src/app/TeamStatusPanel.jsx). */}
+              {sharing && isTmsOwner(userId) && <TeamStatusPanel supabase={supabase} />}
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setProfileDraft(null)} className="bg-gray-600 hover:bg-gray-500 text-white px-3 py-1.5 text-xs rounded">Cancel</button>
                 <button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 text-xs rounded font-bold">Save</button>

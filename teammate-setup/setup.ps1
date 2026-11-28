@@ -101,6 +101,7 @@ cd /d "%~dp0"
 echo Starting the Landstar bot...
 echo It watches your Downloads folder for TMS exports and posts them to Landstar.
 echo Sign in to Landstar in the bot's browser window the first time.
+echo Google Chat lists: turn them on in the TMS (My Settings - Google Chat lists); the chat bot then opens here too.
 echo Leave this window open while you work. Close THIS window to turn the bot off (closing its browser window just reopens it).
 echo.
 set TEAM_AUTO_UPDATE=1

@@ -49,7 +49,8 @@ function writeJson(file, value) {
   fs.renameSync(temp, file);
 }
 
-const CHAT_KINDS = new Set(['para', 'rxo']);
+// "team": a teammate's own chats (bot/team-chat.js): pictures and spreadsheets, account asked once.
+const CHAT_KINDS = new Set(['para', 'rxo', 'team']);
 const isChatUrl = url => /^https:\/\/(chat|mail)\.google\.com\//.test(url);
 
 // { enabled, chats: [{ name, url, kind }], missing: [names without an address] }.

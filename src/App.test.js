@@ -24,6 +24,7 @@ import * as capacityBook from './lib/capacityBook.js';
 import * as bigListSplit from './lib/bigListSplit.js';
 import * as teamAutoExport from './lib/teamAutoExport.js';
 import * as pastPickupCleanup from './lib/pastPickupCleanup.js';
+import * as teamStatus from './lib/teamStatus.js';
 import * as aiScreenshot from './lib/aiScreenshot.js';
 import zipcodes from 'zipcodes';
 import automationPolicy from '../bot/automation-policy.json' with { type: 'json' };
@@ -147,6 +148,7 @@ const context = {
       if (name === './lib/bigListSplit.js') return bigListSplit;
       if (name === './lib/teamAutoExport.js') return teamAutoExport;
       if (name === './lib/pastPickupCleanup.js') return pastPickupCleanup;
+      if (name === './lib/teamStatus.js') return teamStatus;
       if (name === './lib/aiScreenshot.js') return aiScreenshot;
     if (name === './lib/emailWorker.js') return emailWorker;
     if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
@@ -1644,6 +1646,7 @@ function createAppHarness(customer, existing, supabase = null, savedRates = {}, 
       if (name === './lib/bigListSplit.js') return bigListSplit;
       if (name === './lib/teamAutoExport.js') return teamAutoExport;
       if (name === './lib/pastPickupCleanup.js') return pastPickupCleanup;
+      if (name === './lib/teamStatus.js') return teamStatus;
       if (name === './lib/aiScreenshot.js') return aiScreenshot;
       if (name === './lib/emailWorker.js') return extraContext.emailWorkerModule || emailWorker;
       if (name === '../bot/automation-policy.json') return automationPolicy;
@@ -1870,6 +1873,7 @@ function createSyncContext(storage) {
       if (name === './lib/bigListSplit.js') return bigListSplit;
       if (name === './lib/teamAutoExport.js') return teamAutoExport;
       if (name === './lib/pastPickupCleanup.js') return pastPickupCleanup;
+      if (name === './lib/teamStatus.js') return teamStatus;
       if (name === './lib/aiScreenshot.js') return aiScreenshot;
       if (name === './lib/emailWorker.js') return emailWorker;
       if (['react', 'xlsx', './lib/supabase', './Prospects.jsx', './ChOffers.jsx', './TodayPanel.jsx', './LoadTable.jsx'].includes(name)) return {};
@@ -5218,11 +5222,13 @@ test('Google Chat: a question on screen does not hold up lists with a known name
   };
   const app = createAppHarness(van, [], null, {}, {
     fetch, Blob, File, setInterval: () => 1, clearInterval() {},
+    // The local TMS reads the inbox from its own server (/api/chat-inbox).
+    window: { location: { hostname: '127.0.0.1' }, addEventListener() {}, removeEventListener() {}, dispatchEvent() {} },
     initialStorage: { landstar_brokers: JSON.stringify([van, 'Para 1522166 - HAZ']) }
   });
   app.render();
   const runInboxCheck = async () => {
-    app.effects.findLast(effect => String(effect).includes('/api/chat-inbox')
+    app.effects.findLast(effect => String(effect).includes('chatInboxBase')
       && String(effect).includes('setChatWaitingCount'))();
     for (let i = 0; i < 20; i += 1) await new Promise(resolve => setImmediate(resolve));
     app.render();

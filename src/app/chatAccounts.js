@@ -84,6 +84,10 @@ function rememberChatSheetAccount(rules, label, customer) {
 function getChatInboxChoices(item, brokers = []) {
   const colors = ['bg-sky-700 hover:bg-sky-600', 'bg-red-700 hover:bg-red-600', 'bg-amber-700 hover:bg-amber-600', 'bg-emerald-700 hover:bg-emerald-600', 'bg-indigo-700 hover:bg-indigo-600'];
   const isSheet = item?.type === 'spreadsheet';
+  // A teammate's own chats (bot/team-chat.js): any of their customers.
+  if (item?.kind === 'team') {
+    return brokers.map((customer, index) => ({ label: customer, customer, className: colors[index % colors.length] }));
+  }
   if (item?.kind === 'rxo') {
     // Every RXO account (R X O 2429200 - ATZ, ATZ H, ATZ P, ATZ R...), not just the main one.
     return brokers.filter(name => /^\s*R\s*X\s*O\b/i.test(normalizeCustomerName(name)))

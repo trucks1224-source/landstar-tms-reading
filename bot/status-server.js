@@ -404,6 +404,50 @@ function start() {
     res.setHeader('Cache-Control', 'no-store');
     const route = req.url.split('?')[0];
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+    // Google Chat inbox and chat settings (teammates' chat bot, bot/team-chat.js). Customer lists:
+    // only the TMS itself (its website or the local TMS) may read them, never another web page.
+    if (route === '/chat-inbox' || route.startsWith('/chat-inbox/') || route === '/chat-config') {
+      const origin = String(req.headers.origin || '');
+      if (!/^(https:\/\/landstar-tms-reading[\w-]*\.vercel\.app|https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?)$/.test(origin)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Only the TMS can read the chat inbox.' }));
+        return;
+      }
+      const chatInbox = require('./chat-inbox');
+      const reply = (code, value) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
+      const readBody = handle => {
+        let body = '';
+        req.on('data', chunk => { body += chunk; if (body.length > 20000) req.destroy(); });
+        req.on('end', () => { try { handle(JSON.parse(body || '{}')); } catch (error) { reply(400, { error: error.message }); } });
+      };
+      try {
+        if (req.method === 'GET' && route === '/chat-inbox') return reply(200, { items: chatInbox.listInbox(), bot: chatInbox.readChatStatus() });
+        if (req.method === 'GET' && route === '/chat-inbox/file') {
+          const name = new URL(req.url, 'http://x').searchParams.get('name');
+          const bytes = fs.readFileSync(chatInbox.inboxFilePath(name));
+          res.writeHead(200, { 'Content-Type': chatInbox.contentTypeOf(name) });
+          res.end(bytes);
+          return;
+        }
+        if (req.method === 'POST' && route === '/chat-inbox/done') return readBody(body => reply(200, { done: chatInbox.markInboxDone(body.name) }));
+        if (req.method === 'GET' && route === '/chat-config') {
+          const config = chatInbox.readChatConfig();
+          return reply(200, { enabled: config.enabled, chats: config.chats.map(({ name, url }) => ({ name, url })), team: process.env.TEAM_AUTO_UPDATE === '1', bot: chatInbox.readChatStatus() });
+        }
+        // Only a teammate's bot takes chat settings from the TMS; Daniel's chats are set up by hand.
+        if (req.method === 'POST' && route === '/chat-config') {
+          if (process.env.TEAM_AUTO_UPDATE !== '1') return reply(409, { error: 'This bot\'s Google Chat settings are set by hand (bot/chat-bot-config.json).' });
+          return readBody(body => {
+            const config = require('./team-chat').teamChatConfig(body);
+            saveJsonFile(chatInbox.CONFIG_FILE, config);
+            reply(200, { ok: true, ...config });
+          });
+        }
+        return reply(405, { error: 'Unknown chat request' });
+      } catch (error) {
+        return reply(404, { error: error.message });
+      }
+    }
     if (req.method === 'GET' && route === '/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       const shared = readResults();

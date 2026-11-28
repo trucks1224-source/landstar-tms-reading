@@ -457,8 +457,6 @@ async function waitForSignIn(page) {
   if (!isSignedInUrl(page.url())) throw new Error('Google signed the Chat bot out');
 }
 
-// One look at one chat: remembers its pictures and spreadsheets the first time, saves new
-// ones after that.
 // Downloads one list (all its parts) and puts it in the TMS inbox; returns the inbox file name.
 async function saveSheetGroup(context, page, chat, group) {
   const first = group.sheets[0];
@@ -579,6 +577,8 @@ async function checkReplyThreads(context, tab, seen) {
   }
 }
 
+// One look at one chat: remembers its pictures and spreadsheets the first time, saves new
+// ones after that.
 async function checkChat(context, tab, seen) {
   const { chat, page } = tab;
   // RXO's chat sends spreadsheets: its pictures are only the files' previews, never lists.

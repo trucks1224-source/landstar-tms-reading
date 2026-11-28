@@ -702,6 +702,8 @@ async function watchSession(context, isStopping) {
   let updateWaiting = false;
 
   while (!closed) {
+    // Teammates: their Google Chat bot runs next to this one while it is turned on in the TMS.
+    if (autoUpdate) require('./team-chat').keepTeamChatBot();
     if (autoUpdate && !updateWaiting && Date.now() >= updateCheckAt) {
       updateCheckAt = Date.now() + 30 * 60 * 1000;
       updateWaiting = await require('./update').updateAvailable().catch(() => false);

@@ -23,6 +23,7 @@ function trace(entry) {
   return [...seen].map(file => path.relative(botDir, file));
 }
 
-if (require.main === module) console.log(trace('upload.js').join('\n'));
+// The upload bot, plus the Google Chat bot it starts for teammates (bot/team-chat.js).
+if (require.main === module) console.log([...new Set([...trace('upload.js'), ...trace('chat-bot.js')])].join('\n'));
 
 module.exports = { trace };
